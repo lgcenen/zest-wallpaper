@@ -492,6 +492,10 @@ fn effect_dependency_is_shader(dependency: &str) -> bool {
         || lower.ends_with(".vert")
         || lower.ends_with(".frag")
         || lower.ends_with(".metal")
+        || (Path::new(&lower).extension().is_none()
+            && !lower.starts_with("materials/")
+            && !lower.starts_with("textures/")
+            && !lower.starts_with("preview/"))
 }
 
 fn effect_dependency_is_texture(dependency: &str) -> bool {

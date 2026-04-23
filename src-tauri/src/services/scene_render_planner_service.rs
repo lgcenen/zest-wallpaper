@@ -892,7 +892,7 @@ pub(crate) fn parse_visual_blend_mode(
         Some("multiply") => SceneRenderBlendMode::Multiply,
         _ => match color_blend_mode {
             Some(2) => SceneRenderBlendMode::Multiply,
-            Some(9) => SceneRenderBlendMode::Additive,
+            Some(7 | 9) => SceneRenderBlendMode::Additive,
             _ => SceneRenderBlendMode::Normal,
         },
     }
