@@ -2307,8 +2307,14 @@ impl NativeSceneMetalRenderer {
             texel_size: phase10_texel_size(
                 pass_textures.slots.first().and_then(|slot| slot.as_ref()),
             ),
-            aux_texel_size: phase10_texel_size(
+            aux_texel_size: phase10_optional_texel_size(
                 pass_textures.slots.get(1).and_then(|slot| slot.as_ref()),
+            ),
+            aux2_texel_size: phase10_optional_texel_size(
+                pass_textures.slots.get(2).and_then(|slot| slot.as_ref()),
+            ),
+            aux3_texel_size: phase10_optional_texel_size(
+                pass_textures.slots.get(3).and_then(|slot| slot.as_ref()),
             ),
             screen_size: [width.max(1) as f32, height.max(1) as f32],
             time: elapsed_seconds as f32,
@@ -2340,6 +2346,19 @@ impl NativeSceneMetalRenderer {
                 continue;
             }
             if let Some(vector) = value.as_float2() {
+                if let Some(slot) = phase10_effect_vector_uniform_slot(effect_kind, &normalized) {
+                    match slot {
+                        Phase10VectorUniformSlot::User0XY => {
+                            uniforms.user0[0] = vector[0];
+                            uniforms.user0[1] = vector[1];
+                        }
+                        Phase10VectorUniformSlot::User1XY => {
+                            uniforms.user1[0] = vector[0];
+                            uniforms.user1[1] = vector[1];
+                        }
+                    }
+                    continue;
+                }
                 if normalized.contains("direction")
                     || normalized.contains("scroll")
                     || normalized.contains("offset")
@@ -2380,6 +2399,8 @@ impl NativeSceneMetalRenderer {
                 if let Some(slot) = phase10_effect_scalar_uniform_slot(effect_kind, &normalized) {
                     match slot {
                         Phase10ScalarUniformSlot::Angle => uniforms.angle = number,
+                        Phase10ScalarUniformSlot::User0X => uniforms.user0[0] = number,
+                        Phase10ScalarUniformSlot::User0Y => uniforms.user0[1] = number,
                         Phase10ScalarUniformSlot::User0Z => uniforms.user0[2] = number,
                         Phase10ScalarUniformSlot::User0W => uniforms.user0[3] = number,
                         Phase10ScalarUniformSlot::User1X => uniforms.user1[0] = number,
@@ -2414,8 +2435,21 @@ impl NativeSceneMetalRenderer {
         }
 
         match effect_kind {
-            Some(SceneCompatEffectKind::Shake) if uniforms.intensity == 1.0 => {
-                uniforms.intensity = 4.0;
+            Some(SceneCompatEffectKind::Shake) => {
+                if uniforms.intensity == 1.0 {
+                    uniforms.intensity = 0.1;
+                }
+                if uniforms.user0[0].abs() <= f32::EPSILON
+                    && uniforms.user0[1].abs() <= f32::EPSILON
+                {
+                    uniforms.user0[1] = 1.0;
+                }
+                if uniforms.user1[0].abs() <= f32::EPSILON {
+                    uniforms.user1[0] = 1.0;
+                }
+                if uniforms.user1[1].abs() <= f32::EPSILON {
+                    uniforms.user1[1] = 1.0;
+                }
             }
             Some(SceneCompatEffectKind::WaterRipple) | Some(SceneCompatEffectKind::WaterWaves)
                 if uniforms.intensity == 1.0 =>
@@ -3230,6 +3264,12 @@ fn phase10_effect_scalar_assigns_intensity(
     normalized_name: &str,
     current_intensity: f32,
 ) -> bool {
+    if matches!(effect_kind, Some(SceneCompatEffectKind::Pulse)) {
+        return normalized_name.contains("intensity")
+            || normalized_name.contains("strength")
+            || normalized_name == "amount"
+            || normalized_name == "pulseamount";
+    }
     normalized_name.contains("intensity")
         || normalized_name.contains("amount")
         || normalized_name.contains("strength")
@@ -3242,6 +3282,8 @@ fn phase10_effect_scalar_assigns_intensity(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase10ScalarUniformSlot {
     Angle,
+    User0X,
+    User0Y,
     User0Z,
     User0W,
     User1X,
@@ -3251,11 +3293,38 @@ enum Phase10ScalarUniformSlot {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase10VectorUniformSlot {
+    User0XY,
+    User1XY,
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_effect_vector_uniform_slot(
+    effect_kind: Option<SceneCompatEffectKind>,
+    normalized_name: &str,
+) -> Option<Phase10VectorUniformSlot> {
+    match effect_kind {
+        Some(SceneCompatEffectKind::Shake) => match normalized_name {
+            "bounds" | "gbounds" => Some(Phase10VectorUniformSlot::User0XY),
+            "friction" | "gfriction" => Some(Phase10VectorUniformSlot::User1XY),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn phase10_effect_scalar_uniform_slot(
     effect_kind: Option<SceneCompatEffectKind>,
     normalized_name: &str,
 ) -> Option<Phase10ScalarUniformSlot> {
     match effect_kind {
+        Some(SceneCompatEffectKind::Pulse) => match normalized_name {
+            "phase" | "pulsephase" => Some(Phase10ScalarUniformSlot::User0X),
+            "power" => Some(Phase10ScalarUniformSlot::User0Y),
+            _ => None,
+        },
         Some(SceneCompatEffectKind::WaterWaves) => match normalized_name {
             "direction" => Some(Phase10ScalarUniformSlot::Angle),
             "scale" => Some(Phase10ScalarUniformSlot::User0Z),
@@ -3294,6 +3363,8 @@ struct Phase10EffectUniforms {
     user1: [f32; 4],
     texel_size: [f32; 2],
     aux_texel_size: [f32; 2],
+    aux2_texel_size: [f32; 2],
+    aux3_texel_size: [f32; 2],
     screen_size: [f32; 2],
     time: f32,
     intensity: f32,
@@ -3355,6 +3426,18 @@ fn phase10_visual_pass_chain<'a>(
 fn phase10_texel_size(texture: Option<&Retained<ProtocolObject<dyn MTLTexture>>>) -> [f32; 2] {
     let Some(texture) = texture else {
         return [1.0, 1.0];
+    };
+    let width = texture.width().max(1) as f32;
+    let height = texture.height().max(1) as f32;
+    [1.0 / width, 1.0 / height]
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_optional_texel_size(
+    texture: Option<&Retained<ProtocolObject<dyn MTLTexture>>>,
+) -> [f32; 2] {
+    let Some(texture) = texture else {
+        return [0.0, 0.0];
     };
     let width = texture.width().max(1) as f32;
     let height = texture.height().max(1) as f32;
@@ -5777,6 +5860,105 @@ mod tests {
             "alpha",
             1.0,
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_pulse_does_not_treat_noise_amount_as_primary_intensity() {
+        assert!(super::phase10_effect_scalar_assigns_intensity(
+            Some(super::SceneCompatEffectKind::Pulse),
+            "amount",
+            1.0,
+        ));
+        assert!(super::phase10_effect_scalar_assigns_intensity(
+            Some(super::SceneCompatEffectKind::Pulse),
+            "pulseamount",
+            1.0,
+        ));
+        assert!(!super::phase10_effect_scalar_assigns_intensity(
+            Some(super::SceneCompatEffectKind::Pulse),
+            "noiseamount",
+            1.0,
+        ));
+        assert_eq!(
+            super::phase10_effect_scalar_uniform_slot(
+                Some(super::SceneCompatEffectKind::Pulse),
+                "phase"
+            ),
+            Some(super::Phase10ScalarUniformSlot::User0X)
+        );
+        assert_eq!(
+            super::phase10_effect_scalar_uniform_slot(
+                Some(super::SceneCompatEffectKind::Pulse),
+                "power"
+            ),
+            Some(super::Phase10ScalarUniformSlot::User0Y)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_pulse_shader_does_not_scale_texture_coordinates() {
+        let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
+        let shader = fs::read_to_string(shader_path).expect("effect compat shader");
+
+        assert!(!shader.contains("0.5 + centered / scale"));
+        assert!(!shader.contains("centered = uv - 0.5"));
+        assert!(shader.contains("#if PULSEALPHA"));
+        assert!(shader.contains("#if PULSECOLOR"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_shake_vector_authoring_maps_bounds_and_friction_without_audio_collision() {
+        assert_eq!(
+            super::phase10_effect_vector_uniform_slot(
+                Some(super::SceneCompatEffectKind::Shake),
+                "bounds",
+            ),
+            Some(super::Phase10VectorUniformSlot::User0XY)
+        );
+        assert_eq!(
+            super::phase10_effect_vector_uniform_slot(
+                Some(super::SceneCompatEffectKind::Shake),
+                "friction",
+            ),
+            Some(super::Phase10VectorUniformSlot::User1XY)
+        );
+        assert_eq!(
+            super::phase10_effect_vector_uniform_slot(
+                Some(super::SceneCompatEffectKind::Shake),
+                "audiobounds",
+            ),
+            None
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_optional_texel_size_uses_zero_for_unbound_aux_slots() {
+        assert_eq!(super::phase10_optional_texel_size(None), [0.0, 0.0]);
+        assert_eq!(super::phase10_texel_size(None), [1.0, 1.0]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_shake_shader_uses_flow_mask_time_offset_and_optional_mask_instead_of_camera_jitter()
+    {
+        let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
+        let shader = fs::read_to_string(shader_path).expect("effect compat shader");
+
+        assert!(shader.contains("texture2d<float> aux2_texture [[texture(2)]]"));
+        assert!(shader.contains("texture2d<float> aux3_texture [[texture(3)]]"));
+        assert!(shader.contains("flow_mask = (flow_colors - float2(0.498)) * 2.0;"));
+        assert!(shader.contains(
+            "float2 texCoordOffset = offset * uniforms.intensity * uniforms.intensity * flow_mask;"
+        ));
+        assert!(shader.contains("sampled = mix(sampled, shaken, mask);"));
+        assert!(!shader.contains("float px = uniforms.intensity * uniforms.texel_size.x;"));
+        assert!(!shader.contains("sin(uniforms.time * max(uniforms.speed, 0.001) * 7.0) * px"));
     }
 
     #[cfg(target_os = "macos")]
