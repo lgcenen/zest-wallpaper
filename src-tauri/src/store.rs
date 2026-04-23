@@ -13,6 +13,9 @@ use crate::{
     models::{LibraryStore, SceneRuntimeSettings, WallpaperRecord},
 };
 
+#[cfg(test)]
+pub(crate) static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 #[derive(Debug, Clone, Default)]
 pub struct DynamicPlayerState {
     pub active_id: Option<String>,
@@ -242,7 +245,7 @@ fn normalized_scene_runtime_settings(mut settings: SceneRuntimeSettings) -> Scen
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, env, fs, sync::Mutex};
+    use std::{collections::BTreeSet, env, fs};
 
     use tempfile::tempdir;
 
@@ -253,11 +256,9 @@ mod tests {
         save_scene_runtime_settings, scene_runtime_settings_path, AppState, DynamicPlayerState,
     };
 
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn load_and_save_library_ignore_legacy_snapshot_fields() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = super::HOME_ENV_LOCK.lock().unwrap();
         let temp = tempdir().unwrap();
         let previous_home = env::var_os("HOME");
         env::set_var("HOME", temp.path());
@@ -311,7 +312,7 @@ mod tests {
 
     #[test]
     fn load_and_save_player_state_round_trips_manual_pause_and_ignores_unknown_fields() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = super::HOME_ENV_LOCK.lock().unwrap();
         let temp = tempdir().unwrap();
         let previous_home = env::var_os("HOME");
         env::set_var("HOME", temp.path());
@@ -356,7 +357,7 @@ mod tests {
 
     #[test]
     fn app_state_load_clears_stale_persisted_player_state() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = super::HOME_ENV_LOCK.lock().unwrap();
         let temp = tempdir().unwrap();
         let previous_home = env::var_os("HOME");
         env::set_var("HOME", temp.path());
@@ -391,7 +392,7 @@ mod tests {
 
     #[test]
     fn app_state_load_restores_scene_runtime_settings() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = super::HOME_ENV_LOCK.lock().unwrap();
         let temp = tempdir().unwrap();
         let previous_home = env::var_os("HOME");
         env::set_var("HOME", temp.path());

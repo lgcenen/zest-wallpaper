@@ -4,6 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
+  const sceneRuntimeSettings = {
+    externalAssetsPath: null as string | null,
+    externalAssetsExists: false,
+  };
   const wallpaper = {
     id: "wallpaper-aurora",
     title: "Aurora Flow",
@@ -106,6 +110,13 @@ const mocks = vi.hoisted(() => {
       pauseResumeDynamic: vi.fn(async (paused: boolean) => paused),
       removeWallpaper: vi.fn(async () => true),
       chooseImportDirectory: vi.fn(async () => null),
+      chooseSceneAssetsDirectory: vi.fn(async () => null),
+      getSceneRuntimeSettings: vi.fn(async () => ({ ...sceneRuntimeSettings })),
+      setSceneExternalAssetsPath: vi.fn(async (path: string | null) => {
+        sceneRuntimeSettings.externalAssetsPath = path;
+        sceneRuntimeSettings.externalAssetsExists = Boolean(path);
+        return { ...sceneRuntimeSettings };
+      }),
       toAssetUrl: vi.fn((path?: string | null) => (path ? `asset://${path}` : null)),
       getPlayerState: vi.fn(async () => ({ active: restoredWallpaper, paused: false })),
       onPlayerLoad: vi.fn(async () => () => undefined),
@@ -138,6 +149,13 @@ describe("phase-06 workbench gui", () => {
   beforeEach(() => {
     mocks.gateway.listWallpapers.mockClear();
     mocks.gateway.applyDynamicWallpaper.mockClear();
+    mocks.gateway.chooseSceneAssetsDirectory.mockClear();
+    mocks.gateway.getSceneRuntimeSettings.mockClear();
+    mocks.gateway.setSceneExternalAssetsPath.mockClear();
+    mocks.gateway.getSceneRuntimeSettings.mockResolvedValue({
+      externalAssetsPath: null,
+      externalAssetsExists: false,
+    });
     mocks.usePlayerController.mockReturnValue({
       active: mocks.restoredWallpaper,
       paused: false,

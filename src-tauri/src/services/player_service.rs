@@ -793,7 +793,7 @@ mod tests {
             SceneRuntimeSettings, SceneTextBehavior, SceneTextLayer, WallpaperRecord,
             WallpaperRuntime, WallpaperRuntimeRecord, WallpaperType,
         },
-        store::{AppState, DynamicPlayerState},
+        store::{AppState, DynamicPlayerState, HOME_ENV_LOCK},
     };
 
     use super::{
@@ -803,8 +803,6 @@ mod tests {
         should_emit_scene_update, should_start_scene_update_loop, validate_scene_apply_preflight,
         NativeHostKind, NativeHostSyncDisposition, SceneUpdateCadence,
     };
-
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     fn runtime_record(
         runtime: WallpaperRuntime,
@@ -1383,7 +1381,7 @@ mod tests {
 
     #[test]
     fn clearing_player_session_state_persists_empty_restore_state_for_restart() {
-        let _lock = HOME_LOCK.lock().expect("home lock");
+        let _lock = HOME_ENV_LOCK.lock().expect("home lock");
         let temp = tempdir().expect("temp dir");
         let previous_home = env::var_os("HOME");
         env::set_var("HOME", temp.path());
