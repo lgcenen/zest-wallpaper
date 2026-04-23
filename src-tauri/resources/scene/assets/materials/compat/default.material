@@ -1,0 +1,8 @@
+{
+  "passes": [
+    {
+      "shader": "genericimage4",
+      "textures": ["g_Texture0"]
+    }
+  ]
+}

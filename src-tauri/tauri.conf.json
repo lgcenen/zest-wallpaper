@@ -1,0 +1,47 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Zest Wallpaper",
+  "version": "0.1.0",
+  "identifier": "com.lin.wallpaperworkbench",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "withGlobalTauri": false,
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**", "$HOME/Library/Application Support/**", "/Volumes/**"]
+      },
+      "csp": null
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Zest Wallpaper",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "transparent": true,
+        "width": 1560,
+        "height": 960,
+        "minWidth": 1200,
+        "minHeight": 760,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "resources": ["resources/scene"],
+    "targets": ["app"],
+    "macOS": {
+      "minimumSystemVersion": "15.0"
+    }
+  }
+}

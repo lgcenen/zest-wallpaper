@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "dependencies": ["assets/shaders/compat/scene-copy.metal"],
+  "passes": [
+    {
+      "material": "assets/materials/compat/default.material",
+      "bind": [
+        { "name": "input", "index": 0 }
+      ]
+    }
+  ]
+}
