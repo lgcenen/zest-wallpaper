@@ -6557,6 +6557,25 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn phase10_displaced_effects_guard_local_input_bounds() {
+        let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
+        let shader = fs::read_to_string(shader_path).expect("effect compat shader");
+
+        assert!(shader.contains("static float4 sample_displaced_input("));
+        assert!(shader.contains("if (!uv_inside_unit(displaced_uv))"));
+        assert!(shader.contains("return sample_input(input_texture, texture_sampler, base_uv);"));
+        assert!(shader.contains(
+            "float4 shaken = sample_displaced_input(input_texture, texture_sampler, primary_uv, texCoordOffset);"
+        ));
+        assert!(shader.contains("sampled = sample_displaced_input("));
+        assert!(shader.contains(
+            "float4 displaced = sample_displaced_input(input_texture, texture_sampler, primary_uv, offset);"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn phase10_shake_shader_uses_flow_mask_time_offset_and_optional_mask_instead_of_camera_jitter()
     {
         let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -6567,6 +6586,18 @@ mod tests {
         assert!(shader.contains("texture2d<float> aux3_texture [[texture(3)]]"));
         assert!(shader.contains("float2 slot1_uv;"));
         assert!(shader.contains("float4 slot3_resolution;"));
+        assert_eq!(
+            shader
+                .matches("constexpr float phase_scale = 6.28318530718;")
+                .count(),
+            2
+        );
+        assert!(shader.contains(
+            "flow_phase = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r * 6.28318530718;"
+        ));
+        assert!(!shader.contains(
+            "flow_phase = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r * 1.57079632679;"
+        ));
         assert!(shader.contains("flow_mask = (flow_colors - float2(0.498)) * 2.0;"));
         assert!(shader.contains(
             "float2 texCoordOffset = offset * uniforms.intensity * uniforms.intensity * flow_mask;"

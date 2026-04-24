@@ -103,6 +103,23 @@ static float4 sample_input(
     return input_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0)));
 }
 
+static bool uv_inside_unit(float2 uv) {
+    return all(uv >= float2(0.0)) && all(uv <= float2(1.0));
+}
+
+static float4 sample_displaced_input(
+    texture2d<float> input_texture,
+    sampler texture_sampler,
+    float2 base_uv,
+    float2 offset
+) {
+    float2 displaced_uv = base_uv + offset;
+    if (!uv_inside_unit(displaced_uv)) {
+        return sample_input(input_texture, texture_sampler, base_uv);
+    }
+    return sample_input(input_texture, texture_sampler, displaced_uv);
+}
+
 static bool has_aux_texture(float2 texel_size) {
     return texel_size.x > 0.0 && texel_size.y > 0.0;
 }
@@ -152,7 +169,7 @@ static float phase10_shake_wave(
 ) {
     float2 friction = max(uniforms.user1.xy, float2(0.01));
 #if NOISE
-    constexpr float phase_scale = 1.57079632679;
+    constexpr float phase_scale = 6.28318530718;
     float4 time_phase = flow_phase +
         fract(uniforms.speed * uniforms.time / phase_scale * float4(1.0, -0.16161616, 0.0083333, -0.00019841)) *
             phase_scale;
@@ -165,7 +182,7 @@ static float phase10_shake_wave(
     );
     return dot(float4(0.5), easing);
 #else
-    constexpr float phase_scale = 1.57079632679;
+    constexpr float phase_scale = 6.28318530718;
     float time_phase = uniforms.speed * uniforms.time + flow_phase;
     float wave = sin(fract(time_phase / phase_scale) * phase_scale) * 0.498 + 0.5;
     return mix(
@@ -221,7 +238,7 @@ fragment float4 phase10_effect_fragment(
 #elif PHASE10_EFFECT_SHAKE
     float flow_phase = 0.0;
     if (has_aux_texture(uniforms.aux2_texel_size)) {
-        flow_phase = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r * 1.57079632679;
+        flow_phase = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r * 6.28318530718;
     }
     float2 flow_mask = float2(0.0);
     if (has_aux_texture(uniforms.aux_texel_size)) {
@@ -242,7 +259,7 @@ fragment float4 phase10_effect_fragment(
     offset = offset - 1.0;
 #endif
     float2 texCoordOffset = offset * uniforms.intensity * uniforms.intensity * flow_mask;
-    float4 shaken = sample_input(input_texture, texture_sampler, primary_uv + texCoordOffset);
+    float4 shaken = sample_displaced_input(input_texture, texture_sampler, primary_uv, texCoordOffset);
     if (has_aux_texture(uniforms.aux3_texel_size)) {
         float2 mask_uv = stage_vertex.slot3_uv + phase10_offset_between_texture_spaces(
             texCoordOffset,
@@ -281,10 +298,11 @@ fragment float4 phase10_effect_fragment(
         float3 n1 = aux2_texture.sample(texture_sampler, fract(ripple_uv.xy)).xyz * 2.0 - 1.0;
         float3 n2 = aux2_texture.sample(texture_sampler, fract(ripple_uv.zw)).xyz * 2.0 - 1.0;
         float3 normal = normalize(float3(n1.xy + n2.xy, max(n1.z, 0.0001)));
-        sampled = sample_input(
+        sampled = sample_displaced_input(
             input_texture,
             texture_sampler,
-            primary_uv + normal.xy * uniforms.intensity * uniforms.intensity * mask
+            primary_uv,
+            normal.xy * uniforms.intensity * uniforms.intensity * mask
         );
     }
 #elif PHASE10_EFFECT_WATERWAVES
@@ -309,7 +327,7 @@ fragment float4 phase10_effect_fragment(
     float safe_amplitude = max(max(uniforms.texel_size.x, uniforms.texel_size.y) * 4.0, 0.0001);
     float displacement = min(strength * strength, safe_amplitude) * mask;
     float2 offset = float2(direction.y, -direction.x) * signed_wave * displacement;
-    float4 displaced = sample_input(input_texture, texture_sampler, primary_uv + offset);
+    float4 displaced = sample_displaced_input(input_texture, texture_sampler, primary_uv, offset);
     float coverage = smoothstep(0.02, 0.15, sampled.a);
     sampled = mix(sampled, displaced, coverage);
 #elif PHASE10_EFFECT_TINT
