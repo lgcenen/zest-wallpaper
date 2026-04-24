@@ -548,6 +548,7 @@ fn build_material_effect_chain(
             object_name,
             SceneGraphIssueSeverity::Fatal,
             None,
+            !effect_chain.is_empty(),
             issues,
         ) else {
             return None;
@@ -606,6 +607,7 @@ fn build_source_effect_chain(
             object_name,
             severity,
             Some(effect),
+            !chain.is_empty(),
             &mut issues,
         ) {
             chain.push(node);
@@ -622,6 +624,7 @@ fn build_effect_node(
     object_name: &str,
     severity: SceneGraphIssueSeverity,
     runtime_effect: Option<&SceneVisualEffect>,
+    chain_has_previous_output: bool,
     issues: &mut Vec<SceneGraphIssue>,
 ) -> Option<ScenePhase10EffectNode> {
     let mut resolved_passes = Vec::new();
@@ -702,7 +705,11 @@ fn build_effect_node(
                     bindings: pass.bindings.clone(),
                     target_name: pass.target_name.clone(),
                     copy_background: effect.copy_background || pass.copy_background,
-                    input_bindings: phase10_effect_input_bindings(effect, pass),
+                    input_bindings: phase10_effect_input_bindings(
+                        effect,
+                        pass,
+                        chain_has_previous_output,
+                    ),
                     constants: runtime_pass
                         .map(|runtime_pass| {
                             crate::services::scene_shader_material_service::parse_uniform_map_from_constants(
@@ -854,9 +861,12 @@ fn validate_phase10d_graph_contract(
     }
 
     for binding in &effect_pass.bindings {
-        let Some(ScenePhase10InputSource::NamedTarget(target_name)) =
-            effect_binding_input_source(effect, effect_pass, binding)
-        else {
+        let Some(ScenePhase10InputSource::NamedTarget(target_name)) = effect_binding_input_source(
+            effect,
+            effect_pass,
+            binding,
+            ScenePhase10InputSource::LocalCurrentVisual,
+        ) else {
             continue;
         };
         if !effect
@@ -1008,7 +1018,13 @@ fn validate_phase10_effect_material_contract(
 
     for binding in &effect_pass.bindings {
         if allow_graph_input_bindings
-            && effect_binding_input_source(effect, effect_pass, binding).is_some()
+            && effect_binding_input_source(
+                effect,
+                effect_pass,
+                binding,
+                ScenePhase10InputSource::LocalCurrentVisual,
+            )
+            .is_some()
         {
             continue;
         }
@@ -1086,21 +1102,17 @@ fn effect_pass_requires_phase10d_graph(
 fn phase10_effect_input_bindings(
     effect: &SceneEffectPlan,
     effect_pass: &crate::services::scene_shader_material_service::SceneEffectPassPlan,
+    chain_has_previous_output: bool,
 ) -> Vec<ScenePhase10InputBinding> {
     let mut bindings = BTreeMap::new();
-    bindings.insert(
-        0,
-        if effect.copy_background || effect_pass.copy_background {
-            ScenePhase10InputSource::CopiedBackground
-        } else if effect_pass.index == 0 {
-            ScenePhase10InputSource::LocalCurrentVisual
-        } else {
-            ScenePhase10InputSource::PreviousPass
-        },
-    );
+    let default_input_source =
+        phase10_effect_default_input_source(effect, effect_pass, chain_has_previous_output);
+    bindings.insert(0, default_input_source.clone());
 
     for binding in &effect_pass.bindings {
-        let Some(source) = effect_binding_input_source(effect, effect_pass, binding) else {
+        let Some(source) =
+            effect_binding_input_source(effect, effect_pass, binding, default_input_source.clone())
+        else {
             continue;
         };
         bindings.insert(binding.index, source);
@@ -1112,10 +1124,25 @@ fn phase10_effect_input_bindings(
         .collect()
 }
 
-fn effect_binding_input_source(
+fn phase10_effect_default_input_source(
     effect: &SceneEffectPlan,
     effect_pass: &crate::services::scene_shader_material_service::SceneEffectPassPlan,
+    chain_has_previous_output: bool,
+) -> ScenePhase10InputSource {
+    if effect.copy_background || effect_pass.copy_background {
+        ScenePhase10InputSource::CopiedBackground
+    } else if chain_has_previous_output || effect_pass.index > 0 {
+        ScenePhase10InputSource::PreviousPass
+    } else {
+        ScenePhase10InputSource::LocalCurrentVisual
+    }
+}
+
+fn effect_binding_input_source(
+    effect: &SceneEffectPlan,
+    _effect_pass: &crate::services::scene_shader_material_service::SceneEffectPassPlan,
     binding: &SceneEffectBinding,
+    default_input_source: ScenePhase10InputSource,
 ) -> Option<ScenePhase10InputSource> {
     let normalized = normalized_contract_key(&binding.name);
     if normalized.is_empty() {
@@ -1143,13 +1170,7 @@ fn effect_binding_input_source(
         || normalized.contains("main")
         || normalized.contains("base")
     {
-        return Some(if effect.copy_background || effect_pass.copy_background {
-            ScenePhase10InputSource::CopiedBackground
-        } else if effect_pass.index == 0 {
-            ScenePhase10InputSource::LocalCurrentVisual
-        } else {
-            ScenePhase10InputSource::PreviousPass
-        });
+        return Some(default_input_source);
     }
 
     None
@@ -2333,7 +2354,7 @@ mod tests {
         let local_chain = &visual.effect_chain[1];
         assert_eq!(
             local_chain.passes[0].input_bindings[0].source,
-            super::ScenePhase10InputSource::LocalCurrentVisual
+            super::ScenePhase10InputSource::PreviousPass
         );
         assert_eq!(
             local_chain.passes[1].input_bindings[0].source,
@@ -2431,6 +2452,140 @@ mod tests {
         assert_eq!(
             texture_overrides.get(1).and_then(|path| path.as_deref()),
             Some(mask_path.as_path())
+        );
+    }
+
+    #[test]
+    fn phase10d_graph_chains_runtime_masked_waterripple_before_later_effects() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+        let mask_path = extracted.join("materials/masks/ripple_mask.tex");
+        let normal_path = extracted.join("materials/effects/waterripplenormal.tex");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":81,
+                  "name":"ChainedRipple",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "color":"0.1 0.2 0.3",
+                  "effects":[
+                    {
+                      "file":"effects/waterripple/effect.json",
+                      "visible":true,
+                      "passes":[
+                        {"textures":[null,"masks/ripple_mask","effects/waterripplenormal"]}
+                      ]
+                    },
+                    {"file":"effects/pulse/effect.json","visible":true}
+                  ]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(&mask_path, b"synthetic mask placeholder");
+        write(&normal_path, b"synthetic normal placeholder");
+        write(
+            &extracted.join("effects/waterripple/effect.json"),
+            br#"{
+              "passes":[{"material":"materials/effects/waterripple.json"}],
+              "dependencies":[
+                "materials/effects/waterripple.json",
+                "materials/effects/waterripplenormal.png",
+                "shaders/effects/waterripple.vert",
+                "shaders/effects/waterripple.frag"
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("materials/effects/waterripple.json"),
+            br#"{"passes":[{"shader":"effects/waterripple","textures":[null,null,"effects/waterripplenormal"]}]}"#,
+        );
+        write(
+            &extracted.join("shaders/effects/waterripple.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("shaders/effects/waterripple.frag"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/pulse/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/pulse.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/pulse/materials/effects/pulse.json"),
+            br#"{"passes":[{"shader":"effects/pulse"}]}"#,
+        );
+        write(
+            &extracted.join("effects/pulse/shaders/effects/pulse.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/pulse/shaders/effects/pulse.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        assert!(!report.is_blocked());
+        let visual = &report.graph.visuals[0];
+        assert_eq!(visual.effect_chain.len(), 2);
+
+        let ripple_pass = &visual.effect_chain[0].passes[0];
+        assert_eq!(
+            ripple_pass.input_bindings[0].source,
+            super::ScenePhase10InputSource::LocalCurrentVisual
+        );
+        assert_eq!(
+            ripple_pass
+                .texture_overrides
+                .get(1)
+                .and_then(|path| path.as_deref()),
+            Some(mask_path.as_path())
+        );
+        assert_eq!(
+            ripple_pass
+                .texture_overrides
+                .get(2)
+                .and_then(|path| path.as_deref()),
+            Some(normal_path.as_path())
+        );
+
+        let later_pass = &visual.effect_chain[1].passes[0];
+        assert_eq!(
+            later_pass.input_bindings[0].source,
+            super::ScenePhase10InputSource::PreviousPass
         );
     }
 

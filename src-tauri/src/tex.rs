@@ -443,6 +443,7 @@ pub fn load_tex_image(source_path: &Path) -> Result<DynamicImage> {
     Ok(crop_texture_image(&header, image))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn inspect_tex_resolution(source_path: &Path) -> Result<TexResolution> {
     let (header, mipmap) = load_primary_mipmap(source_path)?;
     if is_video_texture(&header, &mipmap) {

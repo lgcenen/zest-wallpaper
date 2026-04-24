@@ -4335,31 +4335,15 @@ fn load_phase10_texture_source(path: &Path) -> Result<Phase10DecodedTexture, Str
         .map(|value| value.to_ascii_lowercase());
 
     if extension.as_deref() == Some("tex") {
-        let resolution = crate::tex::inspect_tex_resolution(loader_path).map_err(|error| {
-            format!(
-                "unable to inspect phase-10 texture {}: {error}",
-                loader_path.display()
-            )
-        })?;
         let image = crate::tex::load_tex_image(loader_path).map_err(|error| {
             format!(
                 "unable to decode phase-10 texture {}: {error}",
                 loader_path.display()
             )
         })?;
-        return Ok(Phase10DecodedTexture {
-            image,
-            metrics: Phase10TextureMetrics {
-                texture_size: [
-                    resolution.texture_width.max(1) as f32,
-                    resolution.texture_height.max(1) as f32,
-                ],
-                content_size: [
-                    resolution.content_width.max(1) as f32,
-                    resolution.content_height.max(1) as f32,
-                ],
-            },
-        });
+        let metrics =
+            phase10_texture_metrics_from_size(image.width() as usize, image.height() as usize);
+        return Ok(Phase10DecodedTexture { image, metrics });
     }
 
     let image = image::open(loader_path).map_err(|error| {
@@ -6285,7 +6269,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn phase10_texture_source_preserves_tex_padding_as_resolution_contract() {
+    fn phase10_texture_source_uses_uploaded_extent_for_cropped_tex_masks() {
         let temp = tempdir().expect("temp dir");
         let tex_path = temp.path().join("masked.tex");
         fs::write(
@@ -6297,9 +6281,9 @@ mod tests {
         let decoded = load_phase10_texture_source(&tex_path).expect("decode texture source");
 
         assert_eq!(decoded.image.dimensions(), (4, 2));
-        assert_eq!(decoded.metrics.texture_size, [8.0, 4.0]);
+        assert_eq!(decoded.metrics.texture_size, [4.0, 2.0]);
         assert_eq!(decoded.metrics.content_size, [4.0, 2.0]);
-        assert_eq!(decoded.metrics.resolution(), [8.0, 4.0, 4.0, 2.0]);
+        assert_eq!(decoded.metrics.resolution(), [4.0, 2.0, 4.0, 2.0]);
     }
 
     #[cfg(target_os = "macos")]
