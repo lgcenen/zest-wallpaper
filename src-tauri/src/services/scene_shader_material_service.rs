@@ -383,6 +383,7 @@ pub struct SceneEffectPassPlan {
     pub material_path: Option<String>,
     pub material_lookup: Option<SceneResourceLookup>,
     pub target_name: Option<String>,
+    pub copy_background: bool,
     pub bindings: Vec<SceneEffectBinding>,
 }
 
@@ -392,6 +393,7 @@ pub struct SceneEffectPlan {
     pub effect_package_root: PathBuf,
     pub version: Option<i64>,
     pub fbo_names: Vec<String>,
+    pub copy_background: bool,
     pub shader_dependencies: Vec<String>,
     pub dependency_lookups: Vec<SceneResourceLookup>,
     pub passes: Vec<SceneEffectPassPlan>,
@@ -673,6 +675,7 @@ fn load_scene_effect_plan_from_resolved_path(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
+        copy_background: json_declares_copy_background(&json),
         shader_dependencies,
         dependency_lookups,
         passes: passes
@@ -713,9 +716,16 @@ fn load_scene_effect_plan_from_resolved_path(
                     .get("target")
                     .and_then(Value::as_str)
                     .map(ToString::to_string),
+                copy_background: json_declares_copy_background(pass),
             })
             .collect(),
     })
+}
+
+fn json_declares_copy_background(value: &Value) -> bool {
+    ["copybackground", "copyBackground", "copy_background"]
+        .iter()
+        .any(|key| value.get(*key).and_then(Value::as_bool).unwrap_or(false))
 }
 
 pub fn inspect_scene_effect_dependency(
@@ -1483,10 +1493,12 @@ mod tests {
             &extracted.join("effects/blur.effect"),
             r#"{
               "version": 2,
+              "copybackground": true,
               "dependencies": ["shaders/fx/blur.frag", "shaders/fx/blur.vert"],
               "passes": [
                 {
                   "material": "materials/fx.material",
+                  "copyBackground": true,
                   "bind": [{"name":"input","index":0}]
                 }
               ]
@@ -1498,7 +1510,9 @@ mod tests {
         let plan = load_scene_effect_plan(&resolver, "effects/blur.effect").expect("effect plan");
 
         assert_eq!(plan.version, Some(2));
+        assert!(plan.copy_background);
         assert_eq!(plan.shader_dependencies.len(), 2);
+        assert!(plan.passes[0].copy_background);
         assert_eq!(plan.passes[0].bindings[0].name, "input");
         assert_eq!(
             plan.passes[0].material_path.as_deref(),

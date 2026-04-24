@@ -24,7 +24,7 @@ use crate::{
         },
         scene_render_graph_service::{
             build_scene_phase10_graph, ScenePhase10EffectPassNode, ScenePhase10GraphPlan,
-            ScenePhase10VisualPlan,
+            ScenePhase10InputSource, ScenePhase10VisualPlan,
         },
         scene_render_planner_service::{
             build_scene_render_plan_with_resolver, SceneClearColor, SceneRenderAudioItem,
@@ -1235,6 +1235,8 @@ struct NativeSceneMetalRenderer {
     text_texture_cache: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
     phase10_output_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
     phase10_scratch_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
+    phase10_named_target_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
+    phase10_background_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
     video_sources: BTreeMap<u32, NativeSceneVideoSource>,
     mdl_cache: BTreeMap<PathBuf, SceneMdlDocument>,
     compiled_shader_variants:
@@ -1333,6 +1335,8 @@ impl NativeSceneMetalRenderer {
             text_texture_cache: BTreeMap::new(),
             phase10_output_textures: BTreeMap::new(),
             phase10_scratch_textures: BTreeMap::new(),
+            phase10_named_target_textures: BTreeMap::new(),
+            phase10_background_textures: BTreeMap::new(),
 
             video_sources: BTreeMap::new(),
             mdl_cache: BTreeMap::new(),
@@ -1612,6 +1616,7 @@ impl NativeSceneMetalRenderer {
         let phase10_graph = self.phase10_graph.clone();
         let phase10_outputs = self.render_phase10_outputs(
             command_buffer,
+            plan,
             &phase10_graph,
             self.animation_time_seconds,
         );
@@ -1713,77 +1718,93 @@ impl NativeSceneMetalRenderer {
     fn render_phase10_outputs(
         &mut self,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        plan: &SceneRenderPlan,
         graph: &ScenePhase10GraphPlan,
         elapsed_seconds: f64,
     ) -> BTreeMap<u32, Retained<ProtocolObject<dyn MTLTexture>>> {
         let mut outputs = BTreeMap::new();
         let mut required_output_keys = BTreeSet::new();
         let mut required_scratch_keys = BTreeSet::new();
+        let mut required_named_target_keys = BTreeSet::new();
+        let mut required_background_keys = BTreeSet::new();
+        let phase10_visuals = graph
+            .visuals
+            .iter()
+            .map(|visual| (visual.object_id, visual))
+            .collect::<BTreeMap<_, _>>();
+        let mut rendered_ids = BTreeSet::new();
+        let mut previous_layers = Vec::<Phase10BackgroundLayer>::new();
+
+        for item in &plan.visuals {
+            if let Some(visual) = phase10_visuals.get(&item.object_id) {
+                if phase10_visual_requires_offscreen_chain(visual) {
+                    let background_snapshot = if phase10_visual_needs_background_snapshot(visual) {
+                        self.render_phase10_background_snapshot(
+                            command_buffer,
+                            visual,
+                            &previous_layers,
+                            &mut required_background_keys,
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(texture) = self.render_phase10_output_for_visual(
+                        command_buffer,
+                        visual,
+                        background_snapshot.as_ref(),
+                        elapsed_seconds,
+                        &mut required_output_keys,
+                        &mut required_scratch_keys,
+                        &mut required_named_target_keys,
+                    ) {
+                        previous_layers.push(Phase10BackgroundLayer {
+                            quad: visual.quad,
+                            blend_mode: visual.blend_mode,
+                            texture: texture.clone(),
+                        });
+                        outputs.insert(visual.object_id, texture);
+                    }
+                }
+                rendered_ids.insert(visual.object_id);
+                continue;
+            }
+
+            if let Some(layer) = self.phase10_background_layer_for_visual_item(item) {
+                previous_layers.push(layer);
+            }
+        }
 
         for visual in &graph.visuals {
-            if !phase10_visual_requires_offscreen_chain(visual) {
+            if rendered_ids.contains(&visual.object_id)
+                || !phase10_visual_requires_offscreen_chain(visual)
+            {
                 continue;
             }
-            let Some(mut current_texture) = self.phase10_base_texture_for_visual(visual) else {
-                continue;
-            };
-            let passes = phase10_visual_pass_chain(visual);
-            if passes.is_empty() {
-                continue;
-            }
-
-            let (width, height) = phase10_render_target_size(visual);
-            let output_key = phase10_output_texture_key(visual.object_id, width, height);
-            required_output_keys.insert(output_key.clone());
-            let Some(output_texture) =
-                self.ensure_phase10_render_target(&output_key, width, height, true)
-            else {
-                continue;
-            };
-
-            let mut completed = true;
-            for (index, resolved_pass) in passes.iter().enumerate() {
-                let is_last = index + 1 == passes.len();
-                let target = if is_last {
-                    output_texture.clone()
-                } else {
-                    let scratch_key = phase10_scratch_texture_key(width, height, index % 2);
-                    required_scratch_keys.insert(scratch_key.clone());
-                    let Some(scratch) =
-                        self.ensure_phase10_render_target(&scratch_key, width, height, false)
-                    else {
-                        completed = false;
-                        break;
-                    };
-                    scratch
-                };
-                let pass_textures =
-                    self.phase10_pass_textures_for(visual, resolved_pass, Some(&current_texture));
-                let uniforms = self.phase10_effect_uniforms_for_pass(
-                    resolved_pass,
-                    &pass_textures,
-                    width,
-                    height,
-                    elapsed_seconds,
-                );
-                let shader_defines = phase10_pass_shader_defines(resolved_pass);
-                if !self.encode_phase10_pass(
+            let background_snapshot = if phase10_visual_needs_background_snapshot(visual) {
+                self.render_phase10_background_snapshot(
                     command_buffer,
-                    &target.texture,
-                    resolved_pass.pass,
-                    &shader_defines,
-                    &pass_textures,
-                    &uniforms,
-                    Some(current_texture.texture.clone()),
-                ) {
-                    completed = false;
-                    break;
-                }
-                current_texture = target;
-            }
-
-            if completed {
-                outputs.insert(visual.object_id, current_texture.texture);
+                    visual,
+                    &previous_layers,
+                    &mut required_background_keys,
+                )
+            } else {
+                None
+            };
+            if let Some(texture) = self.render_phase10_output_for_visual(
+                command_buffer,
+                visual,
+                background_snapshot.as_ref(),
+                elapsed_seconds,
+                &mut required_output_keys,
+                &mut required_scratch_keys,
+                &mut required_named_target_keys,
+            ) {
+                previous_layers.push(Phase10BackgroundLayer {
+                    quad: visual.quad,
+                    blend_mode: visual.blend_mode,
+                    texture: texture.clone(),
+                });
+                outputs.insert(visual.object_id, texture);
             }
         }
 
@@ -1791,7 +1812,149 @@ impl NativeSceneMetalRenderer {
             .retain(|key, _| required_output_keys.contains(key));
         self.phase10_scratch_textures
             .retain(|key, _| required_scratch_keys.contains(key));
+        self.phase10_named_target_textures
+            .retain(|key, _| required_named_target_keys.contains(key));
+        self.phase10_background_textures
+            .retain(|key, _| required_background_keys.contains(key));
         outputs
+    }
+
+    fn render_phase10_output_for_visual(
+        &mut self,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        visual: &ScenePhase10VisualPlan,
+        background_snapshot: Option<&Phase10TextureHandle>,
+        elapsed_seconds: f64,
+        required_output_keys: &mut BTreeSet<String>,
+        required_scratch_keys: &mut BTreeSet<String>,
+        required_named_target_keys: &mut BTreeSet<String>,
+    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
+        let base_texture = self.phase10_base_texture_for_visual(visual)?;
+        let mut previous_texture = base_texture.clone();
+        let mut named_targets = BTreeMap::<String, Phase10TextureHandle>::new();
+        let passes = phase10_visual_pass_chain(visual);
+        if passes.is_empty() {
+            return None;
+        }
+
+        let (width, height) = phase10_render_target_size(visual);
+        let output_key = phase10_output_texture_key(visual.object_id, width, height);
+        required_output_keys.insert(output_key.clone());
+        let output_texture = self.ensure_phase10_output_target(&output_key, width, height)?;
+
+        for (index, resolved_pass) in passes.iter().enumerate() {
+            let target_name = phase10_resolved_pass_target_name(resolved_pass);
+            let is_last = index + 1 == passes.len();
+            let target = if let Some(target_name) = target_name {
+                let key =
+                    phase10_named_target_texture_key(visual.object_id, target_name, width, height);
+                required_named_target_keys.insert(key.clone());
+                self.ensure_phase10_named_target(&key, width, height)?
+            } else if is_last {
+                output_texture.clone()
+            } else {
+                let scratch_key = phase10_scratch_texture_key(width, height, index % 2);
+                required_scratch_keys.insert(scratch_key.clone());
+                self.ensure_phase10_scratch_target(&scratch_key, width, height)?
+            };
+
+            let input_scope = Phase10PassInputScope {
+                local_current: Some(&base_texture),
+                previous_pass: Some(&previous_texture),
+                background: background_snapshot,
+                copied_background: background_snapshot,
+                named_targets: &named_targets,
+            };
+            let pass_textures = self.phase10_pass_textures_for(visual, resolved_pass, &input_scope);
+            let uniforms = self.phase10_effect_uniforms_for_pass(
+                resolved_pass,
+                &pass_textures,
+                width,
+                height,
+                elapsed_seconds,
+            );
+            let shader_defines = phase10_pass_shader_defines(resolved_pass);
+            if !self.encode_phase10_pass(
+                command_buffer,
+                &target.texture,
+                resolved_pass.pass,
+                &shader_defines,
+                &pass_textures,
+                &uniforms,
+                input_scope
+                    .previous_pass
+                    .map(|texture| texture.texture.clone()),
+            ) {
+                return None;
+            }
+
+            previous_texture = target.clone();
+            if let Some(target_name) = target_name {
+                named_targets.insert(target_name.to_string(), target);
+            }
+        }
+
+        Some(previous_texture.texture)
+    }
+
+    fn phase10_background_layer_for_visual_item(
+        &mut self,
+        item: &SceneRenderVisualItem,
+    ) -> Option<Phase10BackgroundLayer> {
+        let texture = match item.source_kind {
+            SceneRenderSourceKind::Image => self
+                .texture_cache
+                .get(&visual_texture_cache_key(item))
+                .cloned(),
+            SceneRenderSourceKind::Video => self.video_texture_for_item(item),
+        }?;
+        Some(Phase10BackgroundLayer {
+            quad: item.quad,
+            blend_mode: item.blend_mode,
+            texture,
+        })
+    }
+
+    fn render_phase10_background_snapshot(
+        &mut self,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        visual: &ScenePhase10VisualPlan,
+        layers: &[Phase10BackgroundLayer],
+        required_background_keys: &mut BTreeSet<String>,
+    ) -> Option<Phase10TextureHandle> {
+        let (width, height) = phase10_render_target_size(visual);
+        let key = phase10_background_texture_key(visual.object_id, width, height);
+        required_background_keys.insert(key.clone());
+        let target = self.ensure_phase10_background_target(&key, width, height)?;
+
+        let descriptor = MTLRenderPassDescriptor::new();
+        unsafe {
+            let attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
+            attachment.setTexture(Some(target.texture.as_ref()));
+            attachment.setLoadAction(MTLLoadAction::Clear);
+            attachment.setStoreAction(MTLStoreAction::Store);
+            attachment.setClearColor(objc2_metal::MTLClearColor {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 0.0,
+            });
+        }
+        let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(&descriptor) else {
+            return None;
+        };
+        let projection = phase10_local_background_projection(visual, width, height);
+        for layer in layers {
+            self.draw_quad(
+                &encoder,
+                layer.texture.as_ref(),
+                layer.blend_mode,
+                &projection,
+                quad_primitive_from_render_quad(layer.quad, SceneRenderColor::default()),
+            );
+        }
+        encoder.endEncoding();
+        Some(target)
     }
 
     fn prepare_phase10_graph(
@@ -1809,6 +1972,8 @@ impl NativeSceneMetalRenderer {
         let mut required_shader_variants = BTreeSet::new();
         let mut required_output_keys = BTreeSet::new();
         let mut required_scratch_keys = BTreeSet::new();
+        let mut required_named_target_keys = BTreeSet::new();
+        let mut required_background_keys = BTreeSet::new();
 
         self.mdl_cache
             .retain(|path, _| required_models.contains(path));
@@ -1838,6 +2003,23 @@ impl NativeSceneMetalRenderer {
                 if passes.len() > 1 {
                     required_scratch_keys.insert(phase10_scratch_texture_key(width, height, 0));
                     required_scratch_keys.insert(phase10_scratch_texture_key(width, height, 1));
+                }
+                if phase10_visual_needs_background_snapshot(visual) {
+                    required_background_keys.insert(phase10_background_texture_key(
+                        visual.object_id,
+                        width,
+                        height,
+                    ));
+                }
+                for resolved_pass in &passes {
+                    if let Some(target_name) = phase10_resolved_pass_target_name(resolved_pass) {
+                        required_named_target_keys.insert(phase10_named_target_texture_key(
+                            visual.object_id,
+                            target_name,
+                            width,
+                            height,
+                        ));
+                    }
                 }
             }
             if passes.is_empty() {
@@ -1908,6 +2090,10 @@ impl NativeSceneMetalRenderer {
             .retain(|key, _| required_output_keys.contains(key));
         self.phase10_scratch_textures
             .retain(|key, _| required_scratch_keys.contains(key));
+        self.phase10_named_target_textures
+            .retain(|key, _| required_named_target_keys.contains(key));
+        self.phase10_background_textures
+            .retain(|key, _| required_background_keys.contains(key));
 
         Ok((
             ScenePhase10GraphPlan {
@@ -2112,9 +2298,17 @@ impl NativeSceneMetalRenderer {
                 return;
             }
             let base_texture = self.phase10_base_texture_for_visual(visual);
+            let named_targets = BTreeMap::new();
             for resolved_pass in &passes {
+                let input_scope = Phase10PassInputScope {
+                    local_current: base_texture.as_ref(),
+                    previous_pass: base_texture.as_ref(),
+                    background: None,
+                    copied_background: None,
+                    named_targets: &named_targets,
+                };
                 let pass_textures =
-                    self.phase10_pass_textures_for(visual, resolved_pass, base_texture.as_ref());
+                    self.phase10_pass_textures_for(visual, resolved_pass, &input_scope);
                 if pass_textures
                     .slots
                     .first()
@@ -2216,7 +2410,7 @@ impl NativeSceneMetalRenderer {
         &self,
         visual: &ScenePhase10VisualPlan,
         resolved_pass: &Phase10ResolvedPass<'_>,
-        current_texture: Option<&Phase10TextureHandle>,
+        input_scope: &Phase10PassInputScope<'_>,
     ) -> Phase10PassTextures {
         let mut slots = BTreeMap::<usize, Phase10TextureHandle>::new();
 
@@ -2232,18 +2426,18 @@ impl NativeSceneMetalRenderer {
                     };
                     slots.insert(binding.slot_index, texture);
                 }
-                if let Some(texture) = current_texture {
+                if let Some(texture) = input_scope.local_current {
                     slots.entry(0).or_insert(texture.clone());
                 }
             }
             Phase10PassContext::Effect(effect_pass) => {
-                for (slot, source) in phase10_effect_texture_slot_plan(
-                    &resolved_pass.pass.textures,
-                    effect_pass,
-                    current_texture.is_some(),
-                ) {
+                for (slot, source) in
+                    phase10_effect_texture_slot_plan(&resolved_pass.pass.textures, effect_pass)
+                {
                     let texture = match source {
-                        Phase10EffectTextureSource::CurrentInput => current_texture.cloned(),
+                        Phase10EffectTextureSource::GraphInput(input_source) => {
+                            input_scope.texture_for(&input_source)
+                        }
                         Phase10EffectTextureSource::MaterialSlot(binding_slot) => resolved_pass
                             .pass
                             .textures
@@ -2482,41 +2676,64 @@ impl NativeSceneMetalRenderer {
         true
     }
 
-    fn ensure_phase10_render_target(
+    fn ensure_phase10_output_target(
         &mut self,
         key: &str,
         width: usize,
         height: usize,
-        output: bool,
     ) -> Option<Phase10TextureHandle> {
-        let store = if output {
-            &mut self.phase10_output_textures
-        } else {
-            &mut self.phase10_scratch_textures
-        };
-        if let Some(texture) = store.get(key) {
-            return Some(Phase10TextureHandle {
-                texture: texture.clone(),
-                metrics: phase10_texture_metrics_from_size(width, height),
-            });
-        }
-        let descriptor = unsafe {
-            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                MTLPixelFormat::BGRA8Unorm,
-                width.max(1),
-                height.max(1),
-                false,
-            )
-        };
-        descriptor.setTextureType(MTLTextureType::Type2D);
-        descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
-        descriptor.setStorageMode(MTLStorageMode::Private);
-        let texture = self.device.newTextureWithDescriptor(&descriptor)?;
-        store.insert(key.to_string(), texture.clone());
-        Some(Phase10TextureHandle {
-            texture,
-            metrics: phase10_texture_metrics_from_size(width, height),
-        })
+        ensure_phase10_render_target_in_store(
+            self.device.as_ref(),
+            &mut self.phase10_output_textures,
+            key,
+            width,
+            height,
+        )
+    }
+
+    fn ensure_phase10_scratch_target(
+        &mut self,
+        key: &str,
+        width: usize,
+        height: usize,
+    ) -> Option<Phase10TextureHandle> {
+        ensure_phase10_render_target_in_store(
+            self.device.as_ref(),
+            &mut self.phase10_scratch_textures,
+            key,
+            width,
+            height,
+        )
+    }
+
+    fn ensure_phase10_named_target(
+        &mut self,
+        key: &str,
+        width: usize,
+        height: usize,
+    ) -> Option<Phase10TextureHandle> {
+        ensure_phase10_render_target_in_store(
+            self.device.as_ref(),
+            &mut self.phase10_named_target_textures,
+            key,
+            width,
+            height,
+        )
+    }
+
+    fn ensure_phase10_background_target(
+        &mut self,
+        key: &str,
+        width: usize,
+        height: usize,
+    ) -> Option<Phase10TextureHandle> {
+        ensure_phase10_render_target_in_store(
+            self.device.as_ref(),
+            &mut self.phase10_background_textures,
+            key,
+            width,
+            height,
+        )
     }
 
     fn draw_phase10_fullscreen_texture(
@@ -3100,6 +3317,48 @@ fn phase10_render_target_size(visual: &ScenePhase10VisualPlan) -> (usize, usize)
 }
 
 #[cfg(target_os = "macos")]
+fn phase10_visual_needs_background_snapshot(visual: &ScenePhase10VisualPlan) -> bool {
+    visual.effect_chain.iter().any(|effect| {
+        effect.passes.iter().any(|pass| {
+            pass.copy_background
+                || pass.input_bindings.iter().any(|binding| {
+                    matches!(
+                        binding.source,
+                        ScenePhase10InputSource::Background
+                            | ScenePhase10InputSource::CopiedBackground
+                    )
+                })
+        })
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_resolved_pass_target_name<'a>(
+    resolved_pass: &'a Phase10ResolvedPass<'_>,
+) -> Option<&'a str> {
+    match resolved_pass.context {
+        Phase10PassContext::Effect(effect_pass) => effect_pass.target_name.as_deref(),
+        Phase10PassContext::Base => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_local_background_projection(
+    visual: &ScenePhase10VisualPlan,
+    width: usize,
+    height: usize,
+) -> SceneProjection {
+    SceneProjection {
+        scene_origin_x: -visual.quad.left,
+        scene_origin_y: -visual.quad.top,
+        scene_canvas_height: visual.quad.height.abs().max(1.0),
+        camera_scale: 1.0,
+        view_width: width.max(1) as f64,
+        view_height: height.max(1) as f64,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn phase10_fullscreen_vertices(tint: SceneRenderColor) -> [SceneVertex; 6] {
     let color = color_to_shader(tint);
     [
@@ -3161,9 +3420,24 @@ fn phase10_scratch_texture_key(width: usize, height: usize, slot: usize) -> Stri
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+fn phase10_named_target_texture_key(
+    object_id: u32,
+    target_name: &str,
+    width: usize,
+    height: usize,
+) -> String {
+    format!("phase10:named:{object_id}:{target_name}:{width}x{height}")
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_background_texture_key(object_id: u32, width: usize, height: usize) -> String {
+    format!("phase10:background:{object_id}:{width}x{height}")
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase10EffectTextureSource {
-    CurrentInput,
+    GraphInput(ScenePhase10InputSource),
     MaterialSlot(usize),
     OverrideSlot(usize),
 }
@@ -3172,14 +3446,16 @@ enum Phase10EffectTextureSource {
 fn phase10_effect_texture_slot_plan(
     material_textures: &[SceneMaterialTextureBinding],
     effect_pass: &ScenePhase10EffectPassNode,
-    current_texture_bound: bool,
 ) -> BTreeMap<usize, Phase10EffectTextureSource> {
     let mut slots = BTreeMap::new();
-    if current_texture_bound {
-        slots.insert(0, Phase10EffectTextureSource::CurrentInput);
+    for binding in &effect_pass.input_bindings {
+        slots.insert(
+            binding.slot,
+            Phase10EffectTextureSource::GraphInput(binding.source.clone()),
+        );
     }
     for binding in material_textures {
-        if binding.texture_name.is_some() {
+        if binding.texture_name.is_some() && binding.resolved_path.is_some() {
             slots.insert(
                 binding.slot_index,
                 Phase10EffectTextureSource::MaterialSlot(binding.slot_index),
@@ -3211,8 +3487,7 @@ fn phase10_pass_shader_defines(resolved_pass: &Phase10ResolvedPass<'_>) -> BTree
         defines.insert(name.clone(), *value);
     }
     if let Phase10PassContext::Effect(effect_pass) = resolved_pass.context {
-        let slot_plan =
-            phase10_effect_texture_slot_plan(&resolved_pass.pass.textures, effect_pass, true);
+        let slot_plan = phase10_effect_texture_slot_plan(&resolved_pass.pass.textures, effect_pass);
         for slot_contract in contract.runtime_binding_layout {
             if !slot_plan.contains_key(&slot_contract.slot) {
                 continue;
@@ -3420,6 +3695,37 @@ struct Phase10PassTextures {
 }
 
 #[cfg(target_os = "macos")]
+struct Phase10PassInputScope<'a> {
+    local_current: Option<&'a Phase10TextureHandle>,
+    previous_pass: Option<&'a Phase10TextureHandle>,
+    background: Option<&'a Phase10TextureHandle>,
+    copied_background: Option<&'a Phase10TextureHandle>,
+    named_targets: &'a BTreeMap<String, Phase10TextureHandle>,
+}
+
+#[cfg(target_os = "macos")]
+impl Phase10PassInputScope<'_> {
+    fn texture_for(&self, source: &ScenePhase10InputSource) -> Option<Phase10TextureHandle> {
+        match source {
+            ScenePhase10InputSource::LocalCurrentVisual => self.local_current.cloned(),
+            ScenePhase10InputSource::PreviousPass => self.previous_pass.cloned(),
+            ScenePhase10InputSource::Background => self.background.cloned(),
+            ScenePhase10InputSource::CopiedBackground => self.copied_background.cloned(),
+            ScenePhase10InputSource::NamedTarget(target_name) => {
+                self.named_targets.get(target_name).cloned()
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct Phase10BackgroundLayer {
+    quad: SceneRenderQuad,
+    blend_mode: SceneRenderBlendMode,
+    texture: Retained<ProtocolObject<dyn MTLTexture>>,
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 enum Phase10PassContext<'a> {
     Base,
@@ -3507,6 +3813,39 @@ fn phase10_texture_metrics_from_texture(
     texture: &ProtocolObject<dyn MTLTexture>,
 ) -> Phase10TextureMetrics {
     phase10_texture_metrics_from_size(texture.width(), texture.height())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_phase10_render_target_in_store(
+    device: &ProtocolObject<dyn MTLDevice>,
+    store: &mut BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
+    key: &str,
+    width: usize,
+    height: usize,
+) -> Option<Phase10TextureHandle> {
+    if let Some(texture) = store.get(key) {
+        return Some(Phase10TextureHandle {
+            texture: texture.clone(),
+            metrics: phase10_texture_metrics_from_size(width, height),
+        });
+    }
+    let descriptor = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::BGRA8Unorm,
+            width.max(1),
+            height.max(1),
+            false,
+        )
+    };
+    descriptor.setTextureType(MTLTextureType::Type2D);
+    descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
+    descriptor.setStorageMode(MTLStorageMode::Private);
+    let texture = device.newTextureWithDescriptor(&descriptor)?;
+    store.insert(key.to_string(), texture.clone());
+    Some(Phase10TextureHandle {
+        texture,
+        metrics: phase10_texture_metrics_from_size(width, height),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -4907,6 +5246,8 @@ mod tests {
         INPUT_SNAPSHOT_UNAVAILABLE_CODE,
     };
     #[cfg(target_os = "macos")]
+    use crate::services::scene_render_graph_service::ScenePhase10InputBinding;
+    #[cfg(target_os = "macos")]
     use crate::services::scene_render_planner_service::SceneTextVerticalAlign;
     use crate::services::scene_shader_material_service::{
         SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
@@ -5997,6 +6338,12 @@ mod tests {
         let pass = super::ScenePhase10EffectPassNode {
             index: 0,
             bindings: vec![],
+            target_name: None,
+            copy_background: false,
+            input_bindings: vec![ScenePhase10InputBinding {
+                slot: 0,
+                source: super::ScenePhase10InputSource::LocalCurrentVisual,
+            }],
             constants: BTreeMap::new(),
             texture_overrides: vec![None, None, None, Some(PathBuf::from("/tmp/mask-b.png"))],
             material_passes: vec![],
@@ -6009,9 +6356,14 @@ mod tests {
         }];
 
         assert_eq!(
-            super::phase10_effect_texture_slot_plan(&material_textures, &pass, true),
+            super::phase10_effect_texture_slot_plan(&material_textures, &pass),
             BTreeMap::from([
-                (0, super::Phase10EffectTextureSource::CurrentInput),
+                (
+                    0,
+                    super::Phase10EffectTextureSource::GraphInput(
+                        super::ScenePhase10InputSource::LocalCurrentVisual
+                    )
+                ),
                 (2, super::Phase10EffectTextureSource::MaterialSlot(2)),
                 (3, super::Phase10EffectTextureSource::OverrideSlot(3)),
             ])
@@ -6024,16 +6376,80 @@ mod tests {
         let pass = super::ScenePhase10EffectPassNode {
             index: 0,
             bindings: vec![],
+            target_name: None,
+            copy_background: false,
+            input_bindings: vec![ScenePhase10InputBinding {
+                slot: 0,
+                source: super::ScenePhase10InputSource::LocalCurrentVisual,
+            }],
             constants: BTreeMap::new(),
             texture_overrides: vec![None, None, Some(PathBuf::from("/tmp/mask.png"))],
             material_passes: vec![],
         };
 
         assert_eq!(
-            super::phase10_effect_texture_slot_plan(&[], &pass, true),
+            super::phase10_effect_texture_slot_plan(&[], &pass),
             BTreeMap::from([
-                (0, super::Phase10EffectTextureSource::CurrentInput),
+                (
+                    0,
+                    super::Phase10EffectTextureSource::GraphInput(
+                        super::ScenePhase10InputSource::LocalCurrentVisual
+                    )
+                ),
                 (2, super::Phase10EffectTextureSource::OverrideSlot(2)),
+            ])
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_effect_texture_slot_plan_preserves_graph_input_source_scope() {
+        let pass = super::ScenePhase10EffectPassNode {
+            index: 1,
+            bindings: vec![],
+            target_name: None,
+            copy_background: true,
+            input_bindings: vec![
+                ScenePhase10InputBinding {
+                    slot: 0,
+                    source: super::ScenePhase10InputSource::CopiedBackground,
+                },
+                ScenePhase10InputBinding {
+                    slot: 1,
+                    source: super::ScenePhase10InputSource::Background,
+                },
+                ScenePhase10InputBinding {
+                    slot: 2,
+                    source: super::ScenePhase10InputSource::NamedTarget("scratch".to_string()),
+                },
+            ],
+            constants: BTreeMap::new(),
+            texture_overrides: vec![None, None, None, Some(PathBuf::from("/tmp/mask.png"))],
+            material_passes: vec![],
+        };
+
+        assert_eq!(
+            super::phase10_effect_texture_slot_plan(&[], &pass),
+            BTreeMap::from([
+                (
+                    0,
+                    super::Phase10EffectTextureSource::GraphInput(
+                        super::ScenePhase10InputSource::CopiedBackground
+                    )
+                ),
+                (
+                    1,
+                    super::Phase10EffectTextureSource::GraphInput(
+                        super::ScenePhase10InputSource::Background
+                    )
+                ),
+                (
+                    2,
+                    super::Phase10EffectTextureSource::GraphInput(
+                        super::ScenePhase10InputSource::NamedTarget("scratch".to_string())
+                    )
+                ),
+                (3, super::Phase10EffectTextureSource::OverrideSlot(3)),
             ])
         );
     }
@@ -6054,6 +6470,12 @@ mod tests {
         let pulse_runtime = super::ScenePhase10EffectPassNode {
             index: 0,
             bindings: vec![],
+            target_name: None,
+            copy_background: false,
+            input_bindings: vec![ScenePhase10InputBinding {
+                slot: 0,
+                source: super::ScenePhase10InputSource::LocalCurrentVisual,
+            }],
             constants: BTreeMap::new(),
             texture_overrides: vec![],
             material_passes: vec![],
@@ -6074,6 +6496,12 @@ mod tests {
         let shake_runtime = super::ScenePhase10EffectPassNode {
             index: 0,
             bindings: vec![],
+            target_name: None,
+            copy_background: false,
+            input_bindings: vec![ScenePhase10InputBinding {
+                slot: 0,
+                source: super::ScenePhase10InputSource::LocalCurrentVisual,
+            }],
             constants: BTreeMap::new(),
             texture_overrides: vec![None, None, Some(PathBuf::from("/tmp/timeoffset.png"))],
             material_passes: vec![],
@@ -6085,6 +6513,28 @@ mod tests {
         let shake_defines = super::phase10_pass_shader_defines(&shake_resolved);
         assert_eq!(shake_defines.get("TIMEOFFSET"), Some(&1));
         assert_eq!(shake_defines.get("NOISE"), Some(&1));
+
+        let waterwaves_pass =
+            compat_effect_pass(SceneCompatEffectKind::WaterWaves, vec![], BTreeMap::new());
+        let waterwaves_runtime = super::ScenePhase10EffectPassNode {
+            index: 0,
+            bindings: vec![],
+            target_name: None,
+            copy_background: false,
+            input_bindings: vec![ScenePhase10InputBinding {
+                slot: 0,
+                source: super::ScenePhase10InputSource::LocalCurrentVisual,
+            }],
+            constants: BTreeMap::new(),
+            texture_overrides: vec![None, Some(PathBuf::from("/tmp/waterwaves-mask.png"))],
+            material_passes: vec![],
+        };
+        let waterwaves_resolved = super::Phase10ResolvedPass {
+            pass: &waterwaves_pass,
+            context: super::Phase10PassContext::Effect(&waterwaves_runtime),
+        };
+        let waterwaves_defines = super::phase10_pass_shader_defines(&waterwaves_resolved);
+        assert_eq!(waterwaves_defines.get("MASK"), Some(&1));
     }
 
     #[cfg(target_os = "macos")]
