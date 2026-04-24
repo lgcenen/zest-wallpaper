@@ -145,16 +145,33 @@ fragment float4 phase10_effect_fragment(
     float4 sampled = sample_input(input_texture, texture_sampler, uv);
 
 #if PHASE10_EFFECT_PULSE
+    float4 original = sampled;
+    float thresholds_low = uniforms.user0.z;
+    float thresholds_high = uniforms.user0.w;
+    if (abs(thresholds_high - thresholds_low) <= 0.0001) {
+        thresholds_low = 0.0;
+        thresholds_high = 1.0;
+    }
     float phase = uniforms.user0.x;
-    float power = uniforms.user0.y == 0.0 ? 1.0 : max(abs(uniforms.user0.y), 0.001);
-    float pulse = sin(uniforms.time * max(uniforms.speed, 0.001) + (phase - 0.25) * 6.28318530718) * 0.5 + 0.5;
-    pulse = pow(clamp(pulse, 0.0, 1.0), power) * max(uniforms.intensity, 0.0);
+    float power = max(abs(uniforms.user0.y), 0.001);
+    float wave = sin(uniforms.time * max(uniforms.speed, 0.001) + (phase - 0.25) * 6.28318530718) * 0.5 + 0.5;
+    float pulse = smoothstep(thresholds_low, thresholds_high, wave) * max(uniforms.intensity, 0.0);
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        float2 noise_uv = fract(float2(uniforms.time * 0.08333333, uniforms.time * 0.02777777) * max(uniforms.radius, 0.0));
+        float noise = aux_texture.sample(texture_sampler, noise_uv).r * uniforms.angle;
+        pulse += noise;
+    }
+    pulse = pow(max(pulse, 0.0), power);
 #if PULSEALPHA
     sampled.a *= clamp(pulse, 0.0, 1.0);
 #endif
 #if PULSECOLOR
-    if (any(abs(uniforms.color.rgb - float3(1.0)) > float3(0.001))) {
-        sampled.rgb = apply_tint_blend(sampled.rgb, uniforms.color.rgb, pulse);
+    sampled.rgb = apply_tint_blend(sampled.rgb * uniforms.color.rgb, sampled.rgb * uniforms.user1.rgb, pulse);
+#endif
+#if MASK
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        float mask = aux2_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r;
+        sampled = mix(original, sampled, mask);
     }
 #endif
 #elif PHASE10_EFFECT_SHAKE
@@ -189,13 +206,36 @@ fragment float4 phase10_effect_fragment(
         sampled = shaken;
     }
 #elif PHASE10_EFFECT_WATERRIPPLE
+    float mask = 1.0;
+#if MASK
     if (has_aux_texture(uniforms.aux_texel_size)) {
-        float2 ripple_uv = uv + float2(uniforms.time * uniforms.speed * 0.05, -uniforms.time * uniforms.speed * 0.03);
-        float2 ripple = aux_texture.sample(texture_sampler, fract(ripple_uv)).rg * 2.0 - 1.0;
+        mask = aux_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        float animation = uniforms.time * uniforms.speed * uniforms.speed;
+        float scroll_speed = uniforms.user0.x;
+        float ratio = max(abs(uniforms.user0.y), 0.01);
+        float scale = max(abs(uniforms.radius), 0.01);
+        float2 scroll = rotate2d(float2(0.0, 1.0), uniforms.angle) * scroll_speed * scroll_speed * uniforms.time;
+        float ripple_texture_adjustment = uniforms.texel_size.x > 0.0
+            ? uniforms.texel_size.y / uniforms.texel_size.x
+            : 1.0;
+
+        float4 ripple_uv = float4(uv, uv * 1.333);
+        ripple_uv.xy = ripple_uv.xy + animation + scroll;
+        ripple_uv.zw = ripple_uv.zw - animation + scroll;
+        ripple_uv *= scale;
+        ripple_uv.xz *= ripple_texture_adjustment;
+        ripple_uv.yw *= ratio;
+
+        float3 n1 = aux2_texture.sample(texture_sampler, fract(ripple_uv.xy)).xyz * 2.0 - 1.0;
+        float3 n2 = aux2_texture.sample(texture_sampler, fract(ripple_uv.zw)).xyz * 2.0 - 1.0;
+        float3 normal = normalize(float3(n1.xy + n2.xy, max(n1.z, 0.0001)));
         sampled = sample_input(
             input_texture,
             texture_sampler,
-            uv + ripple * uniforms.intensity * max(uniforms.texel_size, float2(0.0001))
+            uv + normal.xy * uniforms.intensity * uniforms.intensity * mask
         );
     }
 #elif PHASE10_EFFECT_WATERWAVES
@@ -207,7 +247,13 @@ fragment float4 phase10_effect_fragment(
     direction = normalize(direction);
     float scale = uniforms.user0.z == 0.0 ? 200.0 : max(abs(uniforms.user0.z), 0.01);
     float exponent = uniforms.user0.w == 0.0 ? 1.0 : max(abs(uniforms.user0.w), 0.51);
-    float distance = uniforms.time * max(uniforms.speed, 0.001) + dot(uv, direction) * scale;
+    float time_offset = 0.0;
+#if TIMEOFFSET
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        time_offset = aux2_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r * 1.57079632679;
+    }
+#endif
+    float distance = (uniforms.time + time_offset) * max(uniforms.speed, 0.001) + dot(uv, direction) * scale;
     float wave = sin(distance);
     float signed_wave = sign(wave) * pow(abs(wave), exponent);
     float strength = max(uniforms.intensity, 0.0);
@@ -217,32 +263,18 @@ fragment float4 phase10_effect_fragment(
     float4 displaced = sample_input(input_texture, texture_sampler, uv + offset);
     float coverage = smoothstep(0.02, 0.15, sampled.a);
     sampled = mix(sampled, displaced, coverage);
-#elif PHASE10_EFFECT_BLUR
-    float2 step_xy = max(uniforms.texel_size * max(uniforms.radius, 1.0), float2(0.0001));
-    sampled =
-        sample_input(input_texture, texture_sampler, uv) * 0.28 +
-        sample_input(input_texture, texture_sampler, uv + float2(step_xy.x, 0.0)) * 0.18 +
-        sample_input(input_texture, texture_sampler, uv - float2(step_xy.x, 0.0)) * 0.18 +
-        sample_input(input_texture, texture_sampler, uv + float2(0.0, step_xy.y)) * 0.18 +
-        sample_input(input_texture, texture_sampler, uv - float2(0.0, step_xy.y)) * 0.18;
 #elif PHASE10_EFFECT_TINT
     float mask = aux_red_mask(aux_texture, texture_sampler, uv, uniforms.aux_texel_size);
     float strength = clamp(uniforms.intensity * mask, 0.0, 1.0);
     sampled.rgb = apply_tint_blend(sampled.rgb, uniforms.color.rgb, strength);
 #elif PHASE10_EFFECT_SCROLL
-    float2 direction = uniforms.user0.xy;
-    if (length(direction) < 0.0001) {
-        direction = float2(1.0, 0.0);
-    }
+    float2 scroll_speed = uniforms.user0.xy;
+    float2 repeat = max(abs(uniforms.user0.zw), float2(0.01));
+    float2 signed_scroll = sign(scroll_speed) * pow(abs(scroll_speed), float2(2.0)) * uniforms.time;
     sampled = input_texture.sample(
         texture_sampler,
-        fract(uv + direction * uniforms.speed * uniforms.time * 0.05)
+        fract((uv + signed_scroll) * repeat)
     );
-#elif PHASE10_EFFECT_SHINE
-    float2 rotated = rotate2d(uv - 0.5, uniforms.angle);
-    float band = abs(rotated.x - fract(uniforms.time * uniforms.speed * 0.2) + 0.5);
-    float highlight = smoothstep(uniforms.radius, 0.0, band) * uniforms.intensity;
-    sampled.rgb += uniforms.color.rgb * highlight;
 #endif
 
     sampled *= stage_vertex.color;

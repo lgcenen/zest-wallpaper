@@ -35,8 +35,9 @@ use crate::{
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
         scene_runtime_settings_service,
         scene_shader_material_service::{
-            load_shader_program_source, merged_shader_defines, SceneCompatEffectKind,
-            SceneMaterialPassPlan, SceneShaderProgram, SceneShaderProgramKind,
+            load_shader_program_source, merged_shader_defines, phase10b_effect_contract_for_kind,
+            SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
+            SceneMaterialUniformValue, SceneShaderProgram, SceneShaderProgramKind,
         },
         window_service,
     },
@@ -1754,17 +1755,18 @@ impl NativeSceneMetalRenderer {
                 let pass_textures =
                     self.phase10_pass_textures_for(visual, resolved_pass, Some(&current_texture));
                 let uniforms = self.phase10_effect_uniforms_for_pass(
-                    visual,
                     resolved_pass,
                     &pass_textures,
                     width,
                     height,
                     elapsed_seconds,
                 );
+                let shader_defines = phase10_pass_shader_defines(resolved_pass);
                 if !self.encode_phase10_pass(
                     command_buffer,
                     &target,
                     resolved_pass.pass,
+                    &shader_defines,
                     &pass_textures,
                     &uniforms,
                     Some(current_texture.clone()),
@@ -1847,16 +1849,17 @@ impl NativeSceneMetalRenderer {
             } else {
                 let mut shader_failed = false;
                 for resolved_pass in &passes {
+                    let shader_defines = phase10_pass_shader_defines(resolved_pass);
                     let variant_key = phase10_shader_variant_key(
                         &resolved_pass.pass.program,
-                        &resolved_pass.pass.combos,
+                        &shader_defines,
                         resolved_pass.pass.blend_mode,
                     );
                     required_shader_variants.insert(variant_key.clone());
                     if !self.compiled_shader_variants.contains_key(&variant_key) {
                         match self.compile_phase10_shader_variant(
                             &resolved_pass.pass.program,
-                            &resolved_pass.pass.combos,
+                            &shader_defines,
                             resolved_pass.pass.blend_mode,
                         ) {
                             Ok(pipeline) => {
@@ -2110,19 +2113,20 @@ impl NativeSceneMetalRenderer {
                     continue;
                 }
                 let uniforms = self.phase10_effect_uniforms_for_pass(
-                    visual,
                     resolved_pass,
                     &pass_textures,
                     phase10_render_target_size(visual).0,
                     phase10_render_target_size(visual).1,
                     elapsed_seconds,
                 );
+                let shader_defines = phase10_pass_shader_defines(resolved_pass);
                 self.draw_phase10_mesh(
                     encoder,
                     projection,
                     visual,
                     &mesh_frame,
                     resolved_pass.pass,
+                    &shader_defines,
                     &pass_textures,
                     &uniforms,
                 );
@@ -2192,80 +2196,47 @@ impl NativeSceneMetalRenderer {
         current_texture: Option<&Retained<ProtocolObject<dyn MTLTexture>>>,
     ) -> Phase10PassTextures {
         let mut slots = BTreeMap::<usize, Retained<ProtocolObject<dyn MTLTexture>>>::new();
-        let material_textures = resolved_pass
-            .pass
-            .textures
-            .iter()
-            .filter_map(|binding| binding.resolved_path.as_deref())
-            .filter_map(|path| self.phase10_texture_for_path(path))
-            .collect::<Vec<_>>();
 
         match resolved_pass.context {
             Phase10PassContext::Base => {
-                let use_current_as_primary = current_texture.is_some()
-                    && (material_textures.is_empty()
-                        || !matches!(
-                            resolved_pass.pass.program.kind,
-                            SceneShaderProgramKind::Sprite
-                        ));
-                if use_current_as_primary {
-                    if let Some(texture) = current_texture {
-                        slots.insert(0, texture.clone());
-                    }
-                    for (index, texture) in material_textures.into_iter().enumerate() {
-                        slots.entry(index + 1).or_insert(texture);
-                    }
-                } else {
-                    for (index, texture) in material_textures.into_iter().enumerate() {
-                        slots.entry(index).or_insert(texture);
-                    }
-                    if let Some(texture) = current_texture {
-                        let next_slot = slots.keys().next_back().map(|slot| slot + 1).unwrap_or(0);
-                        slots.entry(next_slot).or_insert(texture.clone());
-                    }
+                for binding in &resolved_pass.pass.textures {
+                    let Some(texture) = binding
+                        .resolved_path
+                        .as_deref()
+                        .and_then(|path| self.phase10_texture_for_path(path))
+                    else {
+                        continue;
+                    };
+                    slots.insert(binding.slot_index, texture);
+                }
+                if let Some(texture) = current_texture {
+                    slots.entry(0).or_insert(texture.clone());
                 }
             }
             Phase10PassContext::Effect(effect_pass) => {
-                if let Some(texture) = current_texture {
-                    slots.insert(0, texture.clone());
-                }
-                for binding in &effect_pass.bindings {
-                    let slot = phase10_effect_binding_slot(&binding.name, binding.index);
-                    let binding_texture = effect_pass
-                        .texture_overrides
-                        .get(binding.index)
-                        .and_then(|path| path.as_deref())
-                        .and_then(|path| self.phase10_texture_for_path(path))
-                        .or_else(|| {
-                            if phase10_effect_binding_prefers_previous(&binding.name) {
-                                current_texture.cloned()
-                            } else {
-                                None
-                            }
-                        });
-                    if let Some(texture) = binding_texture {
-                        slots.insert(slot, texture);
-                    }
-                }
-                for (override_index, slot) in
-                    phase10_effect_unbound_override_slots(effect_pass, current_texture.is_some())
-                {
-                    let texture = effect_pass
-                        .texture_overrides
-                        .get(override_index)
-                        .and_then(|path| path.as_deref())
-                        .and_then(|path| self.phase10_texture_for_path(path));
+                for (slot, source) in phase10_effect_texture_slot_plan(
+                    &resolved_pass.pass.textures,
+                    effect_pass,
+                    current_texture.is_some(),
+                ) {
+                    let texture = match source {
+                        Phase10EffectTextureSource::CurrentInput => current_texture.cloned(),
+                        Phase10EffectTextureSource::MaterialSlot(binding_slot) => resolved_pass
+                            .pass
+                            .textures
+                            .iter()
+                            .find(|binding| binding.slot_index == binding_slot)
+                            .and_then(|binding| binding.resolved_path.as_deref())
+                            .and_then(|path| self.phase10_texture_for_path(path)),
+                        Phase10EffectTextureSource::OverrideSlot(override_slot) => effect_pass
+                            .texture_overrides
+                            .get(override_slot)
+                            .and_then(|path| path.as_deref())
+                            .and_then(|path| self.phase10_texture_for_path(path)),
+                    };
                     if let Some(texture) = texture {
                         slots.insert(slot, texture);
                     }
-                }
-                let mut aux_slot = usize::from(current_texture.is_some());
-                for texture in material_textures {
-                    while slots.contains_key(&aux_slot) {
-                        aux_slot += 1;
-                    }
-                    slots.insert(aux_slot, texture);
-                    aux_slot += 1;
                 }
             }
         }
@@ -2292,7 +2263,6 @@ impl NativeSceneMetalRenderer {
 
     fn phase10_effect_uniforms_for_pass(
         &self,
-        visual: &ScenePhase10VisualPlan,
         resolved_pass: &Phase10ResolvedPass<'_>,
         pass_textures: &Phase10PassTextures,
         width: usize,
@@ -2323,155 +2293,89 @@ impl NativeSceneMetalRenderer {
             radius: 1.0,
             angle: 0.0,
         };
-        let mut uniform_values = resolved_pass.pass.uniforms.clone();
-        if let Phase10PassContext::Effect(effect_pass) = resolved_pass.context {
-            for (name, value) in &effect_pass.constants {
-                uniform_values.insert(name.clone(), value.clone());
-            }
-        }
-
-        let mut fallback_vector_slot = 0;
-        for (name, value) in &uniform_values {
-            let normalized = name
-                .chars()
-                .filter(|character| character.is_ascii_alphanumeric())
-                .flat_map(char::to_lowercase)
-                .collect::<String>();
-            if let Some(color) = value.as_float4().filter(|_| normalized.contains("color")) {
-                uniforms.color = color;
-                continue;
-            }
-            if let Some(color) = value.as_float3().filter(|_| normalized.contains("color")) {
-                uniforms.color = [color[0], color[1], color[2], 1.0];
-                continue;
-            }
-            if let Some(vector) = value.as_float2() {
-                if let Some(slot) = phase10_effect_vector_uniform_slot(effect_kind, &normalized) {
-                    match slot {
-                        Phase10VectorUniformSlot::User0XY => {
-                            uniforms.user0[0] = vector[0];
-                            uniforms.user0[1] = vector[1];
-                        }
-                        Phase10VectorUniformSlot::User1XY => {
-                            uniforms.user1[0] = vector[0];
-                            uniforms.user1[1] = vector[1];
-                        }
-                    }
-                    continue;
-                }
-                if normalized.contains("direction")
-                    || normalized.contains("scroll")
-                    || normalized.contains("offset")
-                {
-                    uniforms.user0[0] = vector[0];
-                    uniforms.user0[1] = vector[1];
-                    continue;
-                }
-                if normalized.contains("center") || normalized.contains("origin") {
-                    uniforms.user1[0] = vector[0];
-                    uniforms.user1[1] = vector[1];
-                    continue;
-                }
-                match fallback_vector_slot {
-                    0 => {
-                        uniforms.user0[0] = vector[0];
-                        uniforms.user0[1] = vector[1];
-                    }
-                    1 => {
-                        uniforms.user1[0] = vector[0];
-                        uniforms.user1[1] = vector[1];
-                    }
-                    _ => {}
-                }
-                fallback_vector_slot += 1;
-                continue;
-            }
-            if let Some(vector) = value.as_float4() {
-                if fallback_vector_slot == 0 {
-                    uniforms.user0 = vector;
-                } else if fallback_vector_slot == 1 {
-                    uniforms.user1 = vector;
-                }
-                fallback_vector_slot += 1;
-                continue;
-            }
-            if let Some(number) = value.as_float() {
-                if let Some(slot) = phase10_effect_scalar_uniform_slot(effect_kind, &normalized) {
-                    match slot {
-                        Phase10ScalarUniformSlot::Angle => uniforms.angle = number,
-                        Phase10ScalarUniformSlot::User0X => uniforms.user0[0] = number,
-                        Phase10ScalarUniformSlot::User0Y => uniforms.user0[1] = number,
-                        Phase10ScalarUniformSlot::User0Z => uniforms.user0[2] = number,
-                        Phase10ScalarUniformSlot::User0W => uniforms.user0[3] = number,
-                        Phase10ScalarUniformSlot::User1X => uniforms.user1[0] = number,
-                        Phase10ScalarUniformSlot::User1Y => uniforms.user1[1] = number,
-                        Phase10ScalarUniformSlot::User1Z => uniforms.user1[2] = number,
-                        Phase10ScalarUniformSlot::User1W => uniforms.user1[3] = number,
-                    }
-                } else if normalized.contains("speed") {
-                    uniforms.speed = number;
-                } else if phase10_effect_scalar_assigns_intensity(
-                    effect_kind,
-                    &normalized,
-                    uniforms.intensity,
-                ) {
-                    uniforms.intensity = number;
-                } else if normalized.contains("radius") || normalized.contains("blur") {
-                    uniforms.radius = number;
-                } else if normalized.contains("angle") || normalized.contains("rotation") {
-                    uniforms.angle = number;
-                } else if normalized.contains("time") {
-                    uniforms.time = number;
-                } else if uniforms.user0[2] == 0.0 {
-                    uniforms.user0[2] = number;
-                } else if uniforms.user0[3] == 0.0 {
-                    uniforms.user0[3] = number;
-                } else if uniforms.user1[2] == 0.0 {
-                    uniforms.user1[2] = number;
-                } else if uniforms.user1[3] == 0.0 {
-                    uniforms.user1[3] = number;
-                }
-            }
-        }
+        let uniform_values = phase10_effect_uniform_values(resolved_pass);
 
         match effect_kind {
+            Some(SceneCompatEffectKind::Pulse) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["amount", "pulseamount"], 1.0);
+                uniforms.speed =
+                    phase10_uniform_float(&uniform_values, &["speed", "pulsespeed"], 3.0);
+                uniforms.user0[0] =
+                    phase10_uniform_float(&uniform_values, &["phase", "pulsephase"], 0.0);
+                uniforms.user0[1] =
+                    phase10_uniform_float(&uniform_values, &["power"], 1.0).max(0.001);
+                let bounds = phase10_uniform_vec2(
+                    &uniform_values,
+                    &["bounds", "pulsethresholds"],
+                    [0.0, 1.0],
+                );
+                uniforms.user0[2] = bounds[0];
+                uniforms.user0[3] = bounds[1];
+                uniforms.radius =
+                    phase10_uniform_float(&uniform_values, &["noisespeed"], 0.5).max(0.0);
+                uniforms.angle = phase10_uniform_float(&uniform_values, &["noiseamount"], 0.0);
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["tintlow", "tintcolor1"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                let tint_high = phase10_uniform_color(
+                    &uniform_values,
+                    &["tinthigh", "tintcolor2"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                uniforms.user1 = [tint_high[0], tint_high[1], tint_high[2], 1.0];
+            }
             Some(SceneCompatEffectKind::Shake) => {
-                if uniforms.intensity == 1.0 {
-                    uniforms.intensity = 0.1;
-                }
-                if uniforms.user0[0].abs() <= f32::EPSILON
-                    && uniforms.user0[1].abs() <= f32::EPSILON
-                {
-                    uniforms.user0[1] = 1.0;
-                }
-                if uniforms.user1[0].abs() <= f32::EPSILON {
-                    uniforms.user1[0] = 1.0;
-                }
-                if uniforms.user1[1].abs() <= f32::EPSILON {
-                    uniforms.user1[1] = 1.0;
-                }
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["strength", "amp"], 0.1);
+                uniforms.speed = phase10_uniform_float(&uniform_values, &["speed"], 1.0);
+                let bounds =
+                    phase10_uniform_vec2(&uniform_values, &["bounds", "gbounds"], [0.0, 1.0]);
+                let friction =
+                    phase10_uniform_vec2(&uniform_values, &["friction", "gfriction"], [1.0, 1.0]);
+                uniforms.user0[0] = bounds[0];
+                uniforms.user0[1] = bounds[1];
+                uniforms.user1[0] = friction[0];
+                uniforms.user1[1] = friction[1];
             }
-            Some(SceneCompatEffectKind::WaterRipple) | Some(SceneCompatEffectKind::WaterWaves)
-                if uniforms.intensity == 1.0 =>
-            {
-                uniforms.intensity = 2.5;
+            Some(SceneCompatEffectKind::WaterRipple) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["ripplestrength", "strength"], 0.1);
+                uniforms.speed = phase10_uniform_float(&uniform_values, &["animationspeed"], 0.15);
+                uniforms.radius = phase10_uniform_float(&uniform_values, &["scale"], 1.0);
+                uniforms.user0[0] = phase10_uniform_float(&uniform_values, &["scrollspeed"], 0.0);
+                uniforms.user0[1] = phase10_uniform_float(&uniform_values, &["ratio"], 1.0);
+                uniforms.angle =
+                    phase10_uniform_float(&uniform_values, &["scrolldirection", "direction"], 0.0);
             }
-            Some(SceneCompatEffectKind::Blur) if uniforms.radius == 1.0 => {
-                uniforms.radius = 1.75;
+            Some(SceneCompatEffectKind::WaterWaves) => {
+                uniforms.intensity = phase10_uniform_float(&uniform_values, &["strength"], 0.1);
+                uniforms.speed = phase10_uniform_float(&uniform_values, &["speed"], 5.0);
+                uniforms.angle = phase10_uniform_float(&uniform_values, &["direction"], 0.0);
+                let direction = rotate2d([0.0, 1.0], uniforms.angle);
+                uniforms.user0[0] = direction[0];
+                uniforms.user0[1] = direction[1];
+                uniforms.user0[2] = phase10_uniform_float(&uniform_values, &["scale"], 200.0);
+                uniforms.user0[3] = phase10_uniform_float(&uniform_values, &["exponent"], 1.0);
             }
-            Some(SceneCompatEffectKind::Scroll)
-                if uniforms.user0[0].abs() <= f32::EPSILON
-                    && uniforms.user0[1].abs() <= f32::EPSILON =>
-            {
-                uniforms.user0[0] = 1.0;
+            Some(SceneCompatEffectKind::Tint) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["alpha", "blendalpha"], 1.0);
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["color", "tintcolor"],
+                    [1.0, 0.0, 0.0, 1.0],
+                );
             }
-            Some(SceneCompatEffectKind::Shine) => {
-                if uniforms.radius == 1.0 {
-                    uniforms.radius = 0.2;
-                }
-                if uniforms.color == [1.0, 1.0, 1.0, 1.0] {
-                    uniforms.color = color_to_shader(visual.base_color);
-                }
+            Some(SceneCompatEffectKind::Scroll) => {
+                uniforms.user0[0] = phase10_uniform_float(&uniform_values, &["speedx"], 0.2);
+                uniforms.user0[1] = phase10_uniform_float(&uniform_values, &["speedy"], 0.2);
+                let repeat =
+                    phase10_uniform_vec2(&uniform_values, &["repeat", "scale"], [1.0, 1.0]);
+                uniforms.user0[2] = repeat[0];
+                uniforms.user0[3] = repeat[1];
             }
             _ => {}
         }
@@ -2484,11 +2388,13 @@ impl NativeSceneMetalRenderer {
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
         target: &Retained<ProtocolObject<dyn MTLTexture>>,
         pass: &SceneMaterialPassPlan,
+        shader_defines: &BTreeMap<String, i32>,
         pass_textures: &Phase10PassTextures,
         uniforms: &Phase10EffectUniforms,
         previous_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     ) -> bool {
-        let variant_key = phase10_shader_variant_key(&pass.program, &pass.combos, pass.blend_mode);
+        let variant_key =
+            phase10_shader_variant_key(&pass.program, shader_defines, pass.blend_mode);
         let Some(pipeline) = self.compiled_shader_variants.get(&variant_key) else {
             return false;
         };
@@ -2607,6 +2513,7 @@ impl NativeSceneMetalRenderer {
         visual: &ScenePhase10VisualPlan,
         mesh_frame: &crate::services::scene_mdl_service::SceneMdlMeshFrame,
         pass: &SceneMaterialPassPlan,
+        shader_defines: &BTreeMap<String, i32>,
         pass_textures: &Phase10PassTextures,
         uniforms: &Phase10EffectUniforms,
     ) {
@@ -2620,7 +2527,8 @@ impl NativeSceneMetalRenderer {
         ) else {
             return;
         };
-        let variant_key = phase10_shader_variant_key(&pass.program, &pass.combos, pass.blend_mode);
+        let variant_key =
+            phase10_shader_variant_key(&pass.program, shader_defines, pass.blend_mode);
         let Some(pipeline) = self.compiled_shader_variants.get(&variant_key) else {
             return;
         };
@@ -3187,156 +3095,175 @@ fn phase10_scratch_texture_key(width: usize, height: usize, slot: usize) -> Stri
 }
 
 #[cfg(target_os = "macos")]
-fn phase10_effect_binding_slot(binding_name: &str, binding_index: usize) -> usize {
-    let normalized = binding_name
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect::<String>();
-    if normalized.contains("input")
-        || normalized.contains("source")
-        || normalized.contains("main")
-        || normalized.contains("base")
-    {
-        0
-    } else if normalized.contains("mask")
-        || normalized.contains("ripple")
-        || normalized.contains("noise")
-        || normalized.contains("distort")
-        || normalized.contains("secondary")
-    {
-        1
-    } else {
-        binding_index.saturating_add(1)
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase10EffectTextureSource {
+    CurrentInput,
+    MaterialSlot(usize),
+    OverrideSlot(usize),
 }
 
 #[cfg(target_os = "macos")]
-fn phase10_effect_binding_prefers_previous(binding_name: &str) -> bool {
-    phase10_effect_binding_slot(binding_name, 0) == 0
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_effect_unbound_override_slots(
+fn phase10_effect_texture_slot_plan(
+    material_textures: &[SceneMaterialTextureBinding],
     effect_pass: &ScenePhase10EffectPassNode,
     current_texture_bound: bool,
-) -> Vec<(usize, usize)> {
-    let mut reserved_slots = effect_pass
-        .bindings
-        .iter()
-        .map(|binding| phase10_effect_binding_slot(&binding.name, binding.index))
-        .collect::<BTreeSet<_>>();
+) -> BTreeMap<usize, Phase10EffectTextureSource> {
+    let mut slots = BTreeMap::new();
     if current_texture_bound {
-        reserved_slots.insert(0);
+        slots.insert(0, Phase10EffectTextureSource::CurrentInput);
     }
-    let bound_override_indexes = effect_pass
-        .bindings
+    for binding in material_textures {
+        if binding.texture_name.is_some() {
+            slots.insert(
+                binding.slot_index,
+                Phase10EffectTextureSource::MaterialSlot(binding.slot_index),
+            );
+        }
+    }
+    for (slot, texture) in effect_pass.texture_overrides.iter().enumerate() {
+        if texture.is_some() {
+            slots.insert(slot, Phase10EffectTextureSource::OverrideSlot(slot));
+        }
+    }
+    slots
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_pass_shader_defines(resolved_pass: &Phase10ResolvedPass<'_>) -> BTreeMap<String, i32> {
+    let Some(effect_kind) = phase10_effect_family_from_program(&resolved_pass.pass.program) else {
+        return resolved_pass.pass.combos.clone();
+    };
+    let Some(contract) = phase10b_effect_contract_for_kind(effect_kind) else {
+        return resolved_pass.pass.combos.clone();
+    };
+    let mut defines = contract
+        .supported_combo_defaults
         .iter()
-        .map(|binding| binding.index)
-        .collect::<BTreeSet<_>>();
-    let mut next_slot = usize::from(current_texture_bound);
-    let mut assignments = Vec::new();
-    for override_index in 0..effect_pass.texture_overrides.len() {
-        if bound_override_indexes.contains(&override_index) {
+        .map(|(name, value)| ((*name).to_string(), *value))
+        .collect::<BTreeMap<_, _>>();
+    for (name, value) in &resolved_pass.pass.combos {
+        defines.insert(name.clone(), *value);
+    }
+    if let Phase10PassContext::Effect(effect_pass) = resolved_pass.context {
+        let slot_plan =
+            phase10_effect_texture_slot_plan(&resolved_pass.pass.textures, effect_pass, true);
+        for slot_contract in contract.runtime_binding_layout {
+            if !slot_plan.contains_key(&slot_contract.slot) {
+                continue;
+            }
+            match slot_contract.semantic {
+                crate::services::scene_shader_material_service::ScenePhase10bBindingSemantic::OpacityMask => {
+                    if !resolved_pass
+                        .pass
+                        .combos
+                        .keys()
+                        .any(|name| name.eq_ignore_ascii_case("MASK"))
+                    {
+                        defines.insert("MASK".to_string(), 1);
+                    }
+                }
+                crate::services::scene_shader_material_service::ScenePhase10bBindingSemantic::TimeOffset => {
+                    if !resolved_pass
+                        .pass
+                        .combos
+                        .keys()
+                        .any(|name| name.eq_ignore_ascii_case("TIMEOFFSET"))
+                    {
+                        defines.insert("TIMEOFFSET".to_string(), 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    defines
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_effect_uniform_values(
+    resolved_pass: &Phase10ResolvedPass<'_>,
+) -> BTreeMap<String, SceneMaterialUniformValue> {
+    let mut values = BTreeMap::new();
+    for (name, value) in &resolved_pass.pass.uniforms {
+        values.insert(normalized_effect_uniform_name(name), value.clone());
+    }
+    if let Phase10PassContext::Effect(effect_pass) = resolved_pass.context {
+        for (name, value) in &effect_pass.constants {
+            values.insert(normalized_effect_uniform_name(name), value.clone());
+        }
+    }
+    values
+}
+
+#[cfg(target_os = "macos")]
+fn normalized_effect_uniform_name(name: &str) -> String {
+    name.chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_uniform_float(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+    aliases: &[&str],
+    default: f32,
+) -> f32 {
+    aliases
+        .iter()
+        .find_map(|alias| values.get(*alias))
+        .and_then(SceneMaterialUniformValue::as_float)
+        .unwrap_or(default)
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_uniform_vec2(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+    aliases: &[&str],
+    default: [f32; 2],
+) -> [f32; 2] {
+    for alias in aliases {
+        let Some(value) = values.get(*alias) else {
             continue;
+        };
+        if let Some(vector) = value.as_float2() {
+            return vector;
         }
-        if effect_pass
-            .texture_overrides
-            .get(override_index)
-            .and_then(|path| path.as_ref())
-            .is_none()
-        {
+        if let Some(number) = value.as_float() {
+            return [number, number];
+        }
+    }
+    default
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_uniform_color(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+    aliases: &[&str],
+    default: [f32; 4],
+) -> [f32; 4] {
+    for alias in aliases {
+        let Some(value) = values.get(*alias) else {
             continue;
+        };
+        if let Some(color) = value.as_float4() {
+            return color;
         }
-        while reserved_slots.contains(&next_slot) {
-            next_slot += 1;
+        if let Some(color) = value.as_float3() {
+            return [color[0], color[1], color[2], 1.0];
         }
-        reserved_slots.insert(next_slot);
-        assignments.push((override_index, next_slot));
-        next_slot += 1;
     }
-    assignments
+    default
 }
 
 #[cfg(target_os = "macos")]
-fn phase10_effect_scalar_assigns_intensity(
-    effect_kind: Option<SceneCompatEffectKind>,
-    normalized_name: &str,
-    current_intensity: f32,
-) -> bool {
-    if matches!(effect_kind, Some(SceneCompatEffectKind::Pulse)) {
-        return normalized_name.contains("intensity")
-            || normalized_name.contains("strength")
-            || normalized_name == "amount"
-            || normalized_name == "pulseamount";
-    }
-    normalized_name.contains("intensity")
-        || normalized_name.contains("amount")
-        || normalized_name.contains("strength")
-        || (matches!(effect_kind, Some(SceneCompatEffectKind::Tint))
-            && current_intensity == 1.0
-            && (normalized_name == "alpha" || normalized_name.contains("opacity")))
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase10ScalarUniformSlot {
-    Angle,
-    User0X,
-    User0Y,
-    User0Z,
-    User0W,
-    User1X,
-    User1Y,
-    User1Z,
-    User1W,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase10VectorUniformSlot {
-    User0XY,
-    User1XY,
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_effect_vector_uniform_slot(
-    effect_kind: Option<SceneCompatEffectKind>,
-    normalized_name: &str,
-) -> Option<Phase10VectorUniformSlot> {
-    match effect_kind {
-        Some(SceneCompatEffectKind::Shake) => match normalized_name {
-            "bounds" | "gbounds" => Some(Phase10VectorUniformSlot::User0XY),
-            "friction" | "gfriction" => Some(Phase10VectorUniformSlot::User1XY),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_effect_scalar_uniform_slot(
-    effect_kind: Option<SceneCompatEffectKind>,
-    normalized_name: &str,
-) -> Option<Phase10ScalarUniformSlot> {
-    match effect_kind {
-        Some(SceneCompatEffectKind::Pulse) => match normalized_name {
-            "phase" | "pulsephase" => Some(Phase10ScalarUniformSlot::User0X),
-            "power" => Some(Phase10ScalarUniformSlot::User0Y),
-            _ => None,
-        },
-        Some(SceneCompatEffectKind::WaterWaves) => match normalized_name {
-            "direction" => Some(Phase10ScalarUniformSlot::Angle),
-            "scale" => Some(Phase10ScalarUniformSlot::User0Z),
-            "exponent" => Some(Phase10ScalarUniformSlot::User0W),
-            "direction2" => Some(Phase10ScalarUniformSlot::User1X),
-            "offset2" => Some(Phase10ScalarUniformSlot::User1Y),
-            "scale2" => Some(Phase10ScalarUniformSlot::User1Z),
-            "exponent2" => Some(Phase10ScalarUniformSlot::User1W),
-            _ => None,
-        },
-        _ => None,
-    }
+fn rotate2d(vector: [f32; 2], angle: f32) -> [f32; 2] {
+    let sine = angle.sin();
+    let cosine = angle.cos();
+    [
+        vector[0] * cosine - vector[1] * sine,
+        vector[0] * sine + vector[1] * cosine,
+    ]
 }
 
 #[cfg(target_os = "macos")]
@@ -4809,7 +4736,10 @@ mod tests {
     };
     #[cfg(target_os = "macos")]
     use crate::services::scene_render_planner_service::SceneTextVerticalAlign;
-    use crate::services::scene_shader_material_service::SceneResolvedMaterialPlan;
+    use crate::services::scene_shader_material_service::{
+        SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
+        SceneResolvedMaterialPlan, SceneShaderProgram, SceneShaderProgramKind,
+    };
     #[cfg(target_os = "macos")]
     use image::GenericImageView;
     #[cfg(target_os = "macos")]
@@ -5806,133 +5736,146 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn compat_effect_program(kind: SceneCompatEffectKind) -> SceneShaderProgram {
+        SceneShaderProgram {
+            key: format!("test:{kind:?}"),
+            kind: SceneShaderProgramKind::EffectCompat(kind),
+            metal_source_path: PathBuf::from("/tmp/scene-effect-compat.metal"),
+            vertex_entry: "phase10_effect_vertex",
+            fragment_entry: "phase10_effect_fragment",
+            variant_defines: BTreeMap::new(),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn compat_effect_pass(
+        kind: SceneCompatEffectKind,
+        textures: Vec<SceneMaterialTextureBinding>,
+        combos: BTreeMap<String, i32>,
+    ) -> SceneMaterialPassPlan {
+        SceneMaterialPassPlan {
+            index: 0,
+            shader_ref: format!("effects/{:?}", kind).to_ascii_lowercase(),
+            program: compat_effect_program(kind),
+            blend_mode: SceneRenderBlendMode::Normal,
+            combos,
+            uniforms: BTreeMap::new(),
+            textures,
+            effect_paths: vec![],
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
-    fn phase10_unbound_effect_overrides_fill_aux_slots_after_primary_input() {
+    fn phase10_effect_texture_slot_plan_preserves_sparse_authored_ordinals() {
         let pass = super::ScenePhase10EffectPassNode {
             index: 0,
             bindings: vec![],
             constants: BTreeMap::new(),
-            texture_overrides: vec![
-                Some(PathBuf::from("/tmp/mask-a.png")),
-                Some(PathBuf::from("/tmp/mask-b.png")),
-            ],
+            texture_overrides: vec![None, None, None, Some(PathBuf::from("/tmp/mask-b.png"))],
             material_passes: vec![],
         };
+        let material_textures = vec![SceneMaterialTextureBinding {
+            slot_index: 2,
+            slot_name: "g_Texture2".to_string(),
+            texture_name: Some("normal.png".to_string()),
+            resolved_path: Some(PathBuf::from("/tmp/normal.png")),
+        }];
 
         assert_eq!(
-            super::phase10_effect_unbound_override_slots(&pass, true),
-            vec![(0, 1), (1, 2)]
+            super::phase10_effect_texture_slot_plan(&material_textures, &pass, true),
+            BTreeMap::from([
+                (0, super::Phase10EffectTextureSource::CurrentInput),
+                (2, super::Phase10EffectTextureSource::MaterialSlot(2)),
+                (3, super::Phase10EffectTextureSource::OverrideSlot(3)),
+            ])
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn phase10_unbound_effect_overrides_compact_sparse_null_placeholders() {
+    fn phase10_effect_texture_slot_plan_keeps_runtime_override_indices_sparse() {
         let pass = super::ScenePhase10EffectPassNode {
             index: 0,
             bindings: vec![],
             constants: BTreeMap::new(),
-            texture_overrides: vec![None, Some(PathBuf::from("/tmp/mask.png"))],
+            texture_overrides: vec![None, None, Some(PathBuf::from("/tmp/mask.png"))],
             material_passes: vec![],
         };
 
         assert_eq!(
-            super::phase10_effect_unbound_override_slots(&pass, true),
-            vec![(1, 1)]
+            super::phase10_effect_texture_slot_plan(&[], &pass, true),
+            BTreeMap::from([
+                (0, super::Phase10EffectTextureSource::CurrentInput),
+                (2, super::Phase10EffectTextureSource::OverrideSlot(2)),
+            ])
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn phase10_tint_alpha_feeds_intensity_without_overriding_explicit_strength() {
-        assert!(super::phase10_effect_scalar_assigns_intensity(
-            Some(super::SceneCompatEffectKind::Tint),
-            "alpha",
-            1.0,
-        ));
-        assert!(!super::phase10_effect_scalar_assigns_intensity(
-            Some(super::SceneCompatEffectKind::Tint),
-            "alpha",
-            0.42,
-        ));
-        assert!(!super::phase10_effect_scalar_assigns_intensity(
-            Some(super::SceneCompatEffectKind::WaterRipple),
-            "alpha",
-            1.0,
-        ));
+    fn phase10_effect_shader_defines_promote_mask_and_timeoffset_from_authored_slots() {
+        let pulse_pass = compat_effect_pass(
+            SceneCompatEffectKind::Pulse,
+            vec![SceneMaterialTextureBinding {
+                slot_index: 2,
+                slot_name: "g_Texture2".to_string(),
+                texture_name: Some("mask.png".to_string()),
+                resolved_path: Some(PathBuf::from("/tmp/mask.png")),
+            }],
+            BTreeMap::new(),
+        );
+        let pulse_runtime = super::ScenePhase10EffectPassNode {
+            index: 0,
+            bindings: vec![],
+            constants: BTreeMap::new(),
+            texture_overrides: vec![],
+            material_passes: vec![],
+        };
+        let pulse_resolved = super::Phase10ResolvedPass {
+            pass: &pulse_pass,
+            context: super::Phase10PassContext::Effect(&pulse_runtime),
+        };
+        let pulse_defines = super::phase10_pass_shader_defines(&pulse_resolved);
+        assert_eq!(pulse_defines.get("MASK"), Some(&1));
+        assert_eq!(pulse_defines.get("BLENDMODE"), Some(&9));
+
+        let shake_pass = compat_effect_pass(
+            SceneCompatEffectKind::Shake,
+            vec![],
+            BTreeMap::from([("NOISE".to_string(), 1)]),
+        );
+        let shake_runtime = super::ScenePhase10EffectPassNode {
+            index: 0,
+            bindings: vec![],
+            constants: BTreeMap::new(),
+            texture_overrides: vec![None, None, Some(PathBuf::from("/tmp/timeoffset.png"))],
+            material_passes: vec![],
+        };
+        let shake_resolved = super::Phase10ResolvedPass {
+            pass: &shake_pass,
+            context: super::Phase10PassContext::Effect(&shake_runtime),
+        };
+        let shake_defines = super::phase10_pass_shader_defines(&shake_resolved);
+        assert_eq!(shake_defines.get("TIMEOFFSET"), Some(&1));
+        assert_eq!(shake_defines.get("NOISE"), Some(&1));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn phase10_pulse_does_not_treat_noise_amount_as_primary_intensity() {
-        assert!(super::phase10_effect_scalar_assigns_intensity(
-            Some(super::SceneCompatEffectKind::Pulse),
-            "amount",
-            1.0,
-        ));
-        assert!(super::phase10_effect_scalar_assigns_intensity(
-            Some(super::SceneCompatEffectKind::Pulse),
-            "pulseamount",
-            1.0,
-        ));
-        assert!(!super::phase10_effect_scalar_assigns_intensity(
-            Some(super::SceneCompatEffectKind::Pulse),
-            "noiseamount",
-            1.0,
-        ));
-        assert_eq!(
-            super::phase10_effect_scalar_uniform_slot(
-                Some(super::SceneCompatEffectKind::Pulse),
-                "phase"
-            ),
-            Some(super::Phase10ScalarUniformSlot::User0X)
-        );
-        assert_eq!(
-            super::phase10_effect_scalar_uniform_slot(
-                Some(super::SceneCompatEffectKind::Pulse),
-                "power"
-            ),
-            Some(super::Phase10ScalarUniformSlot::User0Y)
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn phase10_pulse_shader_does_not_scale_texture_coordinates() {
+    fn phase10_pulse_shader_consumes_noise_and_mask_without_uv_scaling() {
         let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
         let shader = fs::read_to_string(shader_path).expect("effect compat shader");
 
         assert!(!shader.contains("0.5 + centered / scale"));
         assert!(!shader.contains("centered = uv - 0.5"));
+        assert!(shader.contains(
+            "float noise = aux_texture.sample(texture_sampler, noise_uv).r * uniforms.angle;"
+        ));
+        assert!(shader.contains("sampled = mix(original, sampled, mask);"));
         assert!(shader.contains("#if PULSEALPHA"));
         assert!(shader.contains("#if PULSECOLOR"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn phase10_shake_vector_authoring_maps_bounds_and_friction_without_audio_collision() {
-        assert_eq!(
-            super::phase10_effect_vector_uniform_slot(
-                Some(super::SceneCompatEffectKind::Shake),
-                "bounds",
-            ),
-            Some(super::Phase10VectorUniformSlot::User0XY)
-        );
-        assert_eq!(
-            super::phase10_effect_vector_uniform_slot(
-                Some(super::SceneCompatEffectKind::Shake),
-                "friction",
-            ),
-            Some(super::Phase10VectorUniformSlot::User1XY)
-        );
-        assert_eq!(
-            super::phase10_effect_vector_uniform_slot(
-                Some(super::SceneCompatEffectKind::Shake),
-                "audiobounds",
-            ),
-            None
-        );
     }
 
     #[cfg(target_os = "macos")]
@@ -5963,46 +5906,28 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn phase10_waterwaves_scalar_authoring_maps_to_effect_uniform_slots() {
-        assert_eq!(
-            super::phase10_effect_scalar_uniform_slot(
-                Some(super::SceneCompatEffectKind::WaterWaves),
-                "direction",
-            ),
-            Some(super::Phase10ScalarUniformSlot::Angle)
-        );
-        assert_eq!(
-            super::phase10_effect_scalar_uniform_slot(
-                Some(super::SceneCompatEffectKind::WaterWaves),
-                "scale",
-            ),
-            Some(super::Phase10ScalarUniformSlot::User0Z)
-        );
-        assert_eq!(
-            super::phase10_effect_scalar_uniform_slot(
-                Some(super::SceneCompatEffectKind::WaterWaves),
-                "exponent",
-            ),
-            Some(super::Phase10ScalarUniformSlot::User0W)
-        );
-        assert_eq!(
-            super::phase10_effect_scalar_uniform_slot(
-                Some(super::SceneCompatEffectKind::Tint),
-                "direction",
-            ),
-            None
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn phase10_waterwaves_shader_clamps_displacement_to_preserve_alpha_coverage() {
+    fn phase10_waterripple_shader_distinguishes_mask_and_normal_slots() {
         let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
         let shader = fs::read_to_string(shader_path).expect("effect compat shader");
 
-        assert!(shader.contains("min(strength * strength, safe_amplitude)"));
-        assert!(shader.contains("smoothstep(0.02, 0.15, sampled.a)"));
-        assert!(shader.contains("sampled = mix(sampled, displaced, coverage)"));
+        assert!(shader.contains("float3 n1 = aux2_texture.sample(texture_sampler, fract(ripple_uv.xy)).xyz * 2.0 - 1.0;"));
+        assert!(shader.contains("float mask = 1.0;"));
+        assert!(shader.contains("#if MASK"));
+        assert!(!shader.contains("#elif PHASE10_EFFECT_BLUR"));
+        assert!(!shader.contains("#elif PHASE10_EFFECT_SHINE"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_waterwaves_and_scroll_shaders_consume_timeoffset_and_repeat_contracts() {
+        let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
+        let shader = fs::read_to_string(shader_path).expect("effect compat shader");
+
+        assert!(shader.contains("time_offset = aux2_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r * 1.57079632679;"));
+        assert!(shader.contains("fract((uv + signed_scroll) * repeat)"));
+        assert!(shader
+            .contains("sign(scroll_speed) * pow(abs(scroll_speed), float2(2.0)) * uniforms.time"));
     }
 }

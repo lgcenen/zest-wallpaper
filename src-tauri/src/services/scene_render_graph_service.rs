@@ -23,10 +23,12 @@ use crate::{
         scene_shader_material_service::{
             inspect_scene_material_summary, inspect_scene_shader_source_with_effect_context,
             load_scene_effect_plan, load_scene_material_plan,
-            load_scene_material_plan_with_effect_package_root,
+            load_scene_material_plan_with_effect_package_root, phase10b_blocked_effect_reason,
+            phase10b_effect_contract_for_kind, phase10b_supported_effect_contract_for_shader_ref,
             shader_ref_requires_phase10_graph_semantics, SceneEffectBinding, SceneEffectPlan,
             SceneMaterialPassPlan, SceneMaterialSummary, SceneMaterialUniformValue,
-            SceneResolvedMaterialPlan, SceneShaderProgramKind,
+            ScenePhase10bBindingSemantic, ScenePhase10bEffectContract, SceneResolvedMaterialPlan,
+            SceneShaderProgramKind,
         },
     },
 };
@@ -304,6 +306,9 @@ pub fn build_scene_phase10_graph(
         };
         for pass in &material.passes {
             for texture in &pass.textures {
+                let Some(texture_name) = texture.texture_name.as_ref() else {
+                    continue;
+                };
                 if texture.resolved_path.is_none() {
                     issues.push(SceneGraphIssue {
                         severity: SceneGraphIssueSeverity::Warning,
@@ -311,11 +316,11 @@ pub fn build_scene_phase10_graph(
                         diagnostic_code: None,
                         message: format!(
                             "\"{}\" is missing material texture {} for phase-10 graph execution.",
-                            base.name, texture.texture_name
+                            base.name, texture_name
                         ),
                         object_id: Some(base.id),
                         object_name: Some(base.name.clone()),
-                        resource_path: Some(texture.texture_name.clone()),
+                        resource_path: Some(texture_name.clone()),
                         detail: Some(format!(
                             "slot {} has no resolved texture candidate",
                             texture.slot_name
@@ -642,6 +647,26 @@ fn build_effect_node(
         ) {
             Ok(effect_material) => {
                 let runtime_pass = runtime_effect.and_then(|effect| effect.passes.get(pass.index));
+                if let Err(error) =
+                    validate_phase10b_effect_contract(effect, pass, &effect_material, runtime_pass)
+                {
+                    issues.push(SceneGraphIssue {
+                        severity,
+                        code: SceneGraphIssueCode::InvalidEffect,
+                        diagnostic_code: Some("effect-unsupported"),
+                        message: format!(
+                            "\"{}\" resolved effect material {}, but phase-10b does not support that authored effect contract.",
+                            object_name, effect_material_path
+                        ),
+                        object_id: Some(object_id),
+                        object_name: Some(object_name.to_string()),
+                        resource_path: Some(effect_material_path.to_string()),
+                        detail: Some(error),
+                        resource_lookup: pass.material_lookup.clone(),
+                        resource_present_but_unsupported: true,
+                    });
+                    return None;
+                }
                 resolved_passes.push(ScenePhase10EffectPassNode {
                     index: pass.index,
                     bindings: pass.bindings.clone(),
@@ -687,6 +712,303 @@ fn build_effect_node(
         effect_path: effect.effect_path.clone(),
         passes: resolved_passes,
     })
+}
+
+fn validate_phase10b_effect_contract(
+    effect: &SceneEffectPlan,
+    effect_pass: &crate::services::scene_shader_material_service::SceneEffectPassPlan,
+    effect_material: &SceneResolvedMaterialPlan,
+    runtime_pass: Option<&crate::models::SceneVisualEffectPass>,
+) -> Result<&'static ScenePhase10bEffectContract, String> {
+    if !effect.fbo_names.is_empty() {
+        return Err(format!(
+            "effect declares named render targets {:?}; phase-10b only supports explicit single-pass compat families and leaves named FBO/pass-order execution to phase-10d.",
+            effect.fbo_names
+        ));
+    }
+    if effect.passes.len() != 1 {
+        return Err(format!(
+            "effect declares {} passes; phase-10b only supports a single authored effect pass per compat family.",
+            effect.passes.len()
+        ));
+    }
+    if let Some(target_name) = effect_pass.target_name.as_deref() {
+        return Err(format!(
+            "effect pass targets {target_name}; phase-10d render-graph support is required for named render targets and previous-texture chaining."
+        ));
+    }
+    if effect_material.passes.len() != 1 {
+        return Err(format!(
+            "effect material {} expands to {} passes; phase-10b only supports a single material pass per compat family.",
+            effect_material.material_path.display(),
+            effect_material.passes.len()
+        ));
+    }
+    if !effect_material.material_effects.is_empty() {
+        return Err(format!(
+            "effect material {} declares nested effects; phase-10b does not recurse authored effect stacks inside compat families.",
+            effect_material.material_path.display()
+        ));
+    }
+
+    let material_pass = &effect_material.passes[0];
+    if let Some(reason) = phase10b_blocked_effect_reason(&material_pass.shader_ref) {
+        return Err(reason.to_string());
+    }
+    let Some(contract) =
+        phase10b_supported_effect_contract_for_shader_ref(&material_pass.shader_ref)
+    else {
+        return Err(format!(
+            "shader {} is not one of the explicit phase-10b single-pass compat families.",
+            material_pass.shader_ref
+        ));
+    };
+    if effect_material.passes.iter().any(|pass| {
+        phase10b_supported_effect_contract_for_shader_ref(&pass.shader_ref)
+            .map(|pass_contract| pass_contract.kind != contract.kind)
+            .unwrap_or(true)
+    }) {
+        return Err(format!(
+            "effect material {} mixes authored shader families; phase-10b compat requires one explicit family per effect material.",
+            effect_material.material_path.display()
+        ));
+    }
+    if !material_pass.effect_paths.is_empty() {
+        return Err(format!(
+            "effect material {} declares nested material effects; phase-10b compat does not execute authored effect-in-effect chains.",
+            effect_material.material_path.display()
+        ));
+    }
+
+    for (combo_name, combo_value) in &material_pass.combos {
+        if !contract
+            .supported_combo_defaults
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(combo_name))
+        {
+            return Err(format!(
+                "{} combo {} falls outside the explicit phase-10b {} contract.",
+                contract.family, combo_name, contract.family
+            ));
+        }
+        if !phase10b_combo_value_supported(contract, combo_name, *combo_value) {
+            return Err(format!(
+                "{} combo {}={} falls outside the supported phase-10b {} contract.",
+                contract.family, combo_name, combo_value, contract.family
+            ));
+        }
+    }
+
+    let material_slots = material_pass
+        .textures
+        .iter()
+        .filter(|binding| binding.texture_name.is_some())
+        .map(|binding| binding.slot_index)
+        .collect::<BTreeSet<_>>();
+    let runtime_override_slots = runtime_pass
+        .map(|runtime_pass| {
+            runtime_pass
+                .textures
+                .iter()
+                .enumerate()
+                .filter(|(_, texture)| texture.is_some())
+                .map(|(slot, _)| slot)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let binding_slots = effect_pass
+        .bindings
+        .iter()
+        .map(|binding| binding.index)
+        .collect::<BTreeSet<_>>();
+
+    for slot in material_slots
+        .iter()
+        .chain(runtime_override_slots.iter())
+        .chain(binding_slots.iter())
+    {
+        if !contract.supported_texture_slots.contains(slot) {
+            return Err(format!(
+                "{} uses g_Texture{} but the explicit phase-10b {} contract only supports slots {:?}.",
+                contract.family, slot, contract.family, contract.supported_texture_slots
+            ));
+        }
+    }
+    for required_slot in contract.required_texture_slots {
+        if *required_slot == 0 {
+            continue;
+        }
+        let present = material_slots.contains(required_slot)
+            || runtime_override_slots.contains(required_slot)
+            || binding_slots.contains(required_slot);
+        if !present {
+            return Err(format!(
+                "{} requires g_Texture{} according to the phase-10b contract, but no authored material texture, runtime override, or binding provides it.",
+                contract.family, required_slot
+            ));
+        }
+    }
+    if material_slots.contains(&0) || runtime_override_slots.contains(&0) {
+        return Err(format!(
+            "{} reserves g_Texture0 for the previous pass input; phase-10b does not support authored textures or runtime overrides replacing that slot.",
+            contract.family
+        ));
+    }
+
+    for binding in &effect_pass.bindings {
+        let Some(slot_contract) = contract
+            .runtime_binding_layout
+            .iter()
+            .find(|slot_contract| slot_contract.slot == binding.index)
+        else {
+            return Err(format!(
+                "{} bind.index {} is outside the explicit phase-10b {} layout.",
+                contract.family, binding.index, contract.family
+            ));
+        };
+        if !binding_name_matches_semantic(&binding.name, slot_contract.semantic) {
+            return Err(format!(
+                "{} binding {} at g_Texture{} does not match the explicit phase-10b {} binding layout.",
+                contract.family, binding.name, binding.index, contract.family
+            ));
+        }
+    }
+    for (combo_name, combo_value) in &material_pass.combos {
+        let Some(required_slot) = phase10b_combo_required_texture_slot(contract, combo_name) else {
+            continue;
+        };
+        if *combo_value == 0 {
+            continue;
+        }
+        let present = material_slots.contains(&required_slot)
+            || runtime_override_slots.contains(&required_slot);
+        if !present {
+            return Err(format!(
+                "{} combo {}={} requires g_Texture{}, but that authored slot is not populated by the material or runtime override.",
+                contract.family, combo_name, combo_value, required_slot
+            ));
+        }
+    }
+
+    for uniform_name in material_pass.uniforms.keys().chain(
+        runtime_pass
+            .into_iter()
+            .flat_map(|runtime_pass| runtime_pass.constants.keys()),
+    ) {
+        let normalized = normalized_contract_key(uniform_name);
+        if normalized.is_empty() {
+            continue;
+        }
+        if !contract.supported_uniforms.contains(&normalized.as_str()) {
+            return Err(format!(
+                "{} uniform {} falls outside the explicit phase-10b {} contract.",
+                contract.family, uniform_name, contract.family
+            ));
+        }
+    }
+
+    let Some(material_contract) = phase10b_effect_contract_for_kind(contract.kind) else {
+        return Err(format!(
+            "{} is not available as a phase-10b compat family.",
+            contract.family
+        ));
+    };
+    Ok(material_contract)
+}
+
+fn phase10b_combo_value_supported(
+    contract: &ScenePhase10bEffectContract,
+    combo_name: &str,
+    combo_value: i32,
+) -> bool {
+    let normalized = normalized_contract_key(combo_name);
+    match contract.family {
+        "pulse" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
+            "audioprocessing" => combo_value == 0,
+            "mask" | "pulsealpha" | "pulsecolor" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "shake" => match normalized.as_str() {
+            "direction" => matches!(combo_value, 0 | 1 | 2),
+            "audioprocessing" => combo_value == 0,
+            "mask" | "noise" | "timeoffset" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "waterripple" => match normalized.as_str() {
+            "mask" => matches!(combo_value, 0 | 1),
+            "perspective" | "specular" => combo_value == 0,
+            _ => false,
+        },
+        "waterwaves" => match normalized.as_str() {
+            "mask" | "timeoffset" => matches!(combo_value, 0 | 1),
+            "perspective" | "dualwaves" => combo_value == 0,
+            _ => false,
+        },
+        "tint" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
+            "mask" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "scroll" => false,
+        _ => false,
+    }
+}
+
+fn phase10b_combo_required_texture_slot(
+    contract: &ScenePhase10bEffectContract,
+    combo_name: &str,
+) -> Option<usize> {
+    let normalized = normalized_contract_key(combo_name);
+    match contract.family {
+        "pulse" if normalized == "mask" => Some(2),
+        "shake" if normalized == "mask" => Some(3),
+        "shake" if normalized == "timeoffset" => Some(2),
+        "waterripple" if normalized == "mask" => Some(1),
+        "waterwaves" if normalized == "mask" => Some(1),
+        "waterwaves" if normalized == "timeoffset" => Some(2),
+        "tint" if normalized == "mask" => Some(1),
+        _ => None,
+    }
+}
+
+fn normalized_contract_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn binding_name_matches_semantic(
+    binding_name: &str,
+    semantic: ScenePhase10bBindingSemantic,
+) -> bool {
+    let normalized = normalized_contract_key(binding_name);
+    match semantic {
+        ScenePhase10bBindingSemantic::PreviousInput => {
+            normalized.contains("previous")
+                || normalized.contains("input")
+                || normalized.contains("source")
+                || normalized.contains("main")
+                || normalized.contains("base")
+        }
+        ScenePhase10bBindingSemantic::NoiseTexture => normalized.contains("noise"),
+        ScenePhase10bBindingSemantic::FlowMap => {
+            normalized.contains("flow") || normalized.contains("direction")
+        }
+        ScenePhase10bBindingSemantic::TimeOffset => {
+            normalized.contains("timeoffset") || normalized == "time" || normalized == "offset"
+        }
+        ScenePhase10bBindingSemantic::OpacityMask => {
+            normalized.contains("mask") || normalized.contains("opacity")
+        }
+        ScenePhase10bBindingSemantic::NormalMap => {
+            normalized.contains("normal")
+                || normalized.contains("ripple")
+                || normalized.contains("distort")
+        }
+    }
 }
 
 fn unresolved_effect_dependency_issue(
@@ -852,15 +1174,24 @@ fn effect_material_plan_failure_issue(
         }
     }
 
-    let diagnostic_code =
-        if error.contains("does not map to a supported phase-10 compatibility program") {
-            Some("effect-unsupported")
-        } else {
-            Some("effect-invalid")
-        };
+    let diagnostic_code = if error
+        .contains("does not map to a supported phase-10 compatibility program")
+        || error.contains("phase-10b does not support that authored shader family")
+        || error.contains(
+            "phase-10b does not support that authored shader family as single-pass compat",
+        )
+        || error.contains(
+            "phase-10b does not support that authored shader family as explicit single-pass compat",
+        )
+        || error.contains("requires phase-10d")
+    {
+        Some("effect-unsupported")
+    } else {
+        Some("effect-invalid")
+    };
     let message = if diagnostic_code == Some("effect-unsupported") {
         format!(
-            "\"{}\" resolved effect material {}, but phase-10b does not support that authored effect shader path yet.",
+            "\"{}\" resolved effect material {}, but phase-10b does not support that authored effect shader contract.",
             object_name, effect_material_path
         )
     } else {
@@ -1118,16 +1449,28 @@ mod tests {
         let builtin = temp.path().join("builtin");
 
         write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
             &builtin.join("assets/shaders/compat/scene-sprite.metal"),
             b"fragment float4 compat_sprite_fragment() { return float4(1); }",
         );
         write(
-            &builtin.join("assets/materials/compat/default.material"),
-            br#"{"passes":[{"shader":"genericimage4","textures":["g_Texture0"]}]}"#,
+            &builtin.join("assets/materials/compat/tint.material"),
+            br#"{"passes":[{"shader":"effects/tint"}]}"#,
         );
         write(
-            &builtin.join("assets/effects/compat/copy.effect"),
-            br#"{"version":1,"passes":[{"material":"assets/materials/compat/default.material","bind":[{"name":"input","index":0}]}]}"#,
+            &builtin.join("assets/effects/compat/tint.effect"),
+            br#"{"version":1,"passes":[{"material":"assets/materials/compat/tint.material","bind":[{"name":"input","index":0}]}]}"#,
+        );
+        write(
+            &builtin.join("assets/effects/compat/shaders/effects/tint.vert"),
+            b"void main() {}",
+        );
+        write(
+            &builtin.join("assets/effects/compat/shaders/effects/tint.frag"),
+            b"void main() {}",
         );
         write(
             &extracted.join("scene.json"),
@@ -1150,7 +1493,7 @@ mod tests {
         );
         write(
             &extracted.join("materials/hero.material"),
-            br#"{"effects":["assets/effects/compat/copy.effect"],"passes":[{"shader":"genericimage4","textures":["textures/hero"]}]}"#,
+            br#"{"effects":["assets/effects/compat/tint.effect"],"passes":[{"shader":"genericimage4","textures":["textures/hero"]}]}"#,
         );
         write(&extracted.join("textures/hero.tex"), b"fake-tex");
 
@@ -1398,16 +1741,28 @@ mod tests {
         let builtin = temp.path().join("builtin");
 
         write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
             &builtin.join("assets/shaders/compat/scene-sprite.metal"),
             b"fragment float4 compat_sprite_fragment() { return float4(1); }",
         );
         write(
-            &builtin.join("assets/materials/compat/default.material"),
-            br#"{"passes":[{"shader":"genericimage4","textures":["g_Texture0"]}]}"#,
+            &builtin.join("assets/materials/compat/tint.material"),
+            br#"{"passes":[{"shader":"effects/tint"}]}"#,
         );
         write(
-            &builtin.join("assets/effects/compat/copy.effect"),
-            br#"{"version":1,"passes":[{"material":"assets/materials/compat/default.material","bind":[{"name":"input","index":0}]}]}"#,
+            &builtin.join("assets/effects/compat/tint.effect"),
+            br#"{"version":1,"passes":[{"material":"assets/materials/compat/tint.material","bind":[{"name":"input","index":0}]}]}"#,
+        );
+        write(
+            &builtin.join("assets/effects/compat/shaders/effects/tint.vert"),
+            b"void main() {}",
+        );
+        write(
+            &builtin.join("assets/effects/compat/shaders/effects/tint.frag"),
+            b"void main() {}",
         );
         write(
             &extracted.join("scene.json"),
@@ -1423,7 +1778,7 @@ mod tests {
                   "color":"0.1 0.2 0.3",
                   "effects":[
                     {
-                      "file":"assets/effects/compat/copy.effect",
+                      "file":"assets/effects/compat/tint.effect",
                       "visible":true,
                       "passes":[{"textures":[null]}]
                     }
@@ -1682,9 +2037,9 @@ mod tests {
         assert!(issue
             .message
             .contains("resolved effect material materials/effects/mystery.json"));
-        assert!(issue
-            .message
-            .contains("does not support authored shader source pair effects/mystery yet"));
+        assert!(issue.detail.as_deref().unwrap_or_default().contains(
+            "does not support that authored shader family as explicit single-pass compat"
+        ));
         assert!(!issue.message.contains("could not resolve effect material"));
         assert!(issue.resource_present_but_unsupported);
         assert_eq!(
@@ -1694,6 +2049,174 @@ mod tests {
                 .and_then(|lookup| lookup.matched_path.as_ref()),
             Some(&extracted.join("effects/mystery/shaders/effects/mystery.vert"))
         );
+    }
+
+    #[test]
+    fn phase10_graph_marks_blur_and_shine_as_phase10d_blockers() {
+        for family in ["blur", "shine"] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":191,
+                          "name":"Blocked",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[{{"file":"effects/{family}/effect.json","visible":true}}]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                br#"{
+                  "fbos":[{"name":"scratch"}],
+                  "passes":[{"target":"scratch","material":"materials/effects/blocker.json"}]
+                }"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/blocker.json")),
+                format!(r#"{{"passes":[{{"shader":"effects/{family}"}}]}}"#).as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{family}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{family}.frag")),
+                b"void main() {}",
+            );
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            let issue = report
+                .issues
+                .iter()
+                .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+                .expect("unsupported effect issue");
+            assert!(issue.resource_present_but_unsupported);
+            assert!(
+                issue
+                    .detail
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("phase-10d"),
+                "detail should point at phase-10d capability boundary: {:?}",
+                issue.detail
+            );
+        }
+    }
+
+    #[test]
+    fn phase10_graph_rejects_combo_that_requires_missing_authored_slot() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":191,
+                  "name":"Tint",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/tint/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/tint/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/tint.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/tint/materials/effects/tint.json"),
+            br#"{"passes":[{"shader":"effects/tint","combos":{"MASK":1}}]}"#,
+        );
+        write(
+            &extracted.join("effects/tint/shaders/effects/tint.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/tint/shaders/effects/tint.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+            .expect("unsupported effect issue");
+        assert!(issue.resource_present_but_unsupported);
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("requires g_Texture1"));
     }
 
     #[test]
@@ -1735,7 +2258,19 @@ mod tests {
         );
         write(
             &extracted.join("effects/pulse/materials/effects/pulse.json"),
-            br#"{"passes":[{"shader":"genericimage4"}]}"#,
+            br#"{"passes":[{"shader":"effects/pulse"}]}"#,
+        );
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("effects/pulse/shaders/effects/pulse.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/pulse/shaders/effects/pulse.frag"),
+            b"void main() {}",
         );
         write(
             &extracted.join("effects/pulse/shaders/effects/pulse-dependency.vert"),

@@ -36,6 +36,225 @@ pub enum SceneCompatEffectKind {
     Shine,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScenePhase10bBindingSemantic {
+    PreviousInput,
+    NoiseTexture,
+    FlowMap,
+    TimeOffset,
+    OpacityMask,
+    NormalMap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScenePhase10bTextureSlotContract {
+    pub slot: usize,
+    pub semantic: ScenePhase10bBindingSemantic,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScenePhase10bEffectContract {
+    pub kind: SceneCompatEffectKind,
+    pub family: &'static str,
+    pub required_texture_slots: &'static [usize],
+    pub supported_texture_slots: &'static [usize],
+    pub supported_combo_defaults: &'static [(&'static str, i32)],
+    pub supported_uniforms: &'static [&'static str],
+    pub runtime_binding_layout: &'static [ScenePhase10bTextureSlotContract],
+}
+
+const PULSE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::NoiseTexture,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        required: false,
+    },
+];
+
+const SHAKE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::FlowMap,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::TimeOffset,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 3,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        required: false,
+    },
+];
+
+const WATERRIPPLE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::NormalMap,
+        required: true,
+    },
+];
+
+const WATERWAVES_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::TimeOffset,
+        required: false,
+    },
+];
+
+const TINT_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        required: false,
+    },
+];
+
+const SCROLL_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] =
+    &[ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        required: true,
+    }];
+
+const PULSE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Pulse,
+    family: "pulse",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[
+        ("AUDIOPROCESSING", 0),
+        ("BLENDMODE", 9),
+        ("MASK", 0),
+        ("PULSEALPHA", 0),
+        ("PULSECOLOR", 1),
+    ],
+    supported_uniforms: &[
+        "amount",
+        "bounds",
+        "noiseamount",
+        "noisespeed",
+        "phase",
+        "power",
+        "speed",
+        "tinthigh",
+        "tintlow",
+    ],
+    runtime_binding_layout: PULSE_TEXTURE_SLOTS,
+};
+
+const SHAKE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Shake,
+    family: "shake",
+    required_texture_slots: &[0, 1],
+    supported_texture_slots: &[0, 1, 2, 3],
+    supported_combo_defaults: &[
+        ("AUDIOPROCESSING", 0),
+        ("DIRECTION", 0),
+        ("MASK", 0),
+        ("NOISE", 0),
+        ("TIMEOFFSET", 0),
+    ],
+    supported_uniforms: &["bounds", "friction", "speed", "strength"],
+    runtime_binding_layout: SHAKE_TEXTURE_SLOTS,
+};
+
+const WATERRIPPLE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::WaterRipple,
+    family: "waterripple",
+    required_texture_slots: &[0, 2],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[("MASK", 0), ("PERSPECTIVE", 0), ("SPECULAR", 0)],
+    supported_uniforms: &[
+        "animationspeed",
+        "ratio",
+        "ripplestrength",
+        "scale",
+        "scrolldirection",
+        "scrollspeed",
+    ],
+    runtime_binding_layout: WATERRIPPLE_TEXTURE_SLOTS,
+};
+
+const WATERWAVES_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::WaterWaves,
+    family: "waterwaves",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[
+        ("DUALWAVES", 0),
+        ("MASK", 0),
+        ("PERSPECTIVE", 0),
+        ("TIMEOFFSET", 0),
+    ],
+    supported_uniforms: &["direction", "exponent", "scale", "speed", "strength"],
+    runtime_binding_layout: WATERWAVES_TEXTURE_SLOTS,
+};
+
+const TINT_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Tint,
+    family: "tint",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1],
+    supported_combo_defaults: &[("BLENDMODE", 30), ("MASK", 0)],
+    supported_uniforms: &["alpha", "color"],
+    runtime_binding_layout: TINT_TEXTURE_SLOTS,
+};
+
+const SCROLL_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Scroll,
+    family: "scroll",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0],
+    supported_combo_defaults: &[],
+    supported_uniforms: &["repeat", "speedx", "speedy"],
+    runtime_binding_layout: SCROLL_TEXTURE_SLOTS,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneShaderProgram {
     pub key: String,
@@ -110,8 +329,9 @@ impl SceneMaterialUniformValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneMaterialTextureBinding {
+    pub slot_index: usize,
     pub slot_name: String,
-    pub texture_name: String,
+    pub texture_name: Option<String>,
     pub resolved_path: Option<PathBuf>,
 }
 
@@ -138,6 +358,7 @@ pub struct SceneEffectPassPlan {
     pub index: usize,
     pub material_path: Option<String>,
     pub material_lookup: Option<SceneResourceLookup>,
+    pub target_name: Option<String>,
     pub bindings: Vec<SceneEffectBinding>,
 }
 
@@ -146,6 +367,7 @@ pub struct SceneEffectPlan {
     pub effect_path: PathBuf,
     pub effect_package_root: PathBuf,
     pub version: Option<i64>,
+    pub fbo_names: Vec<String>,
     pub shader_dependencies: Vec<String>,
     pub dependency_lookups: Vec<SceneResourceLookup>,
     pub passes: Vec<SceneEffectPassPlan>,
@@ -246,16 +468,19 @@ fn load_scene_material_plan_from_resolved_path(
             .into_iter()
             .enumerate()
             .map(|(slot, name)| SceneMaterialTextureBinding {
+                slot_index: slot,
                 slot_name: format!("g_Texture{slot}"),
-                resolved_path: resolve_texture_candidates_for_material(
-                    resolver,
-                    material_path,
-                    resolved_path,
-                    effect_package_root,
-                    &name,
-                )
-                .into_iter()
-                .next(),
+                resolved_path: name.as_deref().and_then(|name| {
+                    resolve_texture_candidates_for_material(
+                        resolver,
+                        material_path,
+                        resolved_path,
+                        effect_package_root,
+                        name,
+                    )
+                    .into_iter()
+                    .next()
+                }),
                 texture_name: name,
             })
             .collect::<Vec<_>>();
@@ -413,6 +638,17 @@ fn load_scene_effect_plan_from_resolved_path(
         effect_path: resolved_path.to_path_buf(),
         effect_package_root: effect_package_root.clone(),
         version: json.get("version").and_then(Value::as_i64),
+        fbo_names: json
+            .get("fbos")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
         shader_dependencies,
         dependency_lookups,
         passes: passes
@@ -449,6 +685,10 @@ fn load_scene_effect_plan_from_resolved_path(
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default(),
+                target_name: pass
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
             })
             .collect(),
     })
@@ -730,14 +970,26 @@ fn unsupported_authored_shader_message(
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
+    if let Some(reason) = phase10b_blocked_effect_reason(shader_ref) {
+        if let Some(effect_package_root) = effect_package_root {
+            return format!(
+                "shader {shader_ref} resolved authored source assets ({sources}) from effect package {} or Scene roots, but phase-10b does not support that authored shader family as single-pass compat. {reason}",
+                effect_package_root.display()
+            );
+        }
+        return format!(
+            "shader {shader_ref} resolved authored source assets ({sources}) from Scene roots, but phase-10b does not support that authored shader family as single-pass compat. {reason}"
+        );
+    }
+
     if let Some(effect_package_root) = effect_package_root {
         format!(
-            "shader {shader_ref} resolved authored source assets ({sources}) from effect package {} or Scene roots, but phase-10b does not support that authored shader family yet",
+            "shader {shader_ref} resolved authored source assets ({sources}) from effect package {} or Scene roots, but phase-10b does not support that authored shader family as explicit single-pass compat",
             effect_package_root.display()
         )
     } else {
         format!(
-            "shader {shader_ref} resolved authored source assets ({sources}) from Scene roots, but phase-10b does not support that authored shader family yet"
+            "shader {shader_ref} resolved authored source assets ({sources}) from Scene roots, but phase-10b does not support that authored shader family as explicit single-pass compat"
         )
     }
 }
@@ -747,7 +999,7 @@ fn resolve_supported_authored_effect_program(
     shader_ref: &str,
     combos: &BTreeMap<String, i32>,
 ) -> Result<Option<SceneShaderProgram>, String> {
-    let Some(kind) = supported_authored_effect_kind(shader_ref) else {
+    let Some(contract) = phase10b_supported_effect_contract_for_shader_ref(shader_ref) else {
         return Ok(None);
     };
     let asset_path = "assets/shaders/compat/scene-effect-compat.metal";
@@ -755,26 +1007,52 @@ fn resolve_supported_authored_effect_program(
         .resolve_relative_path(asset_path)
         .ok_or_else(|| format!("built-in Scene shader asset {asset_path} could not be resolved"))?;
     Ok(Some(SceneShaderProgram {
-        key: format!("effect-compat:{kind:?}:{shader_ref}"),
-        kind: SceneShaderProgramKind::EffectCompat(kind),
+        key: format!("effect-compat:{:?}:{shader_ref}", contract.kind),
+        kind: SceneShaderProgramKind::EffectCompat(contract.kind),
         metal_source_path,
         vertex_entry: "phase10_effect_vertex",
         fragment_entry: "phase10_effect_fragment",
-        variant_defines: compat_effect_shader_defines(kind, combos),
+        variant_defines: compat_effect_shader_defines(contract.kind, combos),
     }))
 }
 
-fn supported_authored_effect_kind(shader_ref: &str) -> Option<SceneCompatEffectKind> {
+pub fn phase10b_supported_effect_contract_for_shader_ref(
+    shader_ref: &str,
+) -> Option<&'static ScenePhase10bEffectContract> {
     let normalized = normalized_shader_stem(shader_ref);
     match normalized.as_str() {
-        "pulse" => Some(SceneCompatEffectKind::Pulse),
-        "shake" => Some(SceneCompatEffectKind::Shake),
-        "waterripple" => Some(SceneCompatEffectKind::WaterRipple),
-        "waterwaves" => Some(SceneCompatEffectKind::WaterWaves),
-        "blur" => Some(SceneCompatEffectKind::Blur),
-        "tint" => Some(SceneCompatEffectKind::Tint),
-        "scroll" => Some(SceneCompatEffectKind::Scroll),
-        "shine" => Some(SceneCompatEffectKind::Shine),
+        "pulse" => Some(&PULSE_CONTRACT),
+        "shake" => Some(&SHAKE_CONTRACT),
+        "waterripple" => Some(&WATERRIPPLE_CONTRACT),
+        "waterwaves" => Some(&WATERWAVES_CONTRACT),
+        "tint" => Some(&TINT_CONTRACT),
+        "scroll" => Some(&SCROLL_CONTRACT),
+        _ => None,
+    }
+}
+
+pub fn phase10b_effect_contract_for_kind(
+    kind: SceneCompatEffectKind,
+) -> Option<&'static ScenePhase10bEffectContract> {
+    match kind {
+        SceneCompatEffectKind::Pulse => Some(&PULSE_CONTRACT),
+        SceneCompatEffectKind::Shake => Some(&SHAKE_CONTRACT),
+        SceneCompatEffectKind::WaterRipple => Some(&WATERRIPPLE_CONTRACT),
+        SceneCompatEffectKind::WaterWaves => Some(&WATERWAVES_CONTRACT),
+        SceneCompatEffectKind::Tint => Some(&TINT_CONTRACT),
+        SceneCompatEffectKind::Scroll => Some(&SCROLL_CONTRACT),
+        SceneCompatEffectKind::Blur | SceneCompatEffectKind::Shine => None,
+    }
+}
+
+pub fn phase10b_blocked_effect_reason(shader_ref: &str) -> Option<&'static str> {
+    match normalized_shader_stem(shader_ref).as_str() {
+        "blur" => Some(
+            "blur requires phase-10d named render targets, multi-pass order, previous-texture chaining, and copy-background lifecycle support.",
+        ),
+        "shine" => Some(
+            "shine requires phase-10d named render targets, multi-pass order, previous-texture chaining, and copy-background lifecycle support.",
+        ),
         _ => None,
     }
 }
@@ -841,24 +1119,21 @@ fn compat_effect_shader_defines(
         SceneCompatEffectKind::WaterWaves => {
             defines.insert("PHASE10_EFFECT_WATERWAVES".to_string(), 1);
         }
-        SceneCompatEffectKind::Blur => {
-            defines.insert("PHASE10_EFFECT_BLUR".to_string(), 1);
-        }
         SceneCompatEffectKind::Tint => {
             defines.insert("PHASE10_EFFECT_TINT".to_string(), 1);
         }
         SceneCompatEffectKind::Scroll => {
             defines.insert("PHASE10_EFFECT_SCROLL".to_string(), 1);
         }
-        SceneCompatEffectKind::Shine => {
-            defines.insert("PHASE10_EFFECT_SHINE".to_string(), 1);
+        SceneCompatEffectKind::Blur | SceneCompatEffectKind::Shine => {}
+    }
+    if let Some(contract) = phase10b_effect_contract_for_kind(kind) {
+        for (name, value) in contract.supported_combo_defaults {
+            defines.insert((*name).to_string(), *value);
         }
     }
     for (name, value) in combos {
-        defines.entry(name.clone()).or_insert(*value);
-    }
-    if matches!(kind, SceneCompatEffectKind::Tint) {
-        defines.entry("BLENDMODE".to_string()).or_insert(30);
+        defines.insert(name.clone(), *value);
     }
     defines
 }
@@ -942,14 +1217,13 @@ pub fn parse_uniform_map_from_constants(
         .collect()
 }
 
-fn parse_texture_list(value: Option<&Value>) -> Vec<String> {
+fn parse_texture_list(value: Option<&Value>) -> Vec<Option<String>> {
     value
         .and_then(Value::as_array)
         .map(|textures| {
             textures
                 .iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
+                .map(|texture| texture.as_str().map(ToString::to_string))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
@@ -1522,6 +1796,90 @@ mod tests {
     }
 
     #[test]
+    fn material_plan_preserves_sparse_authored_texture_slot_ordinals() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+        write(
+            &builtin.join("assets/shaders/compat/scene-sprite.metal"),
+            "fragment float4 compat_sprite_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("materials/layer.material"),
+            r#"{"passes":[{"shader":"genericimage4","textures":[null,null,"textures/mask.png"]}]}"#,
+        );
+        write(&extracted.join("textures/mask.png"), "png");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+
+        let plan =
+            load_scene_material_plan(&resolver, "materials/layer.material").expect("material");
+
+        assert_eq!(plan.passes.len(), 1);
+        assert_eq!(plan.passes[0].textures.len(), 3);
+        assert_eq!(plan.passes[0].textures[0].slot_index, 0);
+        assert_eq!(plan.passes[0].textures[0].texture_name, None);
+        assert_eq!(plan.passes[0].textures[1].slot_index, 1);
+        assert_eq!(plan.passes[0].textures[1].texture_name, None);
+        assert_eq!(plan.passes[0].textures[2].slot_index, 2);
+        assert_eq!(
+            plan.passes[0].textures[2].texture_name.as_deref(),
+            Some("textures/mask.png")
+        );
+    }
+
+    #[test]
+    fn phase10b_supported_families_expose_explicit_contract_defaults_and_slots() {
+        let families = [
+            (SceneCompatEffectKind::Shake, vec![0, 1, 2, 3]),
+            (SceneCompatEffectKind::Pulse, vec![0, 1, 2]),
+            (SceneCompatEffectKind::WaterRipple, vec![0, 1, 2]),
+            (SceneCompatEffectKind::WaterWaves, vec![0, 1, 2]),
+            (SceneCompatEffectKind::Tint, vec![0, 1]),
+            (SceneCompatEffectKind::Scroll, vec![0]),
+        ];
+
+        for (kind, supported_slots) in families {
+            let contract =
+                super::phase10b_effect_contract_for_kind(kind).expect("phase-10b contract");
+            assert_eq!(contract.kind, kind);
+            assert_eq!(contract.supported_texture_slots, supported_slots.as_slice());
+            assert_eq!(
+                contract
+                    .runtime_binding_layout
+                    .iter()
+                    .map(|slot| slot.slot)
+                    .collect::<Vec<_>>(),
+                supported_slots
+            );
+        }
+
+        let pulse = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Pulse)
+            .expect("pulse contract");
+        assert!(pulse.supported_combo_defaults.contains(&("BLENDMODE", 9)));
+        assert!(pulse.supported_uniforms.contains(&"noiseamount"));
+
+        let scroll = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Scroll)
+            .expect("scroll contract");
+        assert_eq!(scroll.supported_combo_defaults, &[]);
+        assert!(scroll.supported_uniforms.contains(&"repeat"));
+    }
+
+    #[test]
+    fn phase10b_blur_and_shine_report_phase10d_blockers() {
+        let blur_reason =
+            super::phase10b_blocked_effect_reason("effects/blur").expect("blur blocker");
+        let shine_reason =
+            super::phase10b_blocked_effect_reason("effects/shine").expect("shine blocker");
+
+        assert!(blur_reason.contains("phase-10d"));
+        assert!(blur_reason.contains("named render targets"));
+        assert!(shine_reason.contains("phase-10d"));
+        assert!(shine_reason.contains("copy-background lifecycle"));
+    }
+
+    #[test]
     fn tint_compat_effect_uses_authored_blendmode_default_without_overriding_combos() {
         let defaults =
             super::compat_effect_shader_defines(SceneCompatEffectKind::Tint, &BTreeMap::new());
@@ -1567,7 +1925,9 @@ mod tests {
         .expect_err("unknown authored effect shader should remain unsupported in phase-10b");
 
         assert!(error.contains("resolved authored source assets"));
-        assert!(error.contains("phase-10b does not support that authored shader family yet"));
+        assert!(error.contains(
+            "phase-10b does not support that authored shader family as explicit single-pass compat"
+        ));
         assert!(!error.contains("could not be resolved"));
     }
 
