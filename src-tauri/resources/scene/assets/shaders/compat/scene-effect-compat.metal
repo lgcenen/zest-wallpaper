@@ -10,7 +10,10 @@ struct Phase10EffectVertexIn {
 
 struct Phase10EffectVertexOut {
     float4 position [[position]];
-    float2 uv;
+    float2 primary_uv;
+    float2 slot1_uv;
+    float2 slot2_uv;
+    float2 slot3_uv;
     float4 color;
 };
 
@@ -18,6 +21,10 @@ struct Phase10EffectUniforms {
     float4 color;
     float4 user0;
     float4 user1;
+    float4 primary_resolution;
+    float4 slot1_resolution;
+    float4 slot2_resolution;
+    float4 slot3_resolution;
     float2 texel_size;
     float2 aux_texel_size;
     float2 aux2_texel_size;
@@ -32,12 +39,37 @@ struct Phase10EffectUniforms {
 
 vertex Phase10EffectVertexOut phase10_effect_vertex(
     const device Phase10EffectVertexIn* vertices [[buffer(0)]],
+    constant Phase10EffectUniforms& uniforms [[buffer(1)]],
     uint vertex_id [[vertex_id]]
 ) {
     Phase10EffectVertexIn input_vertex = vertices[vertex_id];
     Phase10EffectVertexOut out_vertex;
     out_vertex.position = float4(float2(input_vertex.position), 0.0, 1.0);
-    out_vertex.uv = float2(input_vertex.uv);
+    float2 base_uv = float2(input_vertex.uv);
+    float2 primary_scale = clamp(
+        uniforms.primary_resolution.zw / max(uniforms.primary_resolution.xy, float2(1.0)),
+        float2(0.0),
+        float2(1.0)
+    );
+    float2 slot1_scale = clamp(
+        uniforms.slot1_resolution.zw / max(uniforms.slot1_resolution.xy, float2(1.0)),
+        float2(0.0),
+        float2(1.0)
+    );
+    float2 slot2_scale = clamp(
+        uniforms.slot2_resolution.zw / max(uniforms.slot2_resolution.xy, float2(1.0)),
+        float2(0.0),
+        float2(1.0)
+    );
+    float2 slot3_scale = clamp(
+        uniforms.slot3_resolution.zw / max(uniforms.slot3_resolution.xy, float2(1.0)),
+        float2(0.0),
+        float2(1.0)
+    );
+    out_vertex.primary_uv = base_uv * primary_scale;
+    out_vertex.slot1_uv = base_uv * slot1_scale;
+    out_vertex.slot2_uv = base_uv * slot2_scale;
+    out_vertex.slot3_uv = base_uv * slot3_scale;
     out_vertex.color = float4(input_vertex.color) * input_vertex.opacity;
     return out_vertex;
 }
@@ -49,6 +81,18 @@ static float2 rotate2d(float2 value, float angle) {
         value.x * cosine - value.y * sine,
         value.x * sine + value.y * cosine
     );
+}
+
+static float2 phase10_content_size(float4 resolution) {
+    return max(resolution.zw, float2(1.0));
+}
+
+static float2 phase10_offset_between_texture_spaces(
+    float2 offset,
+    float4 source_resolution,
+    float4 target_resolution
+) {
+    return offset * phase10_content_size(source_resolution) / phase10_content_size(target_resolution);
 }
 
 static float4 sample_input(
@@ -141,8 +185,8 @@ fragment float4 phase10_effect_fragment(
     constant Phase10EffectUniforms& uniforms [[buffer(0)]]
 ) {
     constexpr sampler texture_sampler(address::clamp_to_edge, mag_filter::linear, min_filter::linear);
-    float2 uv = stage_vertex.uv;
-    float4 sampled = sample_input(input_texture, texture_sampler, uv);
+    float2 primary_uv = stage_vertex.primary_uv;
+    float4 sampled = sample_input(input_texture, texture_sampler, primary_uv);
 
 #if PHASE10_EFFECT_PULSE
     float4 original = sampled;
@@ -170,18 +214,18 @@ fragment float4 phase10_effect_fragment(
 #endif
 #if MASK
     if (has_aux_texture(uniforms.aux2_texel_size)) {
-        float mask = aux2_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r;
+        float mask = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r;
         sampled = mix(original, sampled, mask);
     }
 #endif
 #elif PHASE10_EFFECT_SHAKE
     float flow_phase = 0.0;
     if (has_aux_texture(uniforms.aux2_texel_size)) {
-        flow_phase = aux2_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r * 1.57079632679;
+        flow_phase = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r * 1.57079632679;
     }
     float2 flow_mask = float2(0.0);
     if (has_aux_texture(uniforms.aux_texel_size)) {
-        float2 flow_colors = aux_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).rg;
+        float2 flow_colors = aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).rg;
         flow_mask = (flow_colors - float2(0.498)) * 2.0;
     }
     float2 bounds = uniforms.user0.xy;
@@ -198,9 +242,14 @@ fragment float4 phase10_effect_fragment(
     offset = offset - 1.0;
 #endif
     float2 texCoordOffset = offset * uniforms.intensity * uniforms.intensity * flow_mask;
-    float4 shaken = sample_input(input_texture, texture_sampler, uv + texCoordOffset);
+    float4 shaken = sample_input(input_texture, texture_sampler, primary_uv + texCoordOffset);
     if (has_aux_texture(uniforms.aux3_texel_size)) {
-        float mask = aux3_texture.sample(texture_sampler, clamp(uv + texCoordOffset, float2(0.0), float2(1.0))).r;
+        float2 mask_uv = stage_vertex.slot3_uv + phase10_offset_between_texture_spaces(
+            texCoordOffset,
+            uniforms.primary_resolution,
+            uniforms.slot3_resolution
+        );
+        float mask = aux3_texture.sample(texture_sampler, clamp(mask_uv, float2(0.0), float2(1.0))).r;
         sampled = mix(sampled, shaken, mask);
     } else {
         sampled = shaken;
@@ -209,7 +258,7 @@ fragment float4 phase10_effect_fragment(
     float mask = 1.0;
 #if MASK
     if (has_aux_texture(uniforms.aux_texel_size)) {
-        mask = aux_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r;
+        mask = aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
     }
 #endif
     if (has_aux_texture(uniforms.aux2_texel_size)) {
@@ -222,7 +271,7 @@ fragment float4 phase10_effect_fragment(
             ? uniforms.texel_size.y / uniforms.texel_size.x
             : 1.0;
 
-        float4 ripple_uv = float4(uv, uv * 1.333);
+        float4 ripple_uv = float4(stage_vertex.slot2_uv, stage_vertex.slot2_uv * 1.333);
         ripple_uv.xy = ripple_uv.xy + animation + scroll;
         ripple_uv.zw = ripple_uv.zw - animation + scroll;
         ripple_uv *= scale;
@@ -235,11 +284,11 @@ fragment float4 phase10_effect_fragment(
         sampled = sample_input(
             input_texture,
             texture_sampler,
-            uv + normal.xy * uniforms.intensity * uniforms.intensity * mask
+            primary_uv + normal.xy * uniforms.intensity * uniforms.intensity * mask
         );
     }
 #elif PHASE10_EFFECT_WATERWAVES
-    float mask = aux_red_mask(aux_texture, texture_sampler, uv, uniforms.aux_texel_size);
+    float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
     float2 direction = uniforms.user0.xy;
     if (length(direction) < 0.0001) {
         direction = float2(-sin(uniforms.angle), cos(uniforms.angle));
@@ -250,21 +299,21 @@ fragment float4 phase10_effect_fragment(
     float time_offset = 0.0;
 #if TIMEOFFSET
     if (has_aux_texture(uniforms.aux2_texel_size)) {
-        time_offset = aux2_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r * 1.57079632679;
+        time_offset = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r * 1.57079632679;
     }
 #endif
-    float distance = (uniforms.time + time_offset) * max(uniforms.speed, 0.001) + dot(uv, direction) * scale;
+    float distance = (uniforms.time + time_offset) * max(uniforms.speed, 0.001) + dot(primary_uv, direction) * scale;
     float wave = sin(distance);
     float signed_wave = sign(wave) * pow(abs(wave), exponent);
     float strength = max(uniforms.intensity, 0.0);
     float safe_amplitude = max(max(uniforms.texel_size.x, uniforms.texel_size.y) * 4.0, 0.0001);
     float displacement = min(strength * strength, safe_amplitude) * mask;
     float2 offset = float2(direction.y, -direction.x) * signed_wave * displacement;
-    float4 displaced = sample_input(input_texture, texture_sampler, uv + offset);
+    float4 displaced = sample_input(input_texture, texture_sampler, primary_uv + offset);
     float coverage = smoothstep(0.02, 0.15, sampled.a);
     sampled = mix(sampled, displaced, coverage);
 #elif PHASE10_EFFECT_TINT
-    float mask = aux_red_mask(aux_texture, texture_sampler, uv, uniforms.aux_texel_size);
+    float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
     float strength = clamp(uniforms.intensity * mask, 0.0, 1.0);
     sampled.rgb = apply_tint_blend(sampled.rgb, uniforms.color.rgb, strength);
 #elif PHASE10_EFFECT_SCROLL
@@ -273,7 +322,7 @@ fragment float4 phase10_effect_fragment(
     float2 signed_scroll = sign(scroll_speed) * pow(abs(scroll_speed), float2(2.0)) * uniforms.time;
     sampled = input_texture.sample(
         texture_sampler,
-        fract((uv + signed_scroll) * repeat)
+        fract((primary_uv + signed_scroll) * repeat)
     );
 #endif
 

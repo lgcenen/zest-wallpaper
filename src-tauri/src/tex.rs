@@ -57,6 +57,14 @@ struct TextureHeader {
     image_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TexResolution {
+    pub texture_width: u32,
+    pub texture_height: u32,
+    pub content_width: u32,
+    pub content_height: u32,
+}
+
 #[derive(Debug, Clone)]
 struct TextureMipmap {
     width: u32,
@@ -435,6 +443,19 @@ pub fn load_tex_image(source_path: &Path) -> Result<DynamicImage> {
     Ok(crop_texture_image(&header, image))
 }
 
+pub fn inspect_tex_resolution(source_path: &Path) -> Result<TexResolution> {
+    let (header, mipmap) = load_primary_mipmap(source_path)?;
+    if is_video_texture(&header, &mipmap) {
+        bail!("TEX entry stores video payloads and cannot be loaded as a still image");
+    }
+    Ok(TexResolution {
+        texture_width: header.texture_width.max(1),
+        texture_height: header.texture_height.max(1),
+        content_width: header.width.max(1),
+        content_height: header.height.max(1),
+    })
+}
+
 pub fn extract_tex_asset(
     source_path: &Path,
     destination_stem: &Path,
@@ -481,7 +502,7 @@ mod tests {
     use image::GenericImageView;
     use tempfile::tempdir;
 
-    use super::{load_tex_image, payload_looks_like_mp4};
+    use super::{inspect_tex_resolution, load_tex_image, payload_looks_like_mp4};
 
     fn rgba_tex_bytes(pixel: [u8; 4], width: u32, height: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -508,6 +529,40 @@ mod tests {
         bytes
     }
 
+    fn rgba_tex_bytes_with_padding(
+        pixel: [u8; 4],
+        texture_width: u32,
+        texture_height: u32,
+        content_width: u32,
+        content_height: u32,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(super::TEXV_MAGIC);
+        bytes.extend_from_slice(super::TEXI_MAGIC);
+        bytes.extend_from_slice(&(super::TextureFormat::Rgba8888 as u32).to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&texture_width.to_le_bytes());
+        bytes.extend_from_slice(&texture_height.to_le_bytes());
+        bytes.extend_from_slice(&content_width.to_le_bytes());
+        bytes.extend_from_slice(&content_height.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(super::TEXB_V4_MAGIC);
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&super::FREE_IMAGE_UNKNOWN.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&texture_width.to_le_bytes());
+        bytes.extend_from_slice(&texture_height.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_i32.to_le_bytes());
+        let payload_size = (texture_width as i32) * (texture_height as i32) * 4;
+        bytes.extend_from_slice(&payload_size.to_le_bytes());
+        for _ in 0..texture_width * texture_height {
+            bytes.extend_from_slice(&pixel);
+        }
+        bytes
+    }
+
     #[test]
     fn detects_mp4_magic_in_mipmap_payload() {
         let payload = b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom";
@@ -524,5 +579,23 @@ mod tests {
 
         assert_eq!(image.dimensions(), (1, 1));
         assert_eq!(image.to_rgba8().get_pixel(0, 0).0, [12, 34, 56, 78]);
+    }
+
+    #[test]
+    fn inspect_tex_resolution_preserves_padded_texture_extent_and_content_extent() {
+        let temp = tempdir().expect("temp dir");
+        let tex_path = temp.path().join("padded.tex");
+        fs::write(
+            &tex_path,
+            rgba_tex_bytes_with_padding([255, 255, 255, 255], 8, 4, 4, 2),
+        )
+        .expect("write padded tex");
+
+        let resolution = inspect_tex_resolution(&tex_path).expect("inspect resolution");
+
+        assert_eq!(resolution.texture_width, 8);
+        assert_eq!(resolution.texture_height, 4);
+        assert_eq!(resolution.content_width, 4);
+        assert_eq!(resolution.content_height, 2);
     }
 }

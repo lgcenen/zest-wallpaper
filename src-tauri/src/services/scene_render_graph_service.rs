@@ -2220,6 +2220,85 @@ mod tests {
     }
 
     #[test]
+    fn phase10_graph_rejects_supported_family_use_case_that_exceeds_phase10b_local_uv_contract() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":191,
+                  "name":"WaterRipple",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/waterripple/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/waterripple/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/waterripple.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/waterripple/materials/effects/waterripple.json"),
+            br#"{"passes":[{"shader":"effects/waterripple","combos":{"PERSPECTIVE":1},"textures":[null,null,"textures/ripple.png"]}]}"#,
+        );
+        write(
+            &extracted.join("effects/waterripple/shaders/effects/waterripple.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/waterripple/shaders/effects/waterripple.frag"),
+            b"void main() {}",
+        );
+        write(&extracted.join("textures/ripple.png"), b"png");
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+            .expect("unsupported effect issue");
+        assert!(issue.resource_present_but_unsupported);
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("combo PERSPECTIVE=1"));
+    }
+
+    #[test]
     fn phase10_graph_accepts_effect_dependency_resolved_from_authored_shader_pair() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");

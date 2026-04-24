@@ -47,9 +47,17 @@ pub enum ScenePhase10bBindingSemantic {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScenePhase10bUvSpace {
+    PrimaryInput,
+    AuxTexture,
+    MaskTexture,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScenePhase10bTextureSlotContract {
     pub slot: usize,
     pub semantic: ScenePhase10bBindingSemantic,
+    pub uv_space: ScenePhase10bUvSpace,
     pub required: bool,
 }
 
@@ -68,16 +76,19 @@ const PULSE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
     ScenePhase10bTextureSlotContract {
         slot: 0,
         semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
         required: true,
     },
     ScenePhase10bTextureSlotContract {
         slot: 1,
         semantic: ScenePhase10bBindingSemantic::NoiseTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
         required: false,
     },
     ScenePhase10bTextureSlotContract {
         slot: 2,
         semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
         required: false,
     },
 ];
@@ -86,21 +97,25 @@ const SHAKE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
     ScenePhase10bTextureSlotContract {
         slot: 0,
         semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
         required: true,
     },
     ScenePhase10bTextureSlotContract {
         slot: 1,
         semantic: ScenePhase10bBindingSemantic::FlowMap,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
         required: true,
     },
     ScenePhase10bTextureSlotContract {
         slot: 2,
         semantic: ScenePhase10bBindingSemantic::TimeOffset,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
         required: false,
     },
     ScenePhase10bTextureSlotContract {
         slot: 3,
         semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
         required: false,
     },
 ];
@@ -109,16 +124,19 @@ const WATERRIPPLE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
     ScenePhase10bTextureSlotContract {
         slot: 0,
         semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
         required: true,
     },
     ScenePhase10bTextureSlotContract {
         slot: 1,
         semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
         required: false,
     },
     ScenePhase10bTextureSlotContract {
         slot: 2,
         semantic: ScenePhase10bBindingSemantic::NormalMap,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
         required: true,
     },
 ];
@@ -127,16 +145,19 @@ const WATERWAVES_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
     ScenePhase10bTextureSlotContract {
         slot: 0,
         semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
         required: true,
     },
     ScenePhase10bTextureSlotContract {
         slot: 1,
         semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
         required: false,
     },
     ScenePhase10bTextureSlotContract {
         slot: 2,
         semantic: ScenePhase10bBindingSemantic::TimeOffset,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
         required: false,
     },
 ];
@@ -145,11 +166,13 @@ const TINT_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
     ScenePhase10bTextureSlotContract {
         slot: 0,
         semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
         required: true,
     },
     ScenePhase10bTextureSlotContract {
         slot: 1,
         semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
         required: false,
     },
 ];
@@ -158,6 +181,7 @@ const SCROLL_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] =
     &[ScenePhase10bTextureSlotContract {
         slot: 0,
         semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
         required: true,
     }];
 
@@ -1859,11 +1883,39 @@ mod tests {
             .expect("pulse contract");
         assert!(pulse.supported_combo_defaults.contains(&("BLENDMODE", 9)));
         assert!(pulse.supported_uniforms.contains(&"noiseamount"));
+        assert_eq!(
+            pulse
+                .runtime_binding_layout
+                .iter()
+                .map(|slot| slot.uv_space)
+                .collect::<Vec<_>>(),
+            vec![
+                super::ScenePhase10bUvSpace::PrimaryInput,
+                super::ScenePhase10bUvSpace::AuxTexture,
+                super::ScenePhase10bUvSpace::MaskTexture,
+            ]
+        );
 
         let scroll = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Scroll)
             .expect("scroll contract");
         assert_eq!(scroll.supported_combo_defaults, &[]);
         assert!(scroll.supported_uniforms.contains(&"repeat"));
+
+        let shake = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Shake)
+            .expect("shake contract");
+        assert_eq!(
+            shake
+                .runtime_binding_layout
+                .iter()
+                .map(|slot| slot.uv_space)
+                .collect::<Vec<_>>(),
+            vec![
+                super::ScenePhase10bUvSpace::PrimaryInput,
+                super::ScenePhase10bUvSpace::AuxTexture,
+                super::ScenePhase10bUvSpace::AuxTexture,
+                super::ScenePhase10bUvSpace::MaskTexture,
+            ]
+        );
     }
 
     #[test]

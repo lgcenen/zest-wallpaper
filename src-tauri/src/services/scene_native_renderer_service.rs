@@ -1231,6 +1231,7 @@ struct NativeSceneMetalRenderer {
     plan: Option<SceneRenderPlan>,
     phase10_graph: ScenePhase10GraphPlan,
     texture_cache: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
+    texture_resolution_cache: BTreeMap<String, Phase10TextureMetrics>,
     text_texture_cache: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
     phase10_output_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
     phase10_scratch_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
@@ -1328,6 +1329,7 @@ impl NativeSceneMetalRenderer {
             plan: None,
             phase10_graph: ScenePhase10GraphPlan::default(),
             texture_cache: BTreeMap::new(),
+            texture_resolution_cache: BTreeMap::new(),
             text_texture_cache: BTreeMap::new(),
             phase10_output_textures: BTreeMap::new(),
             phase10_scratch_textures: BTreeMap::new(),
@@ -1447,6 +1449,8 @@ impl NativeSceneMetalRenderer {
 
         self.texture_cache
             .retain(|key, _| required_keys.contains(key));
+        self.texture_resolution_cache
+            .retain(|key, _| required_keys.contains(key));
         self.text_texture_cache
             .retain(|key, _| required_text_keys.contains(key));
         let active_audio_counts = plan
@@ -1554,6 +1558,7 @@ impl NativeSceneMetalRenderer {
         self.plan = None;
         self.phase10_graph = ScenePhase10GraphPlan::default();
         self.texture_cache.clear();
+        self.texture_resolution_cache.clear();
         self.text_texture_cache.clear();
         self.phase10_output_textures.clear();
         self.phase10_scratch_textures.clear();
@@ -1764,12 +1769,12 @@ impl NativeSceneMetalRenderer {
                 let shader_defines = phase10_pass_shader_defines(resolved_pass);
                 if !self.encode_phase10_pass(
                     command_buffer,
-                    &target,
+                    &target.texture,
                     resolved_pass.pass,
                     &shader_defines,
                     &pass_textures,
                     &uniforms,
-                    Some(current_texture.clone()),
+                    Some(current_texture.texture.clone()),
                 ) {
                     completed = false;
                     break;
@@ -1778,7 +1783,7 @@ impl NativeSceneMetalRenderer {
             }
 
             if completed {
-                outputs.insert(visual.object_id, current_texture);
+                outputs.insert(visual.object_id, current_texture.texture);
             }
         }
 
@@ -1981,6 +1986,10 @@ impl NativeSceneMetalRenderer {
             build_solid_texture_image(color, width, height),
         )
         .map_err(|error| format!("unable to upload phase-10 solid texture {key}: {error}"))?;
+        self.texture_resolution_cache.insert(
+            key.clone(),
+            phase10_texture_metrics_from_size(width, height),
+        );
         self.texture_cache.insert(key, texture);
         Ok(())
     }
@@ -1996,13 +2005,15 @@ impl NativeSceneMetalRenderer {
             return Ok(());
         }
 
-        let image = load_phase10_texture_image(path)?;
-        let texture = load_texture(&self.device, image).map_err(|error| {
+        let decoded = load_phase10_texture_source(path)?;
+        let texture = load_texture(&self.device, decoded.image).map_err(|error| {
             format!(
                 "unable to upload phase-10 texture {}: {error}",
                 path.display()
             )
         })?;
+        self.texture_resolution_cache
+            .insert(key.clone(), decoded.metrics);
         self.texture_cache.insert(key, texture);
         Ok(())
     }
@@ -2080,7 +2091,7 @@ impl NativeSceneMetalRenderer {
             };
             self.draw_quad(
                 encoder,
-                texture.as_ref(),
+                texture.texture.as_ref(),
                 visual.blend_mode,
                 projection,
                 quad_primitive_from_render_quad(visual.quad, visual.base_color),
@@ -2137,7 +2148,7 @@ impl NativeSceneMetalRenderer {
             };
             self.draw_quad(
                 encoder,
-                texture.as_ref(),
+                texture.texture.as_ref(),
                 visual.blend_mode,
                 projection,
                 quad_primitive_from_render_quad(visual.quad, visual.base_color),
@@ -2148,7 +2159,7 @@ impl NativeSceneMetalRenderer {
     fn phase10_base_texture_for_visual(
         &mut self,
         visual: &ScenePhase10VisualPlan,
-    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
+    ) -> Option<Phase10TextureHandle> {
         match visual.base_source_kind {
             Some(SceneRenderSourceKind::Image) => visual
                 .base_texture_path
@@ -2157,7 +2168,10 @@ impl NativeSceneMetalRenderer {
             Some(SceneRenderSourceKind::Video) => {
                 let source = self.video_sources.get_mut(&visual.object_id)?;
                 match source.current_texture(&self.video_texture_cache, self.paused) {
-                    Ok(texture) => texture,
+                    Ok(texture) => texture.map(|texture| Phase10TextureHandle {
+                        metrics: phase10_texture_metrics_from_texture(texture.as_ref()),
+                        texture,
+                    }),
                     Err(error) => {
                         let detail = video_texture_frame_warning(&visual.object_name, error);
                         let _ = diagnostic_service::record_warning(
@@ -2176,26 +2190,35 @@ impl NativeSceneMetalRenderer {
                 self.texture_cache
                     .get(&phase10_solid_texture_key(visual.base_color, width, height))
                     .cloned()
+                    .map(|texture| Phase10TextureHandle {
+                        texture,
+                        metrics: *self
+                            .texture_resolution_cache
+                            .get(&phase10_solid_texture_key(visual.base_color, width, height))
+                            .unwrap_or(&phase10_texture_metrics_from_size(width, height)),
+                    })
             }
         }
     }
 
-    fn phase10_texture_for_path(
-        &self,
-        path: &Path,
-    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
-        self.texture_cache
-            .get(&phase10_texture_cache_key(path))
-            .cloned()
+    fn phase10_texture_for_path(&self, path: &Path) -> Option<Phase10TextureHandle> {
+        let key = phase10_texture_cache_key(path);
+        let texture = self.texture_cache.get(&key)?.clone();
+        let metrics = self
+            .texture_resolution_cache
+            .get(&key)
+            .copied()
+            .unwrap_or_else(|| phase10_texture_metrics_from_texture(texture.as_ref()));
+        Some(Phase10TextureHandle { texture, metrics })
     }
 
     fn phase10_pass_textures_for(
         &self,
         visual: &ScenePhase10VisualPlan,
         resolved_pass: &Phase10ResolvedPass<'_>,
-        current_texture: Option<&Retained<ProtocolObject<dyn MTLTexture>>>,
+        current_texture: Option<&Phase10TextureHandle>,
     ) -> Phase10PassTextures {
-        let mut slots = BTreeMap::<usize, Retained<ProtocolObject<dyn MTLTexture>>>::new();
+        let mut slots = BTreeMap::<usize, Phase10TextureHandle>::new();
 
         match resolved_pass.context {
             Phase10PassContext::Base => {
@@ -2248,7 +2271,16 @@ impl NativeSceneMetalRenderer {
                 .get(&phase10_solid_texture_key(visual.base_color, width, height))
                 .cloned()
             {
-                slots.insert(0, texture);
+                slots.insert(
+                    0,
+                    Phase10TextureHandle {
+                        metrics: *self
+                            .texture_resolution_cache
+                            .get(&phase10_solid_texture_key(visual.base_color, width, height))
+                            .unwrap_or(&phase10_texture_metrics_from_size(width, height)),
+                        texture,
+                    },
+                );
             }
         }
 
@@ -2274,6 +2306,18 @@ impl NativeSceneMetalRenderer {
             color: [1.0, 1.0, 1.0, 1.0],
             user0: [0.0, 0.0, 0.0, 0.0],
             user1: [0.0, 0.0, 0.0, 0.0],
+            primary_resolution: phase10_texture_resolution(
+                pass_textures.slots.first().and_then(|slot| slot.as_ref()),
+            ),
+            slot1_resolution: phase10_optional_texture_resolution(
+                pass_textures.slots.get(1).and_then(|slot| slot.as_ref()),
+            ),
+            slot2_resolution: phase10_optional_texture_resolution(
+                pass_textures.slots.get(2).and_then(|slot| slot.as_ref()),
+            ),
+            slot3_resolution: phase10_optional_texture_resolution(
+                pass_textures.slots.get(3).and_then(|slot| slot.as_ref()),
+            ),
             texel_size: phase10_texel_size(
                 pass_textures.slots.first().and_then(|slot| slot.as_ref()),
             ),
@@ -2444,14 +2488,17 @@ impl NativeSceneMetalRenderer {
         width: usize,
         height: usize,
         output: bool,
-    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
+    ) -> Option<Phase10TextureHandle> {
         let store = if output {
             &mut self.phase10_output_textures
         } else {
             &mut self.phase10_scratch_textures
         };
         if let Some(texture) = store.get(key) {
-            return Some(texture.clone());
+            return Some(Phase10TextureHandle {
+                texture: texture.clone(),
+                metrics: phase10_texture_metrics_from_size(width, height),
+            });
         }
         let descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
@@ -2466,7 +2513,10 @@ impl NativeSceneMetalRenderer {
         descriptor.setStorageMode(MTLStorageMode::Private);
         let texture = self.device.newTextureWithDescriptor(&descriptor)?;
         store.insert(key.to_string(), texture.clone());
-        Some(texture)
+        Some(Phase10TextureHandle {
+            texture,
+            metrics: phase10_texture_metrics_from_size(width, height),
+        })
     }
 
     fn draw_phase10_fullscreen_texture(
@@ -2477,7 +2527,10 @@ impl NativeSceneMetalRenderer {
         blend_mode: SceneRenderBlendMode,
     ) {
         let pass_textures = Phase10PassTextures {
-            slots: vec![Some(texture)],
+            slots: vec![Some(Phase10TextureHandle {
+                metrics: phase10_texture_metrics_from_texture(texture.as_ref()),
+                texture,
+            })],
         };
         self.draw_phase10_fullscreen_pass(
             encoder,
@@ -2579,6 +2632,11 @@ impl NativeSceneMetalRenderer {
                     encoder.setVertexBuffer_offset_atIndex(Some(vertex_buffer.as_ref()), 0, 0);
                 }
             }
+            encoder.setVertexBytes_length_atIndex(
+                uniform_bytes,
+                std::mem::size_of::<Phase10EffectUniforms>(),
+                1,
+            );
             encoder.setFragmentBytes_length_atIndex(
                 uniform_bytes,
                 std::mem::size_of::<Phase10EffectUniforms>(),
@@ -2589,7 +2647,7 @@ impl NativeSceneMetalRenderer {
                     .slots
                     .get(slot)
                     .and_then(|texture| texture.as_ref())
-                    .map(|texture| texture.as_ref());
+                    .map(|texture| texture.texture.as_ref());
                 encoder.setFragmentTexture_atIndex(texture, slot);
             }
             encoder.drawPrimitives_vertexStart_vertexCount(
@@ -2674,12 +2732,16 @@ impl NativeSceneMetalRenderer {
                 item.texture_path.display()
             )
         })?;
+        let metrics =
+            phase10_texture_metrics_from_size(image.width() as usize, image.height() as usize);
         let texture = load_texture(&self.device, image).map_err(|error| {
             format!(
                 "unable to upload texture {}: {error}",
                 item.texture_path.display()
             )
         })?;
+        self.texture_resolution_cache
+            .insert(key.to_string(), metrics);
         self.texture_cache.insert(key.to_string(), texture);
         Ok(())
     }
@@ -2717,6 +2779,10 @@ impl NativeSceneMetalRenderer {
 
         let texture = load_texture(&self.device, image)
             .map_err(|error| format!("unable to upload procedural texture {key}: {error}"))?;
+        self.texture_resolution_cache.insert(
+            key.to_string(),
+            phase10_texture_metrics_from_texture(texture.as_ref()),
+        );
         self.texture_cache.insert(key.to_string(), texture);
         Ok(())
     }
@@ -3288,6 +3354,10 @@ struct Phase10EffectUniforms {
     color: [f32; 4],
     user0: [f32; 4],
     user1: [f32; 4],
+    primary_resolution: [f32; 4],
+    slot1_resolution: [f32; 4],
+    slot2_resolution: [f32; 4],
+    slot3_resolution: [f32; 4],
     texel_size: [f32; 2],
     aux_texel_size: [f32; 2],
     aux2_texel_size: [f32; 2],
@@ -3302,8 +3372,51 @@ struct Phase10EffectUniforms {
 
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
+struct Phase10TextureHandle {
+    texture: Retained<ProtocolObject<dyn MTLTexture>>,
+    metrics: Phase10TextureMetrics,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Phase10TextureMetrics {
+    texture_size: [f32; 2],
+    content_size: [f32; 2],
+}
+
+#[cfg(target_os = "macos")]
+impl Default for Phase10TextureMetrics {
+    fn default() -> Self {
+        Self {
+            texture_size: [1.0, 1.0],
+            content_size: [1.0, 1.0],
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Phase10TextureMetrics {
+    fn resolution(self) -> [f32; 4] {
+        [
+            self.texture_size[0].max(1.0),
+            self.texture_size[1].max(1.0),
+            self.content_size[0].max(1.0),
+            self.content_size[1].max(1.0),
+        ]
+    }
+
+    fn texel_size(self) -> [f32; 2] {
+        [
+            1.0 / self.texture_size[0].max(1.0),
+            1.0 / self.texture_size[1].max(1.0),
+        ]
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
 struct Phase10PassTextures {
-    slots: Vec<Option<Retained<ProtocolObject<dyn MTLTexture>>>>,
+    slots: Vec<Option<Phase10TextureHandle>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -3350,25 +3463,50 @@ fn phase10_visual_pass_chain<'a>(
 }
 
 #[cfg(target_os = "macos")]
-fn phase10_texel_size(texture: Option<&Retained<ProtocolObject<dyn MTLTexture>>>) -> [f32; 2] {
+fn phase10_texel_size(texture: Option<&Phase10TextureHandle>) -> [f32; 2] {
     let Some(texture) = texture else {
         return [1.0, 1.0];
     };
-    let width = texture.width().max(1) as f32;
-    let height = texture.height().max(1) as f32;
-    [1.0 / width, 1.0 / height]
+    texture.metrics.texel_size()
 }
 
 #[cfg(target_os = "macos")]
-fn phase10_optional_texel_size(
-    texture: Option<&Retained<ProtocolObject<dyn MTLTexture>>>,
-) -> [f32; 2] {
+fn phase10_optional_texel_size(texture: Option<&Phase10TextureHandle>) -> [f32; 2] {
     let Some(texture) = texture else {
         return [0.0, 0.0];
     };
-    let width = texture.width().max(1) as f32;
-    let height = texture.height().max(1) as f32;
-    [1.0 / width, 1.0 / height]
+    texture.metrics.texel_size()
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_texture_resolution(texture: Option<&Phase10TextureHandle>) -> [f32; 4] {
+    let Some(texture) = texture else {
+        return [1.0, 1.0, 1.0, 1.0];
+    };
+    texture.metrics.resolution()
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_optional_texture_resolution(texture: Option<&Phase10TextureHandle>) -> [f32; 4] {
+    let Some(texture) = texture else {
+        return [1.0, 1.0, 0.0, 0.0];
+    };
+    texture.metrics.resolution()
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_texture_metrics_from_size(width: usize, height: usize) -> Phase10TextureMetrics {
+    Phase10TextureMetrics {
+        texture_size: [width.max(1) as f32, height.max(1) as f32],
+        content_size: [width.max(1) as f32, height.max(1) as f32],
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_texture_metrics_from_texture(
+    texture: &ProtocolObject<dyn MTLTexture>,
+) -> Phase10TextureMetrics {
+    phase10_texture_metrics_from_size(texture.width(), texture.height())
 }
 
 #[cfg(target_os = "macos")]
@@ -3801,29 +3939,9 @@ fn file_url_for_path(path: &Path) -> Result<Retained<NSURL>, String> {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg_attr(not(test), allow(dead_code))]
 fn load_phase10_texture_image(path: &Path) -> Result<DynamicImage, String> {
-    let resolved_path = resolve_phase10_texture_source_path(path);
-    let loader_path = resolved_path.as_path();
-    let extension = loader_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase());
-
-    if extension.as_deref() == Some("tex") {
-        return crate::tex::load_tex_image(loader_path).map_err(|error| {
-            format!(
-                "unable to decode phase-10 texture {}: {error}",
-                loader_path.display()
-            )
-        });
-    }
-
-    image::open(loader_path).map_err(|error| {
-        format!(
-            "unable to decode phase-10 texture {}: {error}",
-            loader_path.display()
-        )
-    })
+    load_phase10_texture_source(path).map(|decoded| decoded.image)
 }
 
 #[cfg(target_os = "macos")]
@@ -3860,6 +3978,60 @@ fn phase10_texture_path_candidates(path: &Path) -> Vec<PathBuf> {
 
     candidates.push(path.to_path_buf());
     candidates
+}
+
+#[cfg(target_os = "macos")]
+struct Phase10DecodedTexture {
+    image: DynamicImage,
+    metrics: Phase10TextureMetrics,
+}
+
+#[cfg(target_os = "macos")]
+fn load_phase10_texture_source(path: &Path) -> Result<Phase10DecodedTexture, String> {
+    let resolved_path = resolve_phase10_texture_source_path(path);
+    let loader_path = resolved_path.as_path();
+    let extension = loader_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+
+    if extension.as_deref() == Some("tex") {
+        let resolution = crate::tex::inspect_tex_resolution(loader_path).map_err(|error| {
+            format!(
+                "unable to inspect phase-10 texture {}: {error}",
+                loader_path.display()
+            )
+        })?;
+        let image = crate::tex::load_tex_image(loader_path).map_err(|error| {
+            format!(
+                "unable to decode phase-10 texture {}: {error}",
+                loader_path.display()
+            )
+        })?;
+        return Ok(Phase10DecodedTexture {
+            image,
+            metrics: Phase10TextureMetrics {
+                texture_size: [
+                    resolution.texture_width.max(1) as f32,
+                    resolution.texture_height.max(1) as f32,
+                ],
+                content_size: [
+                    resolution.content_width.max(1) as f32,
+                    resolution.content_height.max(1) as f32,
+                ],
+            },
+        });
+    }
+
+    let image = image::open(loader_path).map_err(|error| {
+        format!(
+            "unable to decode phase-10 texture {}: {error}",
+            loader_path.display()
+        )
+    })?;
+    let metrics =
+        phase10_texture_metrics_from_size(image.width() as usize, image.height() as usize);
+    Ok(Phase10DecodedTexture { image, metrics })
 }
 
 #[cfg(target_os = "macos")]
@@ -4724,9 +4896,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::{
         build_scene_pipeline_states, build_scene_vertices, load_phase10_texture_image,
-        particle_plan_signature, phase10_texture_path_candidates, scene_text_font_cache_key,
-        should_retain_visual_in_draw_plan, text_texture_cache_key, unpremultiply_rgba_pixels,
-        SceneTextHorizontalAlign,
+        load_phase10_texture_source, particle_plan_signature, phase10_texture_path_candidates,
+        scene_text_font_cache_key, should_retain_visual_in_draw_plan, text_texture_cache_key,
+        unpremultiply_rgba_pixels, SceneTextHorizontalAlign,
     };
     use super::{
         plan_native_scene_renderer_runtime, runtime_dependency_warnings_for_plan,
@@ -4925,6 +5097,41 @@ mod tests {
         bytes.extend_from_slice(&0_i32.to_le_bytes());
         bytes.extend_from_slice(&(pixel.len() as i32).to_le_bytes());
         bytes.extend_from_slice(&pixel);
+        bytes
+    }
+
+    #[cfg(target_os = "macos")]
+    fn rgba_tex_bytes_with_padding(
+        pixel: [u8; 4],
+        texture_width: u32,
+        texture_height: u32,
+        content_width: u32,
+        content_height: u32,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"TEXV0005\0");
+        bytes.extend_from_slice(b"TEXI0001\0");
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&texture_width.to_le_bytes());
+        bytes.extend_from_slice(&texture_height.to_le_bytes());
+        bytes.extend_from_slice(&content_width.to_le_bytes());
+        bytes.extend_from_slice(&content_height.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(b"TEXB0004\0");
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&texture_width.to_le_bytes());
+        bytes.extend_from_slice(&texture_height.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_i32.to_le_bytes());
+        let payload_size = (texture_width as i32) * (texture_height as i32) * 4;
+        bytes.extend_from_slice(&payload_size.to_le_bytes());
+        for _ in 0..texture_width * texture_height {
+            bytes.extend_from_slice(&pixel);
+        }
         bytes
     }
 
@@ -5736,6 +5943,25 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_texture_source_preserves_tex_padding_as_resolution_contract() {
+        let temp = tempdir().expect("temp dir");
+        let tex_path = temp.path().join("masked.tex");
+        fs::write(
+            &tex_path,
+            rgba_tex_bytes_with_padding([255, 255, 255, 255], 8, 4, 4, 2),
+        )
+        .expect("write padded tex");
+
+        let decoded = load_phase10_texture_source(&tex_path).expect("decode texture source");
+
+        assert_eq!(decoded.image.dimensions(), (4, 2));
+        assert_eq!(decoded.metrics.texture_size, [8.0, 4.0]);
+        assert_eq!(decoded.metrics.content_size, [4.0, 2.0]);
+        assert_eq!(decoded.metrics.resolution(), [8.0, 4.0, 4.0, 2.0]);
+    }
+
+    #[cfg(target_os = "macos")]
     fn compat_effect_program(kind: SceneCompatEffectKind) -> SceneShaderProgram {
         SceneShaderProgram {
             key: format!("test:{kind:?}"),
@@ -5863,16 +6089,18 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn phase10_pulse_shader_consumes_noise_and_mask_without_uv_scaling() {
+    fn phase10_pulse_shader_consumes_noise_and_mask_in_slot_local_uv_space() {
         let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
         let shader = fs::read_to_string(shader_path).expect("effect compat shader");
 
         assert!(!shader.contains("0.5 + centered / scale"));
         assert!(!shader.contains("centered = uv - 0.5"));
+        assert!(shader.contains("float2 slot2_uv;"));
         assert!(shader.contains(
             "float noise = aux_texture.sample(texture_sampler, noise_uv).r * uniforms.angle;"
         ));
+        assert!(shader.contains("float mask = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r;"));
         assert!(shader.contains("sampled = mix(original, sampled, mask);"));
         assert!(shader.contains("#if PULSEALPHA"));
         assert!(shader.contains("#if PULSECOLOR"));
@@ -5883,6 +6111,14 @@ mod tests {
     fn phase10_optional_texel_size_uses_zero_for_unbound_aux_slots() {
         assert_eq!(super::phase10_optional_texel_size(None), [0.0, 0.0]);
         assert_eq!(super::phase10_texel_size(None), [1.0, 1.0]);
+        assert_eq!(
+            super::phase10_optional_texture_resolution(None),
+            [1.0, 1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            super::phase10_texture_resolution(None),
+            [1.0, 1.0, 1.0, 1.0]
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -5895,9 +6131,14 @@ mod tests {
 
         assert!(shader.contains("texture2d<float> aux2_texture [[texture(2)]]"));
         assert!(shader.contains("texture2d<float> aux3_texture [[texture(3)]]"));
+        assert!(shader.contains("float2 slot1_uv;"));
+        assert!(shader.contains("float4 slot3_resolution;"));
         assert!(shader.contains("flow_mask = (flow_colors - float2(0.498)) * 2.0;"));
         assert!(shader.contains(
             "float2 texCoordOffset = offset * uniforms.intensity * uniforms.intensity * flow_mask;"
+        ));
+        assert!(shader.contains(
+            "float2 mask_uv = stage_vertex.slot3_uv + phase10_offset_between_texture_spaces("
         ));
         assert!(shader.contains("sampled = mix(sampled, shaken, mask);"));
         assert!(!shader.contains("float px = uniforms.intensity * uniforms.texel_size.x;"));
@@ -5911,6 +6152,11 @@ mod tests {
             .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
         let shader = fs::read_to_string(shader_path).expect("effect compat shader");
 
+        assert!(shader.contains("float2 slot1_uv;"));
+        assert!(shader.contains("float2 slot2_uv;"));
+        assert!(shader.contains(
+            "float4 ripple_uv = float4(stage_vertex.slot2_uv, stage_vertex.slot2_uv * 1.333);"
+        ));
         assert!(shader.contains("float3 n1 = aux2_texture.sample(texture_sampler, fract(ripple_uv.xy)).xyz * 2.0 - 1.0;"));
         assert!(shader.contains("float mask = 1.0;"));
         assert!(shader.contains("#if MASK"));
@@ -5925,8 +6171,10 @@ mod tests {
             .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
         let shader = fs::read_to_string(shader_path).expect("effect compat shader");
 
-        assert!(shader.contains("time_offset = aux2_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0))).r * 1.57079632679;"));
-        assert!(shader.contains("fract((uv + signed_scroll) * repeat)"));
+        assert!(shader.contains("float2 slot1_uv;"));
+        assert!(shader.contains("float2 slot2_uv;"));
+        assert!(shader.contains("time_offset = aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r * 1.57079632679;"));
+        assert!(shader.contains("fract((primary_uv + signed_scroll) * repeat)"));
         assert!(shader
             .contains("sign(scroll_speed) * pow(abs(scroll_speed), float2(2.0)) * uniforms.time"));
     }
