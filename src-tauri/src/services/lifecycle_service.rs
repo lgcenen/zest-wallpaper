@@ -12,7 +12,7 @@ use crate::{
     services::{
         audio_input_service, auto_pause_service, diagnostic_service, input_service,
         native_video_service, native_web_service, player_service, scene_native_renderer_service,
-        window_service,
+        static_snapshot_service, window_service,
     },
     store::{AppState, DynamicPlayerState},
 };
@@ -172,6 +172,7 @@ where
 fn recover_failed_restore(app: &AppHandle, state: &AppState) -> Result<(), String> {
     player_service::clear_player_session_state(state)?;
 
+    let _ = static_snapshot_service::clear_active_snapshot_sync(app, state);
     let _ = player_service::sync_native_runtime_for_active_wallpaper(app, state);
     let _ = close_player_windows(app);
     sync_pause_menu_state(app, false);

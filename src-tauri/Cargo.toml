@@ -35,16 +35,16 @@ walkdir = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = "0.3.1"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["NSAttributedString", "NSColor", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphicsContext", "NSParagraphStyle", "NSRunningApplication", "NSScreen", "NSShadow", "NSStringDrawing", "NSText", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSAttributedString", "NSBitmapImageRep", "NSColor", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphicsContext", "NSImageRep", "NSParagraphStyle", "NSRunningApplication", "NSScreen", "NSShadow", "NSStringDrawing", "NSText", "NSView", "NSWindow", "NSWorkspace", "objc2-core-graphics"] }
 objc2-avf-audio = { version = "0.3.2", features = ["AVAudioPlayer"] }
-objc2-av-foundation = { version = "0.3.2", features = ["AVAnimation", "AVAudioPlayer", "AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVPlayerLooper", "objc2-core-media", "objc2-core-video"] }
+objc2-av-foundation = { version = "0.3.2", features = ["AVAnimation", "AVAsset", "AVAssetImageGenerator", "AVAudioPlayer", "AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVPlayerLooper", "objc2-core-graphics", "objc2-core-media", "objc2-core-video"] }
 objc2-av-kit = { version = "0.3.2", default-features = false, features = ["AVPlayerView", "objc2-app-kit", "objc2-av-foundation"] }
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = { version = "0.3.2", features = ["CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGWindowLevel"] }
 objc2-core-text = { version = "0.3.2", features = ["CTFontDescriptor", "CTFontManager"] }
 objc2-core-media = { version = "0.3.2", features = ["CMTime"] }
 objc2-core-video = { version = "0.3.2", features = ["CVBase", "CVBuffer", "CVImageBuffer", "CVMetalTexture", "CVMetalTextureCache", "CVPixelBuffer", "CVReturn", "objc2", "objc2-metal"] }
-objc2-foundation = { version = "0.3.2", features = ["NSDictionary", "NSAttributedString", "NSGeometry", "NSString", "NSURL", "NSURLRequest", "NSValue", "std"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSAttributedString", "NSGeometry", "NSString", "NSURL", "NSURLRequest", "NSValue", "std"] }
 objc2-metal = { version = "0.3.2", default-features = false, features = ["MTLAllocation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLTexture", "MTLTypes"] }
 objc2-metal-kit = { version = "0.3.2", default-features = false, features = ["MTKView", "objc2-app-kit", "objc2-core-foundation", "objc2-quartz-core"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CABase", "CALayer", "CAMetalLayer", "objc2-core-foundation", "objc2-metal"] }

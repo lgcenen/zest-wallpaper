@@ -352,6 +352,9 @@ mod tests {
                 scene_update_generation: 0,
                 last_scene_signature: None,
             }),
+            static_snapshot_sync: std::sync::Mutex::new(
+                crate::store::StaticSnapshotSyncState::default(),
+            ),
             runtime_sync: std::sync::Mutex::new(()),
             scene_runtime_settings: std::sync::Mutex::new(SceneRuntimeSettings::default()),
         };

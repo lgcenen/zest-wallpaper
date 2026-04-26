@@ -18,7 +18,10 @@ use crate::{
     },
     pkg::extract_pkg,
     scene::parse_scene_manifest,
-    services::{asset_resolver::AssetResolver, scene_cache_service},
+    services::{
+        asset_resolver::AssetResolver, scene_cache_service, static_snapshot_generation_service,
+        static_snapshot_service,
+    },
     store::wallpaper_dir,
 };
 
@@ -813,6 +816,21 @@ fn detect_project(root: &Path) -> Result<ImportedProject> {
 }
 
 pub fn import_wallpaper_path(input_path: &Path) -> Result<WallpaperRecord> {
+    import_wallpaper_path_inner(input_path, |record| {
+        static_snapshot_generation_service::ensure_static_snapshot_for_record(record)
+    })
+}
+
+fn import_wallpaper_path_inner<GenerateStaticSnapshot>(
+    input_path: &Path,
+    generate_static_snapshot: GenerateStaticSnapshot,
+) -> Result<WallpaperRecord>
+where
+    GenerateStaticSnapshot:
+        FnOnce(
+            &mut WallpaperRecord,
+        ) -> static_snapshot_generation_service::StaticSnapshotGenerationOutcome,
+{
     let source = input_path
         .canonicalize()
         .with_context(|| format!("Input path does not exist: {}", input_path.display()))?;
@@ -840,15 +858,40 @@ pub fn import_wallpaper_path(input_path: &Path) -> Result<WallpaperRecord> {
     };
     let manifest = record.scene_manifest.clone();
     scene_cache_service::refresh_cache_for_record(&mut record, manifest)?;
+    let _ = generate_static_snapshot(&mut record);
     Ok(record)
 }
 
 pub fn refresh_record_metadata(record: &mut WallpaperRecord) -> Result<bool> {
+    refresh_record_metadata_inner(record, |record, refresh_existing| {
+        if refresh_existing {
+            static_snapshot_generation_service::regenerate_static_snapshot_for_record(record)
+        } else {
+            static_snapshot_generation_service::ensure_static_snapshot_for_record(record)
+        }
+    })
+}
+
+fn refresh_record_metadata_inner<GenerateStaticSnapshot>(
+    record: &mut WallpaperRecord,
+    mut generate_static_snapshot: GenerateStaticSnapshot,
+) -> Result<bool>
+where
+    GenerateStaticSnapshot:
+        FnMut(
+            &mut WallpaperRecord,
+            bool,
+        ) -> static_snapshot_generation_service::StaticSnapshotGenerationOutcome,
+{
     let resolver = AssetResolver::for_record(record);
     let managed_source = resolver.source_root().to_path_buf();
     if !managed_source.exists() {
         return Ok(false);
     }
+
+    let previous_wallpaper_type = record.wallpaper_type.clone();
+    let previous_entry_path = record.entry_path.clone();
+    let previous_snapshot_path = record.last_snapshot_path.clone();
 
     let project = detect_project(&managed_source)?;
     let updated_preview_path = project.preview_path.map(|path| path.display().to_string());
@@ -872,8 +915,21 @@ pub fn refresh_record_metadata(record: &mut WallpaperRecord) -> Result<bool> {
     record.tags = project.tags;
     let manifest = record.scene_manifest.clone();
     let cache_changed = scene_cache_service::refresh_cache_for_record(record, manifest)?;
+    let snapshot_needs_refresh = previous_wallpaper_type != record.wallpaper_type
+        || previous_entry_path != record.entry_path
+        || !registered_snapshot_is_usable(record);
+    if previous_wallpaper_type != record.wallpaper_type || previous_entry_path != record.entry_path
+    {
+        record.last_snapshot_path = None;
+    }
+    if snapshot_needs_refresh {
+        let refresh_existing = previous_wallpaper_type != record.wallpaper_type
+            || previous_entry_path != record.entry_path;
+        let _ = generate_static_snapshot(record, refresh_existing);
+    }
+    let snapshot_changed = record.last_snapshot_path != previous_snapshot_path;
 
-    Ok(changed || cache_changed)
+    Ok(changed || cache_changed || snapshot_changed)
 }
 
 pub fn update_property_values(
@@ -940,19 +996,31 @@ pub fn update_property_values(
     Ok(())
 }
 
+fn registered_snapshot_is_usable(record: &WallpaperRecord) -> bool {
+    static_snapshot_service::snapshot_for_record(record).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    use std::{cell::Cell, env};
 
     use tempfile::tempdir;
 
     use super::{
         build_property_sections, clean_markup, detect_project, fallback_property_label,
-        import_source_copy, parse_options, property_schema,
+        import_source_copy, import_wallpaper_path_inner, parse_options, property_schema,
+        refresh_record_metadata_inner,
     };
-    use crate::models::{PropertyPresentation, PropertySectionItemKind, WallpaperType};
+    use crate::{
+        models::{PropertyPresentation, PropertySectionItemKind, WallpaperRecord, WallpaperType},
+        services::static_snapshot_generation_service::{
+            ensure_static_snapshot_for_record_with, regenerate_static_snapshot_for_record_with,
+            STATIC_SNAPSHOT_FILE_NAME,
+        },
+    };
     use serde_json::json;
 
     #[test]
@@ -1313,6 +1381,186 @@ mod tests {
             .any(|property| property.key == "clockcolor"));
     }
 
+    #[test]
+    fn video_import_generates_and_registers_static_snapshot() {
+        let _lock = crate::store::HOME_ENV_LOCK.lock().unwrap();
+        let temp = tempdir().expect("temp dir");
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path().join("home"));
+        let source = temp.path().join("video-source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(source.join("clip.mp4"), b"video").expect("video");
+        fs::write(source.join("preview.png"), b"preview").expect("preview");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Import Snapshot Video",
+                "type": "video",
+                "file": "clip.mp4",
+                "preview": "preview.png"
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+
+        let result = (|| {
+            import_wallpaper_path_inner(&source, |record| {
+                ensure_static_snapshot_for_record_with(record, |_source_path, output| {
+                    fs::write(output, b"snapshot").map_err(|error| error.to_string())
+                })
+            })
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        let record = result.expect("imported record");
+        assert_eq!(record.wallpaper_type, WallpaperType::Video);
+        let snapshot_path = record
+            .last_snapshot_path
+            .as_deref()
+            .expect("snapshot registered");
+        assert!(snapshot_path.ends_with(STATIC_SNAPSHOT_FILE_NAME));
+        assert_ne!(record.preview_path.as_deref(), Some(snapshot_path));
+        assert_eq!(fs::read(snapshot_path).expect("snapshot"), b"snapshot");
+    }
+
+    #[test]
+    fn refresh_record_metadata_preserves_existing_valid_video_snapshot() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(source.join("clip.mp4"), b"video").expect("video");
+        fs::write(source.join("preview.png"), b"preview").expect("preview");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Refresh Snapshot Video",
+                "type": "video",
+                "file": "clip.mp4",
+                "preview": "preview.png",
+                "general": {
+                    "properties": {
+                        "speed": {
+                            "type": "slider",
+                            "text": "Speed",
+                            "value": 1
+                        }
+                    }
+                }
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+        let project = detect_project(&source).expect("project");
+        let snapshot = managed.join(STATIC_SNAPSHOT_FILE_NAME);
+        fs::write(&snapshot, b"existing").expect("snapshot");
+        let mut record =
+            record_from_project("refresh-video", managed.display().to_string(), project);
+        record.last_snapshot_path = Some(snapshot.display().to_string());
+
+        let changed = refresh_record_metadata_inner(&mut record, |_record, _refresh_existing| {
+            panic!("valid registered video snapshot should not be regenerated")
+        })
+        .expect("refresh");
+
+        assert!(!changed);
+        assert_eq!(
+            record.last_snapshot_path.as_deref(),
+            Some(snapshot.to_string_lossy().as_ref())
+        );
+        assert_eq!(fs::read(&snapshot).expect("snapshot"), b"existing");
+    }
+
+    #[test]
+    fn refresh_record_metadata_generates_missing_video_snapshot() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(source.join("clip.mp4"), b"video").expect("video");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Missing Snapshot Video",
+                "type": "video",
+                "file": "clip.mp4"
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+        let project = detect_project(&source).expect("project");
+        let mut record = record_from_project(
+            "missing-snapshot-video",
+            managed.display().to_string(),
+            project,
+        );
+        let invoked = Cell::new(false);
+
+        let changed = refresh_record_metadata_inner(&mut record, |record, refresh_existing| {
+            assert!(!refresh_existing);
+            invoked.set(true);
+            ensure_static_snapshot_for_record_with(record, |_source_path, output| {
+                fs::write(output, b"generated").map_err(|error| error.to_string())
+            })
+        })
+        .expect("refresh");
+
+        assert!(changed);
+        assert!(invoked.get());
+        let snapshot_path = record
+            .last_snapshot_path
+            .as_deref()
+            .expect("snapshot registered");
+        assert_eq!(fs::read(snapshot_path).expect("snapshot"), b"generated");
+    }
+
+    #[test]
+    fn refresh_record_metadata_clears_stale_snapshot_when_video_entry_changes_and_generation_fails()
+    {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(source.join("clip-a.mp4"), b"video-a").expect("video a");
+        fs::write(source.join("clip-b.mp4"), b"video-b").expect("video b");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Changed Entry Video",
+                "type": "video",
+                "file": "clip-b.mp4"
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+        let project = detect_project(&source).expect("project");
+        let stale_snapshot = managed.join(STATIC_SNAPSHOT_FILE_NAME);
+        fs::write(&stale_snapshot, b"stale").expect("stale snapshot");
+        let mut record =
+            record_from_project("changed-entry", managed.display().to_string(), project);
+        record.entry_path = Some(source.join("clip-a.mp4").display().to_string());
+        record.last_snapshot_path = Some(stale_snapshot.display().to_string());
+
+        let changed = refresh_record_metadata_inner(&mut record, |record, refresh_existing| {
+            assert!(refresh_existing);
+            regenerate_static_snapshot_for_record_with(record, |_source_path, _output| {
+                Err("simulated generator failure".to_string())
+            })
+        })
+        .expect("refresh");
+
+        assert!(changed);
+        assert!(record
+            .entry_path
+            .as_deref()
+            .is_some_and(|entry| entry.ends_with("clip-b.mp4")));
+        assert!(record.last_snapshot_path.is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_symlinked_entries_during_directory_import() {
@@ -1330,5 +1578,30 @@ mod tests {
             error.to_string().contains("symlinked path"),
             "unexpected error: {error:#}"
         );
+    }
+
+    fn record_from_project(
+        id: &str,
+        managed_path: String,
+        project: super::ImportedProject,
+    ) -> WallpaperRecord {
+        WallpaperRecord {
+            id: id.to_string(),
+            title: project.title,
+            wallpaper_type: project.wallpaper_type,
+            source_path: managed_path.clone(),
+            managed_path,
+            preview_path: project.preview_path.map(|path| path.display().to_string()),
+            entry_path: project.entry_path.map(|path| path.display().to_string()),
+            last_snapshot_path: None,
+            property_schema: project.property_schema,
+            property_sections: project.property_sections,
+            scene_cache: None,
+            scene_manifest: project.scene_manifest,
+            scene_manifest_version: None,
+            scene_manifest_dirty: false,
+            imported_at: chrono::Utc::now(),
+            tags: project.tags,
+        }
     }
 }

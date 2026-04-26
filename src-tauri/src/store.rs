@@ -35,6 +35,14 @@ impl DynamicPlayerState {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StaticSnapshotSyncState {
+    pub active_record_id: Option<String>,
+    pub generation: u64,
+    pub last_applied_snapshot_path: Option<String>,
+    pub last_failure_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct PersistedPlayerState {
@@ -47,6 +55,7 @@ struct PersistedPlayerState {
 pub struct AppState {
     pub library: Mutex<LibraryStore>,
     pub player: Mutex<DynamicPlayerState>,
+    pub static_snapshot_sync: Mutex<StaticSnapshotSyncState>,
     pub runtime_sync: Mutex<()>,
     pub scene_runtime_settings: Mutex<SceneRuntimeSettings>,
 }
@@ -71,6 +80,7 @@ impl AppState {
         Ok(Self {
             library: Mutex::new(library),
             player: Mutex::new(player),
+            static_snapshot_sync: Mutex::new(StaticSnapshotSyncState::default()),
             runtime_sync: Mutex::new(()),
             scene_runtime_settings: Mutex::new(scene_runtime_settings),
         })
@@ -148,6 +158,15 @@ fn record_needs_metadata_refresh(record: &WallpaperRecord) -> bool {
     }
 
     if record.entry_path.is_none() && record.preview_path.is_none() {
+        return true;
+    }
+
+    if matches!(record.wallpaper_type, crate::models::WallpaperType::Video)
+        && record.last_snapshot_path.as_deref().is_none_or(|path| {
+            let path = path.trim();
+            path.is_empty() || !Path::new(path).is_file()
+        })
+    {
         return true;
     }
 
@@ -251,7 +270,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::models::SceneRuntimeSettings;
+    use crate::models::{PropertySection, SceneRuntimeSettings, WallpaperRecord, WallpaperType};
 
     use super::{
         app_support_dir, load_library, load_player_state, save_library, save_player_state,
@@ -314,6 +333,47 @@ mod tests {
         }
 
         result
+    }
+
+    #[test]
+    fn video_without_registered_snapshot_needs_metadata_refresh() {
+        let temp = tempdir().unwrap();
+        let entry_path = temp.path().join("clip.mp4");
+        let preview_path = temp.path().join("preview.png");
+        fs::write(&entry_path, b"video").unwrap();
+        fs::write(&preview_path, b"preview").unwrap();
+        let mut record = WallpaperRecord {
+            id: "video".to_string(),
+            title: "Video".to_string(),
+            wallpaper_type: WallpaperType::Video,
+            source_path: temp.path().display().to_string(),
+            managed_path: temp.path().display().to_string(),
+            preview_path: Some(preview_path.display().to_string()),
+            entry_path: Some(entry_path.display().to_string()),
+            last_snapshot_path: None,
+            property_schema: Vec::new(),
+            property_sections: vec![PropertySection {
+                key: "general".to_string(),
+                label: "General".to_string(),
+                order: None,
+                condition: None,
+                items: Vec::new(),
+            }],
+            scene_cache: None,
+            scene_manifest: None,
+            scene_manifest_version: None,
+            scene_manifest_dirty: false,
+            imported_at: chrono::Utc::now(),
+            tags: Vec::new(),
+        };
+
+        assert!(super::record_needs_metadata_refresh(&record));
+
+        let snapshot_path = temp.path().join("snapshot.png");
+        fs::write(&snapshot_path, b"snapshot").unwrap();
+        record.last_snapshot_path = Some(snapshot_path.display().to_string());
+
+        assert!(!super::record_needs_metadata_refresh(&record));
     }
 
     #[test]

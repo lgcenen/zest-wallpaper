@@ -16,7 +16,7 @@ use crate::{
     services::{
         audio_input_service, lifecycle_service, native_video_service, native_web_service,
         scene_manifest_service, scene_native_renderer_service, scene_support_service,
-        window_service,
+        static_snapshot_service, window_service,
     },
     store::{find_record, save_player_state, AppState, DynamicPlayerState},
 };
@@ -106,6 +106,7 @@ pub fn apply_dynamic_wallpaper(
     )?;
 
     lifecycle_service::sync_pause_menu_state(app, false);
+    let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
     app.emit("player:load", Some(runtime_record.clone()))
         .map_err(|error| error.to_string())?;
     app.emit("player:pause", effective_paused)
@@ -125,6 +126,7 @@ pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), S
 
     lifecycle_service::show_player_windows(app).map_err(|error| error.to_string())?;
     sync_native_runtime_with_transaction_lock(app, state, Some(&runtime_record), effective_paused)?;
+    let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
     if should_start_scene_update_loop(&runtime_record) {
         start_scene_update_loop(app.clone(), state);
     }
@@ -154,6 +156,7 @@ pub fn pause_resume_dynamic(
 pub fn clear_active_wallpaper(app: &AppHandle, state: &AppState) -> Result<(), String> {
     clear_player_session_state(state)?;
 
+    let _ = static_snapshot_service::clear_active_snapshot_sync(app, state);
     scene_support_service::clear_scene_support_diagnostics(app);
     sync_native_runtime_with_transaction_lock(app, state, None, false)?;
     lifecycle_service::sync_pause_menu_state(app, false);
@@ -881,6 +884,7 @@ mod tests {
         AppState {
             library: Mutex::new(LibraryStore::default()),
             player: Mutex::new(player),
+            static_snapshot_sync: Mutex::new(crate::store::StaticSnapshotSyncState::default()),
             runtime_sync: Mutex::new(()),
             scene_runtime_settings: Mutex::new(SceneRuntimeSettings::default()),
         }
