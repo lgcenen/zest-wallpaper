@@ -777,9 +777,11 @@ fn parse_text_layer(
         resolve_f64_with_binding(object.get("pointsize"), property_values);
     let position = resolve_origin_value(object.get("origin"), property_values, scene_size)
         .unwrap_or([0.0, 0.0, 0.0]);
-    let scale = resolve_vector3_with_binding(object.get("scale"), property_values)
-        .0
-        .unwrap_or([1.0, 1.0, 1.0]);
+    let (resolved_scale, scale_binding) =
+        resolve_vector3_with_binding(object.get("scale"), property_values);
+    let scale = resolved_scale.unwrap_or([1.0, 1.0, 1.0]);
+    let angles = parse_vector3(object.get("angles"));
+    let rotation = angles.map(|resolved| resolved[2]);
     let explicit_size = parse_vector2(object.get("size"));
     let estimated_size = estimate_text_layer_size(
         &content,
@@ -817,7 +819,7 @@ fn parse_text_layer(
         compute_render_bounds(
             position,
             resolved_size,
-            [1.0, 1.0, 1.0],
+            scale,
             bounds_alignment.as_deref(),
             scene_size,
         )
@@ -873,6 +875,9 @@ fn parse_text_layer(
         position,
         position_bindings: parse_position_bindings(object.get("origin")),
         scale,
+        scale_binding,
+        angles,
+        rotation,
         size,
         render_bounds,
         parallax_depth: parse_vector2(object.get("parallaxDepth")),
@@ -930,9 +935,11 @@ fn parse_audio_layer(
     let constants = pass.and_then(|value| value.get("constantshadervalues"));
     let position = resolve_origin_value(object.get("origin"), property_values, scene_size)
         .unwrap_or([0.0, 0.0, 0.0]);
-    let scale = resolve_vector3_with_binding(object.get("scale"), property_values)
-        .0
-        .unwrap_or([1.0, 1.0, 1.0]);
+    let (resolved_scale, scale_binding) =
+        resolve_vector3_with_binding(object.get("scale"), property_values);
+    let scale = resolved_scale.unwrap_or([1.0, 1.0, 1.0]);
+    let angles = parse_vector3(object.get("angles"));
+    let rotation = angles.map(|resolved| resolved[2]);
     let size = parse_vector2(object.get("size")).or(Some([320.0, 132.0]));
     let render_bounds = size.map(|resolved_size| {
         compute_render_bounds(
@@ -966,9 +973,12 @@ fn parse_audio_layer(
         position,
         position_bindings: parse_position_bindings(object.get("origin")),
         scale,
+        scale_binding,
+        angles,
+        rotation,
         size,
         render_bounds,
-        angle: parse_vector3(object.get("angles")).map(|angles| angles[2]),
+        angle: rotation,
         bar_count: constants
             .and_then(|value| value.get("Bar Count").or_else(|| value.get("Bar Count ")))
             .and_then(as_f64)
@@ -1913,6 +1923,15 @@ fn build_logic_graph(
                     .visibility_binding
                     .as_ref()
                     .map(|binding| binding.property_key.clone()),
+                layer
+                    .position_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.x.clone()),
+                layer
+                    .position_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.y.clone()),
+                layer.scale_binding.clone(),
                 layer.text_binding.clone(),
                 layer.color_binding.clone(),
                 layer.alpha_binding.clone(),
@@ -1934,11 +1953,24 @@ fn build_logic_graph(
                 .visibility_binding
                 .as_ref()
                 .and_then(|binding| binding.condition.clone()),
-            bindings: layer
-                .visibility_binding
-                .as_ref()
-                .map(|binding| vec![binding.property_key.clone()])
-                .unwrap_or_default(),
+            bindings: [
+                layer
+                    .visibility_binding
+                    .as_ref()
+                    .map(|binding| binding.property_key.clone()),
+                layer
+                    .position_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.x.clone()),
+                layer
+                    .position_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.y.clone()),
+                layer.scale_binding.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
         }
     }));
     graph.extend(particle_layers.iter().map(|layer| {
@@ -2419,7 +2451,8 @@ mod tests {
                       "y": { "user": "y", "value": 0.5 }
                     }
                   },
-                  "scale": "0.18 0.18 1",
+                  "scale": { "user": "textScale", "value": "0.18 0.18 1" },
+                  "angles": "0 0 0.75",
                   "size": "1971 671",
                   "anchor": "none",
                   "padding": 32,
@@ -2435,7 +2468,8 @@ mod tests {
         )
         .expect("scene json");
 
-        let manifest = parse_scene_manifest(&root.join("scene.json"), &root, &BTreeMap::new())
+        let property_values = BTreeMap::from([("textScale".to_string(), json!("0.2 0.25 1"))]);
+        let manifest = parse_scene_manifest(&root.join("scene.json"), &root, &property_values)
             .expect("manifest");
         let text = manifest
             .text_layers
@@ -2444,6 +2478,10 @@ mod tests {
             .expect("text layer");
         let expected_font_path = root.join("fonts/demo.ttf").display().to_string();
         assert_eq!(text.name, "Date");
+        assert_eq!(text.scale, [0.2, 0.25, 1.0]);
+        assert_eq!(text.scale_binding.as_deref(), Some("textScale"));
+        assert_eq!(text.angles, Some([0.0, 0.0, 0.75]));
+        assert_eq!(text.rotation, Some(0.75));
         assert_eq!(text.size, Some([1971.0, 671.0]));
         assert_eq!(text.anchor.as_deref(), Some("none"));
         assert_eq!(text.render_bounds.map(|bounds| bounds[0]), Some(640.0));
@@ -2470,6 +2508,59 @@ mod tests {
                 .map(|binding| binding.property_key.as_str()),
             Some("day")
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_audio_transform_bindings_and_rotation_from_authored_object() {
+        let root = std::env::temp_dir().join(format!("scene-audio-transform-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("temp scene root");
+        fs::write(
+            root.join("scene.json"),
+            r#"{
+              "general": { "orthogonalprojection": { "width": 1280, "height": 720 } },
+              "objects": [
+                {
+                  "id": 21,
+                  "name": "Spectrum",
+                  "origin": "320 180 0",
+                  "scale": { "user": "audioScale", "value": "1 1 1" },
+                  "angles": "0 0 0.4",
+                  "size": "300 120",
+                  "effects": [
+                    {
+                      "file": "effects/audio/effect.json",
+                      "passes": [
+                        {
+                          "constantshadervalues": {
+                            "Bar Count": 24
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .expect("scene json");
+        let property_values = BTreeMap::from([("audioScale".to_string(), json!("1.5 2 1"))]);
+
+        let manifest = parse_scene_manifest(&root.join("scene.json"), &root, &property_values)
+            .expect("manifest");
+        let audio = manifest
+            .audio_layers
+            .iter()
+            .find(|layer| layer.id == 21)
+            .expect("audio layer");
+
+        assert_eq!(audio.scale, [1.5, 2.0, 1.0]);
+        assert_eq!(audio.scale_binding.as_deref(), Some("audioScale"));
+        assert_eq!(audio.angles, Some([0.0, 0.0, 0.4]));
+        assert_eq!(audio.rotation, Some(0.4));
+        assert_eq!(audio.angle, Some(0.4));
+        assert_eq!(audio.render_bounds, Some([95.0, 420.0, 450.0, 240.0]));
 
         let _ = fs::remove_dir_all(root);
     }

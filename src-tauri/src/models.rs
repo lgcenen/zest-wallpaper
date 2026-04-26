@@ -332,6 +332,12 @@ pub struct SceneTextLayer {
     pub position_bindings: Option<SceneAxisBindings>,
     pub scale: [f64; 3],
     #[serde(default)]
+    pub scale_binding: Option<String>,
+    #[serde(default)]
+    pub angles: Option<[f64; 3]>,
+    #[serde(default)]
+    pub rotation: Option<f64>,
+    #[serde(default)]
     pub size: Option<[f64; 2]>,
     #[serde(default)]
     pub render_bounds: Option<[f64; 4]>,
@@ -391,6 +397,12 @@ pub struct SceneAudioLayer {
     #[serde(default)]
     pub position_bindings: Option<SceneAxisBindings>,
     pub scale: [f64; 3],
+    #[serde(default)]
+    pub scale_binding: Option<String>,
+    #[serde(default)]
+    pub angles: Option<[f64; 3]>,
+    #[serde(default)]
+    pub rotation: Option<f64>,
     #[serde(default)]
     pub size: Option<[f64; 2]>,
     #[serde(default)]

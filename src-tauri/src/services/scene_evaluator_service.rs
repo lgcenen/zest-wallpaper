@@ -244,8 +244,8 @@ fn evaluate_scene_with_runtime_key(
             layer.position,
             layer.position_bindings.as_ref(),
             layer.scale,
-            None,
-            0.0,
+            layer.scale_binding.as_deref(),
+            layer.rotation.unwrap_or(0.0),
             measured_size,
             layer.render_bounds,
             transform_alignment.as_deref(),
@@ -308,8 +308,8 @@ fn evaluate_scene_with_runtime_key(
             layer.position,
             layer.position_bindings.as_ref(),
             layer.scale,
-            None,
-            layer.angle.unwrap_or(0.0),
+            layer.scale_binding.as_deref(),
+            layer.rotation.or(layer.angle).unwrap_or(0.0),
             layer.size,
             layer.render_bounds,
             layer.alignment.as_deref(),
@@ -2032,9 +2032,11 @@ impl PrimaryVisualCandidate for SceneVisualLayer {
 mod tests {
     use super::*;
     use crate::models::{
-        PropertyKind, PropertyPresentation, SceneBinding, SceneManifest, SceneNodeState,
-        SceneRenderNode, SceneRenderNodeKind, SceneTextLayer, WallpaperOption, WallpaperProperty,
+        PropertyKind, PropertyPresentation, SceneAudioLayer, SceneBinding, SceneManifest,
+        SceneNodeState, SceneRenderNode, SceneRenderNodeKind, SceneRuntimeDocument, SceneTextLayer,
+        WallpaperOption, WallpaperProperty,
     };
+    use crate::services::scene_render_planner_service::build_scene_render_plan;
     use crate::services::scene_text_script_runtime_service::clear_scene_text_script_runtime_cache;
     use chrono::TimeZone;
     use serde_json::json;
@@ -2095,6 +2097,9 @@ mod tests {
             position: [0.0, 0.0, 0.0],
             position_bindings: None,
             scale: [1.0, 1.0, 1.0],
+            scale_binding: None,
+            angles: None,
+            rotation: None,
             size: None,
             render_bounds: None,
             parallax_depth: None,
@@ -2144,6 +2149,9 @@ mod tests {
             position: [0.0, 0.0, 0.0],
             position_bindings: None,
             scale: [1.0, 1.0, 1.0],
+            scale_binding: None,
+            angles: None,
+            rotation: None,
             size: None,
             render_bounds: Some([0.0, 0.0, 480.0, 120.0]),
             parallax_depth: None,
@@ -2199,6 +2207,9 @@ mod tests {
             position: origin,
             position_bindings: None,
             scale: [1.0, 1.0, 1.0],
+            scale_binding: None,
+            angles: None,
+            rotation: None,
             size: Some(size),
             render_bounds: None,
             parallax_depth: None,
@@ -2219,6 +2230,35 @@ mod tests {
             limit_width: Some(false),
             limit_use_ellipsis: Some(false),
             block_align: Some(false),
+        }
+    }
+
+    fn sample_audio_layer(id: u32, origin: [f64; 3], size: [f64; 2]) -> SceneAudioLayer {
+        SceneAudioLayer {
+            id,
+            name: format!("Spectrum {id}"),
+            dependencies: vec![],
+            parent_id: None,
+            alignment: Some("center".to_string()),
+            visible: true,
+            visibility_binding: None,
+            position: origin,
+            position_bindings: None,
+            scale: [1.0, 1.0, 1.0],
+            scale_binding: None,
+            angles: None,
+            rotation: None,
+            size: Some(size),
+            render_bounds: None,
+            angle: None,
+            bar_count: 32,
+            color: Some("1 1 1".to_string()),
+            bar_spacing: None,
+            bar_bounds: None,
+            minimum_height: None,
+            radius: None,
+            volume_factor: None,
+            opacity: Some(1.0),
         }
     }
 
@@ -2326,6 +2366,9 @@ mod tests {
             position: [0.0, 0.0, 0.0],
             position_bindings: None,
             scale: [1.0, 1.0, 1.0],
+            scale_binding: None,
+            angles: None,
+            rotation: None,
             size: None,
             render_bounds: None,
             parallax_depth: None,
@@ -2605,6 +2648,175 @@ mod tests {
     }
 
     #[test]
+    fn text_scale_binding_affects_render_bounds_and_content_box() {
+        let mut text = neighboring_marker_text_layer(
+            17,
+            "left",
+            [200.0, 150.0, 0.0],
+            [100.0, 40.0],
+            "Scaled text",
+        );
+        text.alignment = Some("center".to_string());
+        text.horizontal_align = Some("left".to_string());
+        text.vertical_align = Some("top".to_string());
+        text.scale_binding = Some("textScale".to_string());
+        text.padding = Some(10.0);
+        text.point_size = Some(20.0);
+        let source = SceneManifest {
+            canvas_width: Some(400.0),
+            canvas_height: Some(300.0),
+            text_layers: vec![text],
+            ..SceneManifest::default()
+        };
+        let properties = BTreeMap::from([("textScale".to_string(), json!("2 3 1"))]);
+
+        let evaluated = evaluate_scene(
+            &source,
+            &properties,
+            &properties,
+            &BTreeMap::new(),
+            None,
+            Utc::now(),
+        );
+
+        match evaluated.objects.get(&17) {
+            Some(EvaluatedSceneObject::Text { base, text, .. }) => {
+                assert_eq!(base.transform.scale, [2.0, 3.0, 1.0]);
+                assert_eq!(
+                    base.transform.render_bounds,
+                    Some([100.0, 90.0, 200.0, 120.0])
+                );
+                assert_eq!(text.layout.world_scale, [2.0, 3.0, 1.0]);
+                assert_eq!(text.layout.scaled_padding, 30.0);
+                let content = text.layout.content_bounds.expect("content bounds");
+                assert_eq!(content[0], 130.0);
+                assert_eq!(content[1], 120.0);
+            }
+            other => panic!("expected text object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rotated_text_uses_authored_rotation_in_transform_and_quad() {
+        let mut text = neighboring_marker_text_layer(
+            18,
+            "center",
+            [200.0, 150.0, 0.0],
+            [120.0, 60.0],
+            "Rotated",
+        );
+        text.angles = Some([0.0, 0.0, 0.625]);
+        text.rotation = Some(0.625);
+        let source = SceneManifest {
+            canvas_width: Some(400.0),
+            canvas_height: Some(300.0),
+            text_layers: vec![text],
+            ..SceneManifest::default()
+        };
+
+        let evaluated = evaluate_scene(
+            &source,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            Utc::now(),
+        );
+        let runtime = SceneRuntimeDocument {
+            runtime_owner_key: None,
+            source,
+            evaluated,
+        };
+        let report = build_scene_render_plan(&runtime);
+
+        match runtime.evaluated.objects.get(&18) {
+            Some(EvaluatedSceneObject::Text { base, .. }) => {
+                assert_eq!(base.transform.rotation, 0.625);
+            }
+            other => panic!("expected text object, got {other:?}"),
+        }
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.texts.len(), 1);
+        assert_eq!(report.plan.texts[0].quad.rotation, 0.625);
+    }
+
+    #[test]
+    fn text_and_audio_transform_bindings_compose_with_parent() {
+        let mut text =
+            neighboring_marker_text_layer(51, "left", [10.0, 5.0, 0.0], [20.0, 10.0], "Child");
+        text.parent_id = Some(50);
+        text.alignment = Some("left-bottom".to_string());
+        text.scale_binding = Some("textScale".to_string());
+        let mut audio = sample_audio_layer(52, [15.0, 6.0, 0.0], [30.0, 10.0]);
+        audio.parent_id = Some(50);
+        audio.scale_binding = Some("audioScale".to_string());
+        let source = SceneManifest {
+            canvas_width: Some(300.0),
+            canvas_height: Some(200.0),
+            nodes: vec![SceneNodeState {
+                id: 50,
+                name: "Parent".to_string(),
+                dependencies: vec![],
+                parent_id: None,
+                visible: true,
+                visibility_binding: None,
+                position: [40.0, 30.0, 0.0],
+                position_bindings: None,
+                scale: [2.0, 3.0, 1.0],
+                angles: None,
+                rotation: None,
+            }],
+            text_layers: vec![text],
+            audio_layers: vec![audio],
+            ..SceneManifest::default()
+        };
+        let properties = BTreeMap::from([
+            ("textScale".to_string(), json!("1.5 2 1")),
+            ("audioScale".to_string(), json!(2.0)),
+        ]);
+
+        let evaluated = evaluate_scene(
+            &source,
+            &properties,
+            &properties,
+            &BTreeMap::new(),
+            None,
+            Utc::now(),
+        );
+        let runtime = SceneRuntimeDocument {
+            runtime_owner_key: None,
+            source,
+            evaluated,
+        };
+        let report = build_scene_render_plan(&runtime);
+
+        match runtime.evaluated.objects.get(&51) {
+            Some(EvaluatedSceneObject::Text { base, .. }) => {
+                assert_eq!(base.transform.position, [60.0, 45.0, 0.0]);
+                assert_eq!(base.transform.scale, [3.0, 6.0, 1.0]);
+                assert_eq!(base.transform.render_bounds, Some([60.0, 95.0, 60.0, 60.0]));
+            }
+            other => panic!("expected text object, got {other:?}"),
+        }
+        match runtime.evaluated.objects.get(&52) {
+            Some(EvaluatedSceneObject::Audio { base, .. }) => {
+                assert_eq!(base.transform.position, [70.0, 48.0, 0.0]);
+                assert_eq!(base.transform.scale, [4.0, 6.0, 2.0]);
+                assert_eq!(
+                    base.transform.render_bounds,
+                    Some([10.0, 122.0, 120.0, 60.0])
+                );
+            }
+            other => panic!("expected audio object, got {other:?}"),
+        }
+        assert_eq!(report.plan.audios.len(), 1);
+        assert_eq!(report.plan.audios[0].quad.left, 10.0);
+        assert_eq!(report.plan.audios[0].quad.top, 122.0);
+        assert_eq!(report.plan.audios[0].quad.width, 120.0);
+        assert_eq!(report.plan.audios[0].quad.height, 60.0);
+    }
+
+    #[test]
     fn evaluates_visual_runtime_metadata_from_bound_source_fields() {
         let source = SceneManifest {
             canvas_width: Some(200.0),
@@ -2743,6 +2955,9 @@ mod tests {
             position: [1920.0, 1080.0, 0.0],
             position_bindings: None,
             scale: [1.0, 1.0, 1.0],
+            scale_binding: None,
+            angles: None,
+            rotation: None,
             size: Some([400.0, 120.0]),
             render_bounds: Some([1720.0, 1020.0, 400.0, 120.0]),
             parallax_depth: None,
@@ -2843,6 +3058,9 @@ mod tests {
                 position: [1315.24268, 1419.55127, 0.0],
                 position_bindings: None,
                 scale: [0.18, 0.18, 0.44841],
+                scale_binding: None,
+                angles: None,
+                rotation: None,
                 size: Some([1971.0, 671.0]),
                 render_bounds: None,
                 parallax_depth: None,
@@ -2937,6 +3155,9 @@ mod tests {
                 position: [2201.59473, 1538.3949, 0.0],
                 position_bindings: None,
                 scale: [0.97861, 0.97861, 0.97861],
+                scale_binding: None,
+                angles: None,
+                rotation: None,
                 size: Some([479.0, 220.0]),
                 render_bounds: Some([1962.09473, 511.6051, 479.0, 220.0]),
                 parallax_depth: None,
@@ -3025,6 +3246,9 @@ mod tests {
                 position: [2408.30518, 971.39758, 0.0],
                 position_bindings: None,
                 scale: [0.28038, 0.28038, 0.28038],
+                scale_binding: None,
+                angles: None,
+                rotation: None,
                 size: Some([2118.0, 1047.0]),
                 render_bounds: Some([2309.0, 919.0, 196.0, 97.0]),
                 parallax_depth: None,
@@ -3110,6 +3334,9 @@ mod tests {
                 position: [1771.77002, 863.14062, 0.0],
                 position_bindings: None,
                 scale: [0.3684, 0.3684, 0.614],
+                scale_binding: None,
+                angles: None,
+                rotation: None,
                 size: Some([2439.0, 346.0]),
                 render_bounds: Some([1530.0, 830.0, 483.0, 68.0]),
                 parallax_depth: None,
@@ -3264,6 +3491,9 @@ mod tests {
                 position: [960.0, 180.0, 0.0],
                 position_bindings: None,
                 scale: [1.0, 1.0, 1.0],
+                scale_binding: None,
+                angles: None,
+                rotation: None,
                 size: Some([360.0, 84.0]),
                 render_bounds: None,
                 parallax_depth: None,
