@@ -37,7 +37,6 @@ This project is under active development.
 | Video wallpapers | Supported |
 | Web wallpapers | Supported |
 | Audio input | Supported |
-| Static snapshot sync | Active dynamic wallpaper only |
 | Multi-display | Untested |
 | Workshop wallpaper download | Not supported |
 
@@ -49,7 +48,6 @@ This project is under active development.
 - React + Vite
 - Rust
 - native macOS runtimes for `Scene`, `Video`, and `Web` playback
-- static system wallpaper sync is scoped to the current active dynamic wallpaper; previews are never used as a system-wallpaper fallback
 
 ## Development
 
@@ -106,7 +104,6 @@ Important constraints:
 - imported wallpaper content is expected to come from the user
 - external `assets` directories may be mounted locally to improve Scene compatibility
 - the app must remain runnable even without external assets
-- static snapshots are companion metadata for imported wallpapers, not an independent static wallpaper mode
 - this project does not copy source code, resources, or symbol naming from third-party reference apps
 
 If you use local external assets, keep them outside this repository.
