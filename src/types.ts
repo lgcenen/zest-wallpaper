@@ -449,6 +449,7 @@ export interface SceneEvaluatedDocument {
 }
 
 export interface SceneRuntimeDocument {
+  runtimeOwnerKey?: string | null;
   source: SceneManifest;
   evaluated: SceneEvaluatedDocument;
 }

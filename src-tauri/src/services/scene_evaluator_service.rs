@@ -50,7 +50,11 @@ pub fn evaluate_scene_runtime_document_with_runtime_key(
         media,
         now,
     );
-    SceneRuntimeDocument { source, evaluated }
+    SceneRuntimeDocument {
+        runtime_owner_key: runtime_owner_key.map(ToString::to_string),
+        source,
+        evaluated,
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -87,6 +91,12 @@ fn evaluate_scene_with_runtime_key(
     let camera = evaluate_camera(&source.camera, properties);
     let local_now = now.with_timezone(&Local);
     let mut objects = BTreeMap::new();
+    let active_script_layer_ids = source
+        .text_layers
+        .iter()
+        .filter(|layer| layer.behavior == SceneTextBehavior::Script)
+        .map(|layer| layer.id)
+        .collect::<BTreeSet<_>>();
 
     for node in &source.nodes {
         let visible = source_object_visible(
@@ -432,6 +442,11 @@ fn evaluate_scene_with_runtime_key(
             }
         }
     }
+
+    scene_text_script_runtime_service::retain_scene_text_script_runtime_owner_layers(
+        runtime_owner_key,
+        &active_script_layer_ids,
+    );
 
     crate::models::SceneEvaluatedDocument {
         canvas_width,

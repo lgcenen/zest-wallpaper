@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::scene_resource_service::{
     SceneResourceLookup, SceneResourceRoot, SceneResourceRootKind, SceneTextFontLookup,
+    SceneTextFontReferenceKind,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -49,6 +50,8 @@ pub struct SceneDiagnosticResourceDetail {
     pub present_but_unsupported: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub family_candidates: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_reference_kind: Option<SceneTextFontReferenceKind>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -210,12 +213,14 @@ impl SceneDiagnosticResourceDetail {
             reference_resolved: lookup.matched_path.is_some(),
             present_but_unsupported: false,
             family_candidates: Vec::new(),
+            font_reference_kind: None,
         }
     }
 
     pub fn from_text_font_lookup(lookup: &SceneTextFontLookup) -> Self {
         let mut detail = Self::from_lookup(&lookup.lookup);
         detail.family_candidates = lookup.family_candidates.clone();
+        detail.font_reference_kind = Some(lookup.reference_kind);
         detail
     }
 

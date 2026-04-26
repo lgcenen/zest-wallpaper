@@ -832,6 +832,8 @@ impl Default for SceneEvaluatedDocument {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneRuntimeDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_owner_key: Option<String>,
     pub source: SceneManifest,
     pub evaluated: SceneEvaluatedDocument,
 }

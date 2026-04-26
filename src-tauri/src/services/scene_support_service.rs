@@ -165,6 +165,7 @@ fn missing_scene_json() -> SceneSupportError {
             reference_resolved: false,
             present_but_unsupported: false,
             family_candidates: Vec::new(),
+            font_reference_kind: None,
         },
     ))
 }

@@ -10,7 +10,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::{
-    models::WallpaperRuntimeRecord,
+    models::{SceneRuntimeDocument, WallpaperRuntimeRecord},
     services::{
         audio_input_service, diagnostic_service, input_service,
         scene_audio_coordinator_service::SceneAudioCoordinator,
@@ -39,7 +39,7 @@ use crate::{
             SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
             SceneMaterialUniformValue, SceneShaderProgram, SceneShaderProgramKind,
         },
-        window_service,
+        scene_text_script_runtime_service, window_service,
     },
 };
 
@@ -263,6 +263,7 @@ pub fn sync_native_scene_runtime(
         warnings.extend(execute_runtime_actions(app, &state, actions)?);
         warnings.extend(sync_scene_soundscape(app, &state, desired.spec.as_ref())?);
         sync_scene_audio_interest(app, desired.spec.as_ref())?;
+        dedup_native_warnings(&mut warnings);
         Ok(warnings)
     })();
 
@@ -356,6 +357,8 @@ fn desired_scene_renderer_spec(
         .into_iter()
         .map(NativeSceneWarning::from_render_issue)
         .collect::<Vec<_>>();
+    warnings.extend(text_script_runtime_warnings_for_scene(scene));
+    warnings.extend(text_font_runtime_warnings_for_plan(&plan_report.plan));
     warnings.extend(
         graph_report
             .warnings()
@@ -595,17 +598,38 @@ impl NativeSceneWarning {
     }
 
     #[cfg(target_os = "macos")]
-    fn text_font_fallback(object_name: &str, detail: String) -> Self {
+    fn text_font_fallback(item: &SceneRenderTextItem, detail: SceneTextFontFallbackDetail) -> Self {
+        let mut diagnostic = SceneDiagnosticDetail::runtime(
+            SceneDiagnosticDomain::Text,
+            "text-font-resolution",
+            detail.reason,
+        );
+        if let Some(reference) = item.font.authored_reference.as_deref() {
+            diagnostic = diagnostic.with_note(format!("authored font reference: {reference}"));
+        }
+        if let Some(reference_kind) = item.font.reference_kind {
+            diagnostic = diagnostic.with_note(format!("font reference kind: {reference_kind:?}"));
+        }
+        if !detail.attempted_files.is_empty() {
+            diagnostic = diagnostic.with_note(format!(
+                "attempted font files: {}",
+                detail.attempted_files.join(", ")
+            ));
+        }
+        if !detail.family_candidates.is_empty() {
+            diagnostic = diagnostic.with_note(format!(
+                "family candidates: {}",
+                detail.family_candidates.join(", ")
+            ));
+        }
+
         Self {
             code: "text-font-fallback".to_string(),
             message: format!(
                 "Scene text {} fell back to the system font during native rasterization.",
-                object_name
+                item.object_name
             ),
-            detail: Some(SceneDiagnosticDetail::capability(
-                SceneDiagnosticDomain::Text,
-                detail,
-            )),
+            detail: Some(diagnostic),
         }
     }
 
@@ -740,6 +764,51 @@ fn record_render_warnings(app: &AppHandle, warnings: &[NativeSceneWarning]) {
         let _ =
             diagnostic_service::record_warning(app, DIAGNOSTIC_SUBSYSTEM, &code, summary, detail);
     }
+}
+
+fn dedup_native_warnings(warnings: &mut Vec<NativeSceneWarning>) {
+    let mut ordered = Vec::new();
+    for warning in warnings.drain(..) {
+        if !ordered.iter().any(|existing| existing == &warning) {
+            ordered.push(warning);
+        }
+    }
+    *warnings = ordered;
+}
+
+fn text_script_runtime_warnings_for_scene(scene: &SceneRuntimeDocument) -> Vec<NativeSceneWarning> {
+    scene_text_script_runtime_service::scene_text_script_runtime_diagnostics(
+        scene.runtime_owner_key.as_deref(),
+    )
+    .into_iter()
+    .map(|diagnostic| NativeSceneWarning {
+        code: diagnostic.code,
+        message: diagnostic.message,
+        detail: Some(SceneDiagnosticDetail::runtime(
+            SceneDiagnosticDomain::Text,
+            diagnostic.runtime_stage,
+            diagnostic.reason,
+        )),
+    })
+    .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn text_font_runtime_warnings_for_plan(plan: &SceneRenderPlan) -> Vec<NativeSceneWarning> {
+    plan.texts
+        .iter()
+        .filter_map(|item| {
+            scene_text_font_uncached(item, item.point_size.max(1.0))
+                .ok()
+                .and_then(|font| font.fallback_detail)
+                .map(|detail| NativeSceneWarning::text_font_fallback(item, detail))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn text_font_runtime_warnings_for_plan(_plan: &SceneRenderPlan) -> Vec<NativeSceneWarning> {
+    Vec::new()
 }
 
 fn clear_native_scene_warning_diagnostics(app: &AppHandle) {
@@ -4489,7 +4558,15 @@ struct SceneTextRasterizedTexture {
 #[cfg(target_os = "macos")]
 struct SceneResolvedTextFont {
     font: Retained<NSFont>,
-    fallback_detail: Option<String>,
+    fallback_detail: Option<SceneTextFontFallbackDetail>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SceneTextFontFallbackDetail {
+    reason: String,
+    attempted_files: Vec<String>,
+    family_candidates: Vec<String>,
 }
 
 #[cfg(target_os = "macos")]
@@ -4540,10 +4617,7 @@ fn rasterize_text_texture(
         resolve_scene_text_point_size(item, &string, &color, &paragraph_style, options)?;
     let resolved_font = scene_text_font_with_point_size(item, resolved_point_size)?;
     if let Some(detail) = resolved_font.fallback_detail.clone() {
-        warnings.push(NativeSceneWarning::text_font_fallback(
-            &item.object_name,
-            detail,
-        ));
+        warnings.push(NativeSceneWarning::text_font_fallback(item, detail));
     }
     let text_shadow = (!item.blur_enabled).then(standard_text_shadow);
     let attributes = match text_shadow.as_deref() {
@@ -4760,20 +4834,22 @@ fn scene_text_font_uncached(
         }
     }
 
-    let fallback_detail = if let Some(font_path) = item.font.file_candidates.first() {
-        Some(format!(
-            "Font file {} and family candidates {:?} could not be resolved; the native Scene text path fell back to the system font.",
-            font_path.display(),
-            item.font.family_candidates
-        ))
-    } else if let Some(authored_reference) = item.font.authored_reference.as_deref() {
-        Some(format!(
-            "Font reference {authored_reference:?} could not be resolved from file or family candidates {:?}; the native Scene text path fell back to the system font.",
-            item.font.family_candidates
-        ))
-    } else {
-        None
-    };
+    let fallback_detail = item
+        .font
+        .authored_reference
+        .as_ref()
+        .map(|authored_reference| SceneTextFontFallbackDetail {
+            reason: format!(
+                "Font reference {authored_reference:?} did not resolve through Scene content, external assets, builtin assets, or authored family candidates; the renderer used the system font as the final fallback."
+            ),
+            attempted_files: item
+                .font
+                .file_candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            family_candidates: item.font.family_candidates.clone(),
+        });
 
     Ok(SceneResolvedTextFont {
         font: NSFont::systemFontOfSize(point_size),
@@ -5511,6 +5587,9 @@ mod tests {
             text: "22:34:53".to_string(),
             font: SceneRenderTextFontBinding {
                 authored_reference: Some("fonts/test-clock.otf".to_string()),
+                reference_kind: Some(
+                    crate::services::scene_resource_service::SceneTextFontReferenceKind::PathLike,
+                ),
                 file_candidates: vec![PathBuf::from("/tmp/test-clock.otf")],
                 family_candidates: vec!["Test Clock".to_string(), "Helvetica".to_string()],
                 cache_key: "font:test-clock".to_string(),

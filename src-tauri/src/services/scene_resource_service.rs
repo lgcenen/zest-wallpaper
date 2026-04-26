@@ -26,6 +26,14 @@ pub enum SceneResourceRootKind {
     BuiltinAssets,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum SceneTextFontReferenceKind {
+    PathLike,
+    SystemFontAlias,
+    FamilyLike,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneResourceRoot {
@@ -49,6 +57,7 @@ pub struct SceneResourceResolver {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneTextFontCandidates {
     pub authored_reference: String,
+    pub reference_kind: SceneTextFontReferenceKind,
     pub file_candidates: Vec<PathBuf>,
     pub family_candidates: Vec<String>,
     pub cache_key: String,
@@ -73,6 +82,7 @@ pub struct SceneResourceLookup {
 pub struct SceneTextFontLookup {
     #[serde(flatten)]
     pub lookup: SceneResourceLookup,
+    pub reference_kind: SceneTextFontReferenceKind,
     pub family_candidates: Vec<String>,
 }
 
@@ -282,17 +292,22 @@ impl SceneResourceResolver {
 
     pub fn resolve_text_font(&self, font_reference: &str) -> SceneTextFontCandidates {
         let authored_reference = font_reference.trim().to_string();
-        let file_candidates = self.resolve_text_font_file_candidates(&authored_reference);
+        let reference_kind = scene_text_font_reference_kind(&authored_reference)
+            .unwrap_or(SceneTextFontReferenceKind::FamilyLike);
         let family_candidates =
-            scene_text_font_family_candidates(&authored_reference, &file_candidates);
+            scene_text_font_family_candidates(&authored_reference, reference_kind);
+        let file_candidates =
+            self.resolve_text_font_file_candidates(&authored_reference, reference_kind);
 
         SceneTextFontCandidates {
             cache_key: scene_text_font_candidates_cache_key(
                 &authored_reference,
+                reference_kind,
                 &file_candidates,
                 &family_candidates,
             ),
             authored_reference,
+            reference_kind,
             file_candidates,
             family_candidates,
         }
@@ -300,10 +315,14 @@ impl SceneResourceResolver {
 
     pub fn inspect_text_font(&self, font_reference: &str) -> SceneTextFontLookup {
         let authored_reference = font_reference.trim().to_string();
-        let file_candidates = self.resolve_text_font_file_candidates(&authored_reference);
+        let reference_kind = scene_text_font_reference_kind(&authored_reference)
+            .unwrap_or(SceneTextFontReferenceKind::FamilyLike);
         let family_candidates =
-            scene_text_font_family_candidates(&authored_reference, &file_candidates);
-        let attempted_candidates = self.text_font_candidate_paths(&authored_reference, false);
+            scene_text_font_family_candidates(&authored_reference, reference_kind);
+        let file_candidates =
+            self.resolve_text_font_file_candidates(&authored_reference, reference_kind);
+        let attempted_candidates =
+            self.text_font_candidate_paths(&authored_reference, reference_kind, false);
         let matched_path = file_candidates.first().cloned();
 
         SceneTextFontLookup {
@@ -322,6 +341,7 @@ impl SceneResourceResolver {
                     .unwrap_or(false),
                 builtin_assets_available: self.builtin_assets_root.exists(),
             },
+            reference_kind,
             family_candidates,
         }
     }
@@ -608,11 +628,20 @@ impl SceneResourceResolver {
         }
     }
 
-    fn resolve_text_font_file_candidates(&self, font_reference: &str) -> Vec<PathBuf> {
-        self.text_font_candidate_paths(font_reference, true)
+    fn resolve_text_font_file_candidates(
+        &self,
+        font_reference: &str,
+        reference_kind: SceneTextFontReferenceKind,
+    ) -> Vec<PathBuf> {
+        self.text_font_candidate_paths(font_reference, reference_kind, true)
     }
 
-    fn text_font_candidate_paths(&self, font_reference: &str, existing_only: bool) -> Vec<PathBuf> {
+    fn text_font_candidate_paths(
+        &self,
+        font_reference: &str,
+        reference_kind: SceneTextFontReferenceKind,
+        existing_only: bool,
+    ) -> Vec<PathBuf> {
         let mut ordered = Vec::new();
         let mut seen = BTreeSet::new();
         let register =
@@ -622,13 +651,7 @@ impl SceneResourceResolver {
                 }
             };
 
-        if font_reference_looks_like_path(font_reference) {
-            if let Some(path) = self.resolve_relative_path(font_reference) {
-                register(path, &mut ordered, &mut seen);
-            }
-        }
-
-        for relative in scene_text_font_search_paths(font_reference) {
+        for relative in scene_text_font_search_paths(font_reference, reference_kind) {
             for root in self.text_font_search_roots() {
                 register(root.join(&relative), &mut ordered, &mut seen);
             }
@@ -922,14 +945,35 @@ pub fn font_reference_looks_like_path(value: &str) -> bool {
         .map(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "ttf" | "otf" | "ttc" | "otc"
+                "ttf" | "otf" | "ttc" | "otc" | "woff" | "woff2"
             )
         })
         .unwrap_or(false)
 }
 
-fn scene_text_font_search_paths(font_reference: &str) -> Vec<PathBuf> {
-    const FONT_EXTENSIONS: [&str; 4] = ["ttf", "otf", "ttc", "otc"];
+pub fn scene_text_font_reference_kind(value: &str) -> Option<SceneTextFontReferenceKind> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if font_reference_looks_like_path(value) {
+        return Some(SceneTextFontReferenceKind::PathLike);
+    }
+    if value
+        .get(.."systemfont_".len())
+        .map(|prefix| prefix.eq_ignore_ascii_case("systemfont_"))
+        .unwrap_or(false)
+    {
+        return Some(SceneTextFontReferenceKind::SystemFontAlias);
+    }
+    Some(SceneTextFontReferenceKind::FamilyLike)
+}
+
+fn scene_text_font_search_paths(
+    font_reference: &str,
+    reference_kind: SceneTextFontReferenceKind,
+) -> Vec<PathBuf> {
+    const FONT_EXTENSIONS: [&str; 6] = ["ttf", "otf", "ttc", "otc", "woff", "woff2"];
 
     let font_reference = font_reference.trim();
     if font_reference.is_empty() {
@@ -945,7 +989,7 @@ fn scene_text_font_search_paths(font_reference: &str) -> Vec<PathBuf> {
             }
         };
 
-    if font_reference_looks_like_path(font_reference) {
+    if reference_kind == SceneTextFontReferenceKind::PathLike {
         let reference_path = PathBuf::from(font_reference);
         register(reference_path.clone(), &mut ordered, &mut seen);
         if reference_path.extension().is_none() {
@@ -960,20 +1004,46 @@ fn scene_text_font_search_paths(font_reference: &str) -> Vec<PathBuf> {
         return ordered;
     }
 
-    for stem in scene_text_font_file_stem_candidates(font_reference) {
-        for base in [
-            PathBuf::from(&stem),
-            PathBuf::from("fonts").join(&stem),
-            PathBuf::from("assets").join(&stem),
-            PathBuf::from("assets").join("fonts").join(&stem),
-        ] {
-            for extension in FONT_EXTENSIONS {
-                register(base.with_extension(extension), &mut ordered, &mut seen);
+    for reference in scene_text_font_file_lookup_references(font_reference, reference_kind) {
+        for stem in scene_text_font_file_stem_candidates(&reference) {
+            for base in [
+                PathBuf::from(&stem),
+                PathBuf::from("fonts").join(&stem),
+                PathBuf::from("assets").join(&stem),
+                PathBuf::from("assets").join("fonts").join(&stem),
+            ] {
+                for extension in FONT_EXTENSIONS {
+                    register(base.with_extension(extension), &mut ordered, &mut seen);
+                }
             }
         }
     }
 
     ordered
+}
+
+fn scene_text_font_file_lookup_references(
+    font_reference: &str,
+    reference_kind: SceneTextFontReferenceKind,
+) -> Vec<String> {
+    let mut references = Vec::new();
+    let mut seen = BTreeSet::new();
+    let register =
+        |candidate: String, references: &mut Vec<String>, seen: &mut BTreeSet<String>| {
+            let candidate = candidate.trim().to_string();
+            if !candidate.is_empty() && seen.insert(candidate.clone()) {
+                references.push(candidate);
+            }
+        };
+
+    register(font_reference.to_string(), &mut references, &mut seen);
+    if reference_kind == SceneTextFontReferenceKind::SystemFontAlias {
+        for candidate in scene_text_font_family_candidates(font_reference, reference_kind) {
+            register(candidate, &mut references, &mut seen);
+        }
+    }
+
+    references
 }
 
 fn scene_text_font_file_stem_candidates(font_reference: &str) -> Vec<String> {
@@ -1014,7 +1084,7 @@ fn scene_text_font_file_stem_candidates(font_reference: &str) -> Vec<String> {
 
 fn scene_text_font_family_candidates(
     font_reference: &str,
-    file_candidates: &[PathBuf],
+    reference_kind: SceneTextFontReferenceKind,
 ) -> Vec<String> {
     let mut families = Vec::new();
     let mut seen = BTreeSet::new();
@@ -1025,26 +1095,17 @@ fn scene_text_font_family_candidates(
         }
     };
 
-    for candidate in authored_font_family_candidates(font_reference) {
+    for candidate in authored_font_family_candidates(font_reference, reference_kind) {
         register(candidate, &mut families, &mut seen);
     }
 
-    if let Some(stem) = file_candidates
-        .first()
-        .and_then(|path| path.file_stem())
-        .and_then(|stem| stem.to_str())
-    {
-        for candidate in scene_text_font_file_stem_candidates(stem) {
-            register(candidate, &mut families, &mut seen);
-        }
-    }
-
-    register("Helvetica Neue".to_string(), &mut families, &mut seen);
-    register("Helvetica".to_string(), &mut families, &mut seen);
     families
 }
 
-fn authored_font_family_candidates(font_reference: &str) -> Vec<String> {
+fn authored_font_family_candidates(
+    font_reference: &str,
+    reference_kind: SceneTextFontReferenceKind,
+) -> Vec<String> {
     let trimmed = font_reference.trim();
     if trimmed.is_empty() {
         return Vec::new();
@@ -1060,31 +1121,31 @@ fn authored_font_family_candidates(font_reference: &str) -> Vec<String> {
             }
         };
 
-    let system_font_candidates = mac_family_candidates_for_system_font_reference(trimmed);
-    if !system_font_candidates.is_empty() {
-        register(trimmed.to_string(), &mut candidates, &mut seen);
-        for candidate in system_font_candidates {
-            register(candidate, &mut candidates, &mut seen);
+    match reference_kind {
+        SceneTextFontReferenceKind::SystemFontAlias => {
+            register(trimmed.to_string(), &mut candidates, &mut seen);
+            for candidate in mac_family_candidates_for_system_font_reference(trimmed) {
+                register(candidate, &mut candidates, &mut seen);
+            }
         }
-        return candidates;
-    }
-
-    if font_reference_looks_like_path(trimmed) {
-        if let Some(stem) = Path::new(trimmed)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-        {
-            for variant in scene_text_font_file_stem_candidates(stem) {
+        SceneTextFontReferenceKind::PathLike => {
+            if let Some(stem) = Path::new(trimmed)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+            {
+                for variant in scene_text_font_file_stem_candidates(stem) {
+                    register(variant, &mut candidates, &mut seen);
+                }
+            }
+        }
+        SceneTextFontReferenceKind::FamilyLike => {
+            register(trimmed.to_string(), &mut candidates, &mut seen);
+            for variant in prettified_font_family_variants(trimmed) {
                 register(variant, &mut candidates, &mut seen);
             }
         }
-        return candidates;
     }
 
-    register(trimmed.to_string(), &mut candidates, &mut seen);
-    for variant in prettified_font_family_variants(trimmed) {
-        register(variant, &mut candidates, &mut seen);
-    }
     candidates
 }
 
@@ -1136,11 +1197,13 @@ fn title_case_font_word(word: &str) -> String {
 
 fn scene_text_font_candidates_cache_key(
     authored_reference: &str,
+    reference_kind: SceneTextFontReferenceKind,
     file_candidates: &[PathBuf],
     family_candidates: &[String],
 ) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     authored_reference.hash(&mut hasher);
+    reference_kind.hash(&mut hasher);
 
     for candidate in file_candidates {
         candidate.hash(&mut hasher);
@@ -1181,8 +1244,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        default_builtin_scene_assets_root, font_reference_looks_like_path, SceneResourceResolver,
-        SceneResourceRootKind,
+        default_builtin_scene_assets_root, font_reference_looks_like_path,
+        scene_text_font_reference_kind, SceneResourceResolver, SceneResourceRootKind,
+        SceneTextFontReferenceKind,
     };
 
     #[test]
@@ -1617,12 +1681,54 @@ mod tests {
         let resolved = resolver.resolve_text_font("clock");
 
         assert_eq!(resolved.authored_reference, "clock");
+        assert_eq!(
+            resolved.reference_kind,
+            SceneTextFontReferenceKind::FamilyLike
+        );
         assert_eq!(resolved.file_candidates, vec![builtin_font]);
         assert!(resolved.family_candidates.contains(&"clock".to_string()));
-        assert!(resolved
-            .family_candidates
-            .contains(&"Helvetica".to_string()));
+        assert!(resolved.family_candidates.contains(&"Clock".to_string()));
         assert!(resolved.cache_key.starts_with("font:"));
+    }
+
+    #[test]
+    fn text_font_resolution_prefers_scene_then_external_then_builtin_assets() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let external_root = temp.path().join("external-assets");
+        let extracted_font = managed_root
+            .join("extracted")
+            .join("assets/fonts/title.otf");
+        let external_font = external_root.join("assets/fonts/title.otf");
+        let builtin_font = builtin_root.join("assets/fonts/title.otf");
+
+        fs::create_dir_all(extracted_font.parent().expect("extracted font parent"))
+            .expect("extracted font dir");
+        fs::create_dir_all(external_font.parent().expect("external font parent"))
+            .expect("external font dir");
+        fs::create_dir_all(builtin_font.parent().expect("builtin font parent"))
+            .expect("builtin font dir");
+        fs::write(&extracted_font, b"scene").expect("scene font");
+        fs::write(&external_font, b"external").expect("external font");
+        fs::write(&builtin_font, b"builtin").expect("builtin font");
+
+        let resolver = SceneResourceResolver::for_managed_root_with_asset_roots(
+            &managed_root,
+            &builtin_root,
+            Some(external_root),
+        );
+
+        assert_eq!(
+            resolver.resolve_text_font("title").file_candidates.first(),
+            Some(&extracted_font)
+        );
+
+        fs::remove_file(&extracted_font).expect("remove extracted font");
+        assert_eq!(
+            resolver.resolve_text_font("title").file_candidates.first(),
+            Some(&external_font)
+        );
     }
 
     #[test]
@@ -1659,6 +1765,10 @@ mod tests {
             SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
         let resolved = resolver.resolve_text_font("systemfont_comicsans");
 
+        assert_eq!(
+            resolved.reference_kind,
+            SceneTextFontReferenceKind::SystemFontAlias
+        );
         assert!(resolved
             .family_candidates
             .contains(&"Comic Sans MS".to_string()));
@@ -1667,7 +1777,12 @@ mod tests {
     #[test]
     fn detects_path_like_font_references() {
         assert!(font_reference_looks_like_path("fonts/clock.ttf"));
+        assert!(font_reference_looks_like_path("fonts/clock.woff2"));
         assert!(font_reference_looks_like_path("clock.otf"));
         assert!(!font_reference_looks_like_path("DIN Alternate"));
+        assert_eq!(
+            scene_text_font_reference_kind("systemfont_arial"),
+            Some(SceneTextFontReferenceKind::SystemFontAlias)
+        );
     }
 }

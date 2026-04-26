@@ -627,6 +627,7 @@ mod tests {
             reference_resolved: matched_path.is_some(),
             present_but_unsupported,
             family_candidates: Vec::new(),
+            font_reference_kind: None,
         }
     }
 

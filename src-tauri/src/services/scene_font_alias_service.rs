@@ -93,7 +93,11 @@ const WINDOWS_SYSTEM_FONT_ALIASES: &[SceneSystemFontAlias] = &[
 
 pub fn mac_family_candidates_for_system_font_reference(font_reference: &str) -> Vec<String> {
     let trimmed = font_reference.trim();
-    let Some(system_font) = trimmed.strip_prefix("systemfont_") else {
+    let Some(system_font) = trimmed
+        .get(.."systemfont_".len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case("systemfont_"))
+        .and_then(|_| trimmed.get("systemfont_".len()..))
+    else {
         return Vec::new();
     };
 

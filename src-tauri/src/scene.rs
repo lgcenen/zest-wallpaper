@@ -277,7 +277,7 @@ fn text_font_reference_looks_like_path(value: &str) -> bool {
         .map(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "ttf" | "otf" | "ttc" | "otc"
+                "ttf" | "otf" | "ttc" | "otc" | "woff" | "woff2"
             )
         })
         .unwrap_or(false)

@@ -957,6 +957,7 @@ mod tests {
         evaluated_at: chrono::DateTime<Utc>,
     ) -> SceneRuntimeDocument {
         SceneRuntimeDocument {
+            runtime_owner_key: None,
             source: SceneManifest {
                 text_layers: source_text_layers,
                 ..SceneManifest::default()

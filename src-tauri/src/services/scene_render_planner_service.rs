@@ -8,7 +8,8 @@ use crate::models::{
 };
 
 use super::scene_resource_service::{
-    font_reference_looks_like_path, SceneResourceResolver, SceneTextFontCandidates,
+    font_reference_looks_like_path, scene_text_font_reference_kind, SceneResourceResolver,
+    SceneTextFontCandidates, SceneTextFontReferenceKind,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -152,6 +153,7 @@ pub struct SceneRenderTextItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneRenderTextFontBinding {
     pub authored_reference: Option<String>,
+    pub reference_kind: Option<SceneTextFontReferenceKind>,
     pub file_candidates: Vec<PathBuf>,
     pub family_candidates: Vec<String>,
     pub cache_key: String,
@@ -689,11 +691,14 @@ fn resolve_text_font_binding(
     let Some(authored_reference) = authored_reference else {
         return SceneRenderTextFontBinding {
             authored_reference: None,
+            reference_kind: None,
             file_candidates: Vec::new(),
-            family_candidates: default_text_font_families(None),
+            family_candidates: Vec::new(),
             cache_key: "font:system".to_string(),
         };
     };
+    let reference_kind = scene_text_font_reference_kind(&authored_reference)
+        .unwrap_or(SceneTextFontReferenceKind::FamilyLike);
 
     if let Some(resolver) = resolver {
         return scene_render_text_font_binding_from_candidates(
@@ -711,19 +716,16 @@ fn resolve_text_font_binding(
         .and_then(|stem| stem.to_str())
         .map(str::to_string);
     let mut family_candidates = if font_reference_looks_like_path(&authored_reference) {
-        default_text_font_families(stem.as_deref())
+        optional_primary_text_font_family(stem.as_deref())
     } else {
-        let mut candidates = vec![authored_reference.clone()];
-        candidates.extend(default_text_font_families(None));
-        dedup_strings(candidates)
+        vec![authored_reference.clone()]
     };
-    if family_candidates.is_empty() {
-        family_candidates = default_text_font_families(None);
-    }
+    family_candidates = dedup_strings(family_candidates);
 
     SceneRenderTextFontBinding {
         cache_key: format!("font:authored:{authored_reference}"),
         authored_reference: Some(authored_reference),
+        reference_kind: Some(reference_kind),
         file_candidates,
         family_candidates,
     }
@@ -734,23 +736,23 @@ fn scene_render_text_font_binding_from_candidates(
 ) -> SceneRenderTextFontBinding {
     SceneRenderTextFontBinding {
         authored_reference: Some(candidates.authored_reference),
+        reference_kind: Some(candidates.reference_kind),
         file_candidates: candidates.file_candidates,
         family_candidates: dedup_strings(candidates.family_candidates),
         cache_key: candidates.cache_key,
     }
 }
 
-fn default_text_font_families(primary: Option<&str>) -> Vec<String> {
-    let mut families = Vec::new();
+fn optional_primary_text_font_family(primary: Option<&str>) -> Vec<String> {
     if let Some(primary) = primary
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
     {
-        families.push(primary);
+        vec![primary]
+    } else {
+        Vec::new()
     }
-    families.extend(["Helvetica Neue".to_string(), "Helvetica".to_string()]);
-    dedup_strings(families)
 }
 
 fn dedup_strings(values: Vec<String>) -> Vec<String> {
@@ -1017,13 +1019,16 @@ mod tests {
         SceneRenderIssueSeverity, SceneRenderPlan, SceneRenderSoundItem, SceneRenderSourceKind,
         SceneTextHorizontalAlign,
     };
-    use crate::services::scene_resource_service::SceneResourceResolver;
+    use crate::services::scene_resource_service::{
+        SceneResourceResolver, SceneTextFontReferenceKind,
+    };
 
     fn runtime_scene_with_objects(
         objects: Vec<(u32, EvaluatedSceneObject)>,
         render_list: Vec<u32>,
     ) -> SceneRuntimeDocument {
         SceneRuntimeDocument {
+            runtime_owner_key: None,
             source: Default::default(),
             evaluated: SceneEvaluatedDocument {
                 canvas_width: 1920.0,
@@ -1417,6 +1422,10 @@ mod tests {
         assert_eq!(
             report.plan.texts[0].font.authored_reference.as_deref(),
             Some("clock")
+        );
+        assert_eq!(
+            report.plan.texts[0].font.reference_kind,
+            Some(SceneTextFontReferenceKind::FamilyLike)
         );
         assert_eq!(
             report.plan.texts[0].font.file_candidates,

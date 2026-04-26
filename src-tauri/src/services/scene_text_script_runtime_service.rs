@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     hash::{Hash, Hasher},
     sync::{Mutex, OnceLock},
 };
@@ -17,6 +17,25 @@ struct SceneTextScriptRuntimeEntry {
     property_hash: u64,
     state_json: String,
     rendered_text: Option<String>,
+    initialized: bool,
+    diagnostics: Vec<SceneTextScriptDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTextScriptDiagnostic {
+    pub object_id: u32,
+    pub object_name: String,
+    pub code: String,
+    pub message: String,
+    pub runtime_stage: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneTextScriptEvaluation {
+    pub rendered_text: Option<String>,
+    pub diagnostics: Vec<SceneTextScriptDiagnostic>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +49,10 @@ struct SceneTextScriptExecutionOutput {
     state: Map<String, Value>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    error_stage: Option<String>,
+    #[serde(default)]
+    update_entry_missing: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,6 +77,18 @@ pub fn evaluate_scripted_text_layer(
     properties: &BTreeMap<String, Value>,
     now: &DateTime<Local>,
 ) -> Result<Option<String>, String> {
+    Ok(
+        evaluate_scripted_text_layer_detailed(runtime_owner_key, layer, properties, now)?
+            .rendered_text,
+    )
+}
+
+pub fn evaluate_scripted_text_layer_detailed(
+    runtime_owner_key: Option<&str>,
+    layer: &SceneTextLayer,
+    properties: &BTreeMap<String, Value>,
+    now: &DateTime<Local>,
+) -> Result<SceneTextScriptEvaluation, String> {
     let script = layer
         .script_text
         .as_deref()
@@ -65,62 +100,126 @@ pub fn evaluate_scripted_text_layer(
     let script_hash = stable_hash(script);
     let property_hash = stable_hash_json(properties);
 
-    let (previous_state_json, previous_rendered_text, should_apply_user_properties) =
-        load_cached_script_state(cache_key.as_deref(), script_hash, property_hash)?;
+    let cached = load_cached_script_state(cache_key.as_deref(), script_hash, property_hash)?;
+    let previous_text = cached.previous_rendered_text.as_deref();
 
     let execution = execute_scripted_text_layer(
         script,
         layer,
         properties,
         now,
-        previous_rendered_text.as_deref(),
-        previous_state_json.as_deref().unwrap_or("{}"),
-        should_apply_user_properties,
-    )?;
+        previous_text,
+        cached.previous_state_json.as_deref().unwrap_or("{}"),
+        cached.should_apply_user_properties,
+        cached.should_init,
+    );
 
-    let rendered_text = execution
-        .result
-        .as_ref()
-        .and_then(string_from_json_value)
-        .or(execution.text.clone());
+    let (rendered_text, state, diagnostics) = match execution {
+        Ok(execution) => {
+            let mut diagnostics = Vec::new();
+            if execution.update_entry_missing {
+                diagnostics.push(script_diagnostic(
+                    layer,
+                    "text-script-entry-missing",
+                    "update",
+                    "Text script did not expose update() or module.update; previous text was preserved.",
+                ));
+            }
+            if let Some(error) = execution.error.as_ref() {
+                diagnostics.push(script_diagnostic(
+                    layer,
+                    "text-script-run-failed",
+                    execution.error_stage.as_deref().unwrap_or("update"),
+                    error,
+                ));
+            }
+
+            let rendered_text = execution
+                .result
+                .as_ref()
+                .and_then(string_from_json_value)
+                .or(execution.text.clone())
+                .or_else(|| previous_text.map(ToString::to_string));
+            (rendered_text, execution.state, diagnostics)
+        }
+        Err(error) => {
+            let diagnostics = vec![script_diagnostic(
+                layer,
+                "text-script-compile-failed",
+                "compile",
+                &error,
+            )];
+            let fallback_text = cached
+                .previous_rendered_text
+                .or_else(|| Some(layer.content.clone()));
+            (fallback_text, Map::new(), diagnostics)
+        }
+    };
 
     if let Some(cache_key) = cache_key.as_deref() {
         save_cached_script_state(
             cache_key,
             script_hash,
             property_hash,
-            execution.state.clone(),
+            state,
             rendered_text.clone(),
+            true,
+            diagnostics.clone(),
         )?;
     }
 
-    Ok(rendered_text)
+    Ok(SceneTextScriptEvaluation {
+        rendered_text,
+        diagnostics,
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+struct SceneTextScriptCachedState {
+    previous_state_json: Option<String>,
+    previous_rendered_text: Option<String>,
+    should_apply_user_properties: bool,
+    should_init: bool,
 }
 
 fn load_cached_script_state(
     cache_key: Option<&str>,
     script_hash: u64,
     property_hash: u64,
-) -> Result<(Option<String>, Option<String>, bool), String> {
+) -> Result<SceneTextScriptCachedState, String> {
     let Some(cache_key) = cache_key else {
-        return Ok((None, None, true));
+        return Ok(SceneTextScriptCachedState {
+            should_apply_user_properties: true,
+            should_init: true,
+            ..SceneTextScriptCachedState::default()
+        });
     };
 
-    let cache = scene_text_script_runtime_cache()
+    let mut cache = scene_text_script_runtime_cache()
         .lock()
         .map_err(|error| error.to_string())?;
     let Some(entry) = cache.get(cache_key) else {
-        return Ok((None, None, true));
+        return Ok(SceneTextScriptCachedState {
+            should_apply_user_properties: true,
+            should_init: true,
+            ..SceneTextScriptCachedState::default()
+        });
     };
     if entry.script_hash != script_hash {
-        return Ok((None, None, true));
+        cache.remove(cache_key);
+        return Ok(SceneTextScriptCachedState {
+            should_apply_user_properties: true,
+            should_init: true,
+            ..SceneTextScriptCachedState::default()
+        });
     }
 
-    Ok((
-        Some(entry.state_json.clone()),
-        entry.rendered_text.clone(),
-        entry.property_hash != property_hash,
-    ))
+    Ok(SceneTextScriptCachedState {
+        previous_state_json: Some(entry.state_json.clone()),
+        previous_rendered_text: entry.rendered_text.clone(),
+        should_apply_user_properties: entry.property_hash != property_hash,
+        should_init: !entry.initialized,
+    })
 }
 
 fn save_cached_script_state(
@@ -129,6 +228,8 @@ fn save_cached_script_state(
     property_hash: u64,
     state: Map<String, Value>,
     rendered_text: Option<String>,
+    initialized: bool,
+    diagnostics: Vec<SceneTextScriptDiagnostic>,
 ) -> Result<(), String> {
     let state_json = serde_json::to_string(&state).map_err(|error| error.to_string())?;
     let mut cache = scene_text_script_runtime_cache()
@@ -141,6 +242,8 @@ fn save_cached_script_state(
             property_hash,
             state_json,
             rendered_text,
+            initialized,
+            diagnostics,
         },
     );
     Ok(())
@@ -154,6 +257,7 @@ fn execute_scripted_text_layer(
     previous_rendered_text: Option<&str>,
     previous_state_json: &str,
     should_apply_user_properties: bool,
+    should_init: bool,
 ) -> Result<SceneTextScriptExecutionOutput, String> {
     let context = Context::new().map_err(|error| error.to_string())?;
     let property_json = serde_json::to_string(properties).map_err(|error| error.to_string())?;
@@ -189,16 +293,13 @@ fn execute_scripted_text_layer(
         "__hostShouldApplyUserProperties",
         should_apply_user_properties,
     )?;
+    register_script_global(&context, "__hostShouldInit", should_init)?;
 
     let output_json = context
         .eval_as::<String>(&source)
         .map_err(|error| error.to_string())?;
     let parsed = serde_json::from_str::<SceneTextScriptExecutionOutput>(&output_json)
         .map_err(|error| format!("Failed to decode text script output: {error}"))?;
-
-    if let Some(error) = parsed.error.as_ref() {
-        return Err(error.clone());
-    }
 
     Ok(parsed)
 }
@@ -221,8 +322,11 @@ fn normalize_script_source(script: &str) -> String {
             continue;
         }
 
-        if trimmed.starts_with("export default ") {
-            normalized.push_str(line.replacen("export default ", "", 1).as_str());
+        if let Some(rest) = trimmed.strip_prefix("export default ") {
+            let indent_len = line.len() - trimmed.len();
+            normalized.push_str(&line[..indent_len]);
+            normalized.push_str("__hostDefaultModule = ");
+            normalized.push_str(rest);
         } else if trimmed.starts_with("export ") {
             normalized.push_str(line.replacen("export ", "", 1).as_str());
         } else {
@@ -232,6 +336,74 @@ fn normalize_script_source(script: &str) -> String {
     }
 
     normalized
+}
+
+fn script_diagnostic(
+    layer: &SceneTextLayer,
+    code: &str,
+    runtime_stage: &str,
+    reason: &str,
+) -> SceneTextScriptDiagnostic {
+    let message = if code == "text-script-entry-missing" {
+        format!(
+            "Scene text {} script is missing the {runtime_stage} entry.",
+            layer.name
+        )
+    } else {
+        format!("Scene text {} script {runtime_stage} failed.", layer.name)
+    };
+    SceneTextScriptDiagnostic {
+        object_id: layer.id,
+        object_name: layer.name.clone(),
+        code: code.to_string(),
+        message,
+        runtime_stage: runtime_stage.to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+pub fn scene_text_script_runtime_diagnostics(
+    runtime_owner_key: Option<&str>,
+) -> Vec<SceneTextScriptDiagnostic> {
+    let Some(runtime_owner_key) = runtime_owner_key else {
+        return Vec::new();
+    };
+    let prefix = format!("{runtime_owner_key}:");
+    let Ok(cache) = scene_text_script_runtime_cache().lock() else {
+        return Vec::new();
+    };
+
+    cache
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .flat_map(|(_, entry)| entry.diagnostics.clone())
+        .collect()
+}
+
+pub fn retain_scene_text_script_runtime_owner_layers(
+    runtime_owner_key: Option<&str>,
+    active_layer_ids: &BTreeSet<u32>,
+) {
+    let Some(runtime_owner_key) = runtime_owner_key else {
+        return;
+    };
+    let prefix = format!("{runtime_owner_key}:");
+    let Ok(mut cache) = scene_text_script_runtime_cache().lock() else {
+        return;
+    };
+
+    cache.retain(|key, _| {
+        if !key.starts_with(&prefix) {
+            return true;
+        }
+        let Some(layer_id) = key
+            .strip_prefix(&prefix)
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            return false;
+        };
+        active_layer_ids.contains(&layer_id)
+    });
 }
 
 fn tracked_script_state_keys(script: &str) -> Vec<String> {
@@ -292,8 +464,12 @@ const __hostUserProperties = JSON.parse(__hostUserPropertiesJson || "{}");
 const __hostThisLayer = JSON.parse(__hostThisLayerJson || "{}");
 const __hostState = JSON.parse(__hostStateJson || "{}");
 const __hostOriginalDate = globalThis.Date;
+var __hostDefaultModule = null;
 
 globalThis.console = globalThis.console || { log() {}, warn() {}, error() {} };
+globalThis.module = globalThis.module || {};
+globalThis.module.exports = globalThis.module.exports || {};
+globalThis.exports = globalThis.module.exports;
 
 function __hostFixedDate(...args) {
   if (new.target) {
@@ -327,24 +503,103 @@ globalThis.thisLayer = __hostThisLayer;
 const TEXT_SCRIPT_RUNNER: &str = r#"
 (() => {
   try {
+    const __hostStateKeyPattern = /^[A-Za-z_$][0-9A-Za-z_$]*$/;
     for (const key of __hostTrackedStateKeys) {
       if (Object.prototype.hasOwnProperty.call(__hostState, key)) {
         globalThis[key] = __hostState[key];
+        if (__hostStateKeyPattern.test(key)) {
+          try {
+            eval(key + " = __hostState[" + JSON.stringify(key) + "]");
+          } catch (_) {}
+        }
       }
     }
 
-    if (__hostShouldApplyUserProperties && typeof applyUserProperties === "function") {
-      applyUserProperties(__hostUserProperties);
+    const __hostModule = globalThis.module || {};
+    const __hostModuleExports = __hostModule.exports || {};
+    const __hostEntry = (name) => {
+      if (typeof globalThis[name] === "function") {
+        return { fn: globalThis[name], target: globalThis };
+      }
+      if (__hostDefaultModule && typeof __hostDefaultModule === "function" && name === "update") {
+        return { fn: __hostDefaultModule, target: globalThis };
+      }
+      if (__hostDefaultModule && typeof __hostDefaultModule[name] === "function") {
+        return { fn: __hostDefaultModule[name], target: __hostDefaultModule };
+      }
+      if (__hostModule && typeof __hostModule[name] === "function") {
+        return { fn: __hostModule[name], target: __hostModule };
+      }
+      if (__hostModuleExports && typeof __hostModuleExports[name] === "function") {
+        return { fn: __hostModuleExports[name], target: __hostModuleExports };
+      }
+      return null;
+    };
+
+    if (__hostShouldInit) {
+      const initEntry = __hostEntry("init");
+      if (initEntry) {
+        try {
+          initEntry.fn.call(initEntry.target, thisLayer);
+        } catch (error) {
+          return JSON.stringify({
+            result: null,
+            text: thisLayer && typeof thisLayer.text === "string" ? thisLayer.text : null,
+            state: {},
+            error: String((error && error.message) || error),
+            errorStage: "init",
+            updateEntryMissing: false,
+          });
+        }
+      }
+    }
+
+    if (__hostShouldApplyUserProperties) {
+      const applyEntry = __hostEntry("applyUserProperties");
+      if (applyEntry) {
+        try {
+          applyEntry.fn.call(applyEntry.target, __hostUserProperties);
+        } catch (error) {
+          return JSON.stringify({
+            result: null,
+            text: thisLayer && typeof thisLayer.text === "string" ? thisLayer.text : null,
+            state: {},
+            error: String((error && error.message) || error),
+            errorStage: "applyUserProperties",
+            updateEntryMissing: false,
+          });
+        }
+      }
     }
 
     let __hostResult = null;
-    if (typeof update === "function") {
-      __hostResult = update(thisLayer.text);
+    let __hostUpdateMissing = false;
+    const updateEntry = __hostEntry("update");
+    if (updateEntry) {
+      try {
+        __hostResult = updateEntry.fn.call(updateEntry.target, thisLayer.text);
+      } catch (error) {
+        return JSON.stringify({
+          result: null,
+          text: thisLayer && typeof thisLayer.text === "string" ? thisLayer.text : null,
+          state: {},
+          error: String((error && error.message) || error),
+          errorStage: "update",
+          updateEntryMissing: false,
+        });
+      }
+    } else {
+      __hostUpdateMissing = true;
     }
 
     const __hostStateExport = {};
     for (const key of __hostTrackedStateKeys) {
-      const value = globalThis[key];
+      let value = globalThis[key];
+      if (__hostStateKeyPattern.test(key)) {
+        try {
+          value = eval(key);
+        } catch (_) {}
+      }
       if (typeof value === "undefined" || typeof value === "function") {
         continue;
       }
@@ -356,6 +611,8 @@ const TEXT_SCRIPT_RUNNER: &str = r#"
       text: thisLayer && typeof thisLayer.text === "string" ? thisLayer.text : null,
       state: __hostStateExport,
       error: null,
+      errorStage: null,
+      updateEntryMissing: __hostUpdateMissing,
     });
   } catch (error) {
     return JSON.stringify({
@@ -363,6 +620,8 @@ const TEXT_SCRIPT_RUNNER: &str = r#"
       text: null,
       state: {},
       error: String((error && error.message) || error),
+      errorStage: "runtime",
+      updateEntryMissing: false,
     });
   }
 })()
@@ -386,7 +645,8 @@ mod tests {
 
     use super::{
         clear_scene_text_script_runtime_cache, evaluate_scripted_text_layer,
-        normalize_script_source, tracked_script_state_keys,
+        evaluate_scripted_text_layer_detailed, normalize_script_source,
+        scene_text_script_runtime_diagnostics, tracked_script_state_keys,
     };
 
     fn sample_script_layer(script_text: &str) -> SceneTextLayer {
@@ -440,12 +700,13 @@ mod tests {
     #[test]
     fn normalizes_exported_text_scripts_to_plain_script_source() {
         let normalized = normalize_script_source(
-            "import * as WEMath from 'WEMath';\nexport var value = 1;\nexport function update() { return value; }\n",
+            "import * as WEMath from 'WEMath';\nexport var value = 1;\nexport function update() { return value; }\nexport default { update };\n",
         );
 
         assert!(!normalized.contains("import * as WEMath"));
         assert!(normalized.contains("var value = 1;"));
         assert!(normalized.contains("function update() { return value; }"));
+        assert!(normalized.contains("__hostDefaultModule = { update };"));
     }
 
     #[test]
@@ -527,5 +788,105 @@ mod tests {
 
         assert_eq!(first, "Good evening, Alice!");
         assert_eq!(second, "Good evening, Alice!");
+    }
+
+    #[test]
+    fn scripted_text_layer_supports_init_and_module_update_entries() {
+        clear_scene_text_script_runtime_cache();
+        let layer = sample_script_layer(
+            "'use strict';\nvar counter = 0;\nmodule.init = function () { counter = 10; };\nmodule.update = function () { counter += 1; thisLayer.text = String(counter); };\n",
+        );
+        let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
+        let properties = BTreeMap::new();
+
+        let first = evaluate_scripted_text_layer(Some("module-demo"), &layer, &properties, &now)
+            .expect("first module evaluation")
+            .expect("first text");
+        let second = evaluate_scripted_text_layer(Some("module-demo"), &layer, &properties, &now)
+            .expect("second module evaluation")
+            .expect("second text");
+
+        assert_eq!(first, "11");
+        assert_eq!(second, "12");
+    }
+
+    #[test]
+    fn scripted_text_layer_supports_default_module_entries() {
+        clear_scene_text_script_runtime_cache();
+        let layer = sample_script_layer(
+            "'use strict';\nvar counter = 0;\nexport default {\n  init() { counter = 2; },\n  update() { counter += 3; thisLayer.text = String(counter); }\n};\n",
+        );
+        let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
+        let properties = BTreeMap::new();
+
+        let rendered =
+            evaluate_scripted_text_layer(Some("default-demo"), &layer, &properties, &now)
+                .expect("default module evaluation")
+                .expect("default module text");
+
+        assert_eq!(rendered, "5");
+    }
+
+    #[test]
+    fn scripted_text_layer_clears_state_when_source_changes() {
+        clear_scene_text_script_runtime_cache();
+        let first_layer = sample_script_layer(
+            "'use strict';\nvar counter = 0;\nexport function update() { counter += 1; thisLayer.text = String(counter); }\n",
+        );
+        let second_layer = sample_script_layer(
+            "'use strict';\nvar counter = 100;\nexport function update() { counter += 1; thisLayer.text = String(counter); }\n",
+        );
+        let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
+        let properties = BTreeMap::new();
+
+        let first =
+            evaluate_scripted_text_layer(Some("source-change"), &first_layer, &properties, &now)
+                .expect("first source evaluation")
+                .expect("first source text");
+        let second =
+            evaluate_scripted_text_layer(Some("source-change"), &second_layer, &properties, &now)
+                .expect("second source evaluation")
+                .expect("second source text");
+
+        assert_eq!(first, "1");
+        assert_eq!(second, "101");
+    }
+
+    #[test]
+    fn scripted_text_layer_records_entry_and_compile_diagnostics() {
+        clear_scene_text_script_runtime_cache();
+        let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
+        let properties = BTreeMap::new();
+
+        let missing_update = sample_script_layer("'use strict';\nvar counter = 0;\n");
+        let missing = evaluate_scripted_text_layer_detailed(
+            Some("diagnostic-demo"),
+            &missing_update,
+            &properties,
+            &now,
+        )
+        .expect("missing update evaluation");
+        assert!(missing
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "text-script-entry-missing"));
+
+        let broken = sample_script_layer("export function update( {");
+        let broken = evaluate_scripted_text_layer_detailed(
+            Some("diagnostic-demo"),
+            &broken,
+            &properties,
+            &now,
+        )
+        .expect("compile failure still returns fallback text");
+        assert!(broken
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "text-script-compile-failed"));
+
+        let cached = scene_text_script_runtime_diagnostics(Some("diagnostic-demo"));
+        assert!(cached
+            .iter()
+            .any(|diagnostic| diagnostic.code == "text-script-compile-failed"));
     }
 }
