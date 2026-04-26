@@ -299,6 +299,8 @@ pub struct SceneTextLayer {
     #[serde(default)]
     pub alignment: Option<String>,
     #[serde(default)]
+    pub anchor: Option<String>,
+    #[serde(default)]
     pub horizontal_align: Option<String>,
     #[serde(default)]
     pub vertical_align: Option<String>,

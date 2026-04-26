@@ -910,6 +910,7 @@ mod tests {
             dependencies: vec![],
             parent_id: None,
             alignment: None,
+            anchor: None,
             horizontal_align: Some("center".to_string()),
             vertical_align: Some("center".to_string()),
             content: "12:34".to_string(),

@@ -232,6 +232,8 @@ fn evaluate_scene_with_runtime_key(
         let measured_size = layer.size.or_else(|| {
             estimate_text_size(&resolved_text, resolved_point_size, layer.behavior.clone())
         });
+        let transform_alignment =
+            text_transform_alignment(layer.alignment.as_deref(), layer.anchor.as_deref());
         let transform = resolve_transform(
             source,
             layer.parent_id,
@@ -242,7 +244,7 @@ fn evaluate_scene_with_runtime_key(
             0.0,
             measured_size,
             layer.render_bounds,
-            layer.alignment.as_deref(),
+            transform_alignment.as_deref(),
             canvas_width,
             canvas_height,
             properties,
@@ -1011,6 +1013,23 @@ fn text_layout_fit_mode(layer: &SceneTextLayer) -> TextLayoutFitMode {
     } else {
         TextLayoutFitMode::Height
     }
+}
+
+fn text_transform_alignment(alignment: Option<&str>, anchor: Option<&str>) -> Option<String> {
+    alignment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .or_else(|| {
+            let anchor = anchor?.trim().to_ascii_lowercase();
+            if anchor.is_empty() {
+                None
+            } else if anchor == "none" {
+                Some("left-center".to_string())
+            } else {
+                Some(anchor)
+            }
+        })
 }
 
 fn alignment_offset(container: f64, content: f64, alignment: &str) -> f64 {
@@ -2017,6 +2036,7 @@ mod tests {
             dependencies: vec![],
             parent_id: None,
             alignment: None,
+            anchor: None,
             horizontal_align: None,
             vertical_align: None,
             content: content.to_string(),
@@ -2065,6 +2085,7 @@ mod tests {
             dependencies: vec![],
             parent_id: None,
             alignment: None,
+            anchor: None,
             horizontal_align: Some("center".to_string()),
             vertical_align: Some("center".to_string()),
             content: content.to_string(),
@@ -2100,6 +2121,61 @@ mod tests {
             padding: Some(0.0),
             max_rows: Some(2),
             max_width: Some(480.0),
+            limit_width: Some(false),
+            limit_use_ellipsis: Some(false),
+            block_align: Some(false),
+        }
+    }
+
+    fn neighboring_marker_text_layer(
+        id: u32,
+        horizontal_align: &str,
+        origin: [f64; 3],
+        size: [f64; 2],
+        content: &str,
+    ) -> SceneTextLayer {
+        SceneTextLayer {
+            id,
+            name: format!("Caption {id}"),
+            dependencies: vec![],
+            parent_id: None,
+            alignment: None,
+            anchor: Some("none".to_string()),
+            horizontal_align: Some(horizontal_align.to_string()),
+            vertical_align: Some("center".to_string()),
+            content: content.to_string(),
+            behavior: SceneTextBehavior::Static,
+            delimiter: None,
+            month_format: None,
+            day_format: None,
+            show_day: None,
+            align_vertical: None,
+            use_delimiter: None,
+            show_seconds: None,
+            use_24h_format: None,
+            visible: true,
+            visibility_binding: None,
+            text_binding: None,
+            position: origin,
+            position_bindings: None,
+            scale: [1.0, 1.0, 1.0],
+            size: Some(size),
+            render_bounds: None,
+            parallax_depth: None,
+            color: Some("1 1 1".to_string()),
+            color_binding: None,
+            alpha: Some(1.0),
+            alpha_binding: None,
+            point_size: Some(6.0),
+            point_size_binding: None,
+            font_reference: None,
+            font_path: None,
+            effect_paths: vec![],
+            script_text: None,
+            script_refresh_interval_millis: None,
+            padding: Some(32.0),
+            max_rows: Some(1),
+            max_width: Some(500.0),
             limit_width: Some(false),
             limit_use_ellipsis: Some(false),
             block_align: Some(false),
@@ -2191,6 +2267,7 @@ mod tests {
             dependencies: vec![],
             parent_id: None,
             alignment: None,
+            anchor: None,
             horizontal_align: None,
             vertical_align: None,
             content: "Fallback".to_string(),
@@ -2607,6 +2684,7 @@ mod tests {
             dependencies: vec![],
             parent_id: None,
             alignment: Some("center".to_string()),
+            anchor: None,
             horizontal_align: Some("center".to_string()),
             vertical_align: Some("center".to_string()),
             content: "Clock".to_string(),
@@ -2706,6 +2784,7 @@ mod tests {
                 dependencies: vec![],
                 parent_id: None,
                 alignment: Some("center".to_string()),
+                anchor: None,
                 horizontal_align: Some("center".to_string()),
                 vertical_align: Some("center".to_string()),
                 content: "<Date>".to_string(),
@@ -2799,6 +2878,7 @@ mod tests {
                 dependencies: vec![],
                 parent_id: None,
                 alignment: Some("center".to_string()),
+                anchor: None,
                 horizontal_align: Some("left".to_string()),
                 vertical_align: Some("center".to_string()),
                 content: "00:00:00".to_string(),
@@ -2886,6 +2966,7 @@ mod tests {
                 dependencies: vec![],
                 parent_id: None,
                 alignment: Some("center".to_string()),
+                anchor: None,
                 horizontal_align: Some("center".to_string()),
                 vertical_align: Some("center".to_string()),
                 content: "00:00".to_string(),
@@ -2970,6 +3051,7 @@ mod tests {
                 dependencies: vec![],
                 parent_id: None,
                 alignment: Some("center".to_string()),
+                anchor: None,
                 horizontal_align: Some("left".to_string()),
                 vertical_align: Some("center".to_string()),
                 content: "Bilibili/抖音 夜莺Night".to_string(),
@@ -3040,6 +3122,74 @@ mod tests {
                 assert!((content_x - render_x).abs() < 16.0);
             }
             other => panic!("expected text object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_anchor_none_keeps_content_box_to_right_of_neighboring_marker() {
+        let neighboring_marker_right = 1115.0;
+        let source = SceneManifest {
+            canvas_width: Some(1920.0),
+            canvas_height: Some(1080.0),
+            text_layers: vec![
+                neighboring_marker_text_layer(
+                    501,
+                    "left",
+                    [1140.0, 441.0, 0.0],
+                    [275.0, 30.0],
+                    "Short caption",
+                ),
+                neighboring_marker_text_layer(
+                    502,
+                    "right",
+                    [1140.0, 401.0, 0.0],
+                    [475.0, 30.0],
+                    "Longer caption beside marker",
+                ),
+            ],
+            render_graph: vec![
+                SceneRenderNode {
+                    id: 501,
+                    name: "Caption 501".to_string(),
+                    parent_id: None,
+                    kind: SceneRenderNodeKind::Text,
+                    visible: true,
+                    asset_path: None,
+                    material_path: None,
+                },
+                SceneRenderNode {
+                    id: 502,
+                    name: "Caption 502".to_string(),
+                    parent_id: None,
+                    kind: SceneRenderNodeKind::Text,
+                    visible: true,
+                    asset_path: None,
+                    material_path: None,
+                },
+            ],
+            ..SceneManifest::default()
+        };
+
+        let evaluated = evaluate_scene(
+            &source,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            Utc::now(),
+        );
+
+        for id in [501, 502] {
+            match evaluated.objects.get(&id) {
+                Some(EvaluatedSceneObject::Text { text, base, .. }) => {
+                    let [render_x, _, _, _] = base.transform.render_bounds.expect("render bounds");
+                    let [content_x, _, _, _] = text.layout.content_bounds.expect("content bounds");
+                    assert!(render_x >= neighboring_marker_right);
+                    assert!(content_x >= neighboring_marker_right);
+                    assert!(content_x >= render_x);
+                }
+                other => panic!("expected text object {id}, got {other:?}"),
+            }
         }
     }
 

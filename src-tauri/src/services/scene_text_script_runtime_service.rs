@@ -656,6 +656,7 @@ mod tests {
             dependencies: vec![],
             parent_id: None,
             alignment: None,
+            anchor: None,
             horizontal_align: None,
             vertical_align: None,
             content: "Placeholder".to_string(),

@@ -791,12 +791,21 @@ fn parse_text_layer(
     let padding = object.get("padding").and_then(as_f64);
     let max_width = object.get("maxwidth").and_then(as_f64);
     let size = normalize_text_layout_size(explicit_size, estimated_size, max_width, padding);
+    let alignment = object
+        .get("alignment")
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase());
+    let anchor = object
+        .get("anchor")
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase());
+    let bounds_alignment = text_bounds_alignment(alignment.as_deref(), anchor.as_deref());
     let render_bounds = size.map(|resolved_size| {
         compute_render_bounds(
             position,
             resolved_size,
             [1.0, 1.0, 1.0],
-            object.get("alignment").and_then(Value::as_str),
+            bounds_alignment.as_deref(),
             scene_size,
         )
     });
@@ -809,10 +818,8 @@ fn parse_text_layer(
             .get("parent")
             .and_then(Value::as_u64)
             .map(|id| id as u32),
-        alignment: object
-            .get("alignment")
-            .and_then(Value::as_str)
-            .map(|value| value.to_ascii_lowercase()),
+        alignment,
+        anchor,
         horizontal_align: object
             .get("horizontalalign")
             .and_then(Value::as_str)
@@ -1496,6 +1503,23 @@ fn normalize_text_layout_size(
         .map(|limit| estimated_width.min(limit))
         .unwrap_or(estimated_width);
     Some([width.max(24.0), estimated_height.max(24.0)])
+}
+
+fn text_bounds_alignment(alignment: Option<&str>, anchor: Option<&str>) -> Option<String> {
+    alignment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .or_else(|| {
+            let anchor = anchor?.trim().to_ascii_lowercase();
+            if anchor.is_empty() {
+                None
+            } else if anchor == "none" {
+                Some("left-center".to_string())
+            } else {
+                Some(anchor)
+            }
+        })
 }
 
 fn sample_text_for_behavior(
@@ -2357,6 +2381,7 @@ mod tests {
                   },
                   "scale": "0.18 0.18 1",
                   "size": "1971 671",
+                  "anchor": "none",
                   "padding": 32,
                   "maxwidth": 500,
                   "maxrows": 1,
@@ -2380,6 +2405,8 @@ mod tests {
         let expected_font_path = root.join("fonts/demo.ttf").display().to_string();
         assert_eq!(text.name, "Date");
         assert_eq!(text.size, Some([1971.0, 671.0]));
+        assert_eq!(text.anchor.as_deref(), Some("none"));
+        assert_eq!(text.render_bounds.map(|bounds| bounds[0]), Some(640.0));
         assert_eq!(text.padding, Some(32.0));
         assert_eq!(text.max_width, Some(500.0));
         assert_eq!(text.point_size_binding.as_deref(), Some("fontScale"));

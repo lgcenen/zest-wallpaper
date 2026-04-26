@@ -175,6 +175,7 @@ export interface SceneTextLayer {
   dependencies: number[];
   parentId?: number | null;
   alignment?: string | null;
+  anchor?: string | null;
   horizontalAlign?: string | null;
   verticalAlign?: string | null;
   content: string;

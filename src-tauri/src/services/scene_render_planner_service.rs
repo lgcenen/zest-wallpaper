@@ -1070,6 +1070,7 @@ mod tests {
             dependencies: vec![],
             parent_id: None,
             alignment: Some("top-left".to_string()),
+            anchor: None,
             horizontal_align: Some("right".to_string()),
             vertical_align: Some("top".to_string()),
             content: "12:34".to_string(),
