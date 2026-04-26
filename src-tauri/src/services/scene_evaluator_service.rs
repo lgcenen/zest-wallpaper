@@ -232,8 +232,12 @@ fn evaluate_scene_with_runtime_key(
         let measured_size = layer.size.or_else(|| {
             estimate_text_size(&resolved_text, resolved_point_size, layer.behavior.clone())
         });
-        let transform_alignment =
-            text_transform_alignment(layer.alignment.as_deref(), layer.anchor.as_deref());
+        let transform_alignment = text_transform_alignment(
+            layer.alignment.as_deref(),
+            layer.anchor.as_deref(),
+            layer.horizontal_align.as_deref(),
+            layer.vertical_align.as_deref(),
+        );
         let transform = resolve_transform(
             source,
             layer.parent_id,
@@ -1008,14 +1012,22 @@ fn text_layout_fit_mode(layer: &SceneTextLayer) -> TextLayoutFitMode {
     if layer.size.is_none() && layer.render_bounds.is_none() {
         return TextLayoutFitMode::Contain;
     }
-    if layer.behavior == SceneTextBehavior::Static {
+    if matches!(
+        layer.behavior,
+        SceneTextBehavior::Static | SceneTextBehavior::Script
+    ) {
         TextLayoutFitMode::Width
     } else {
         TextLayoutFitMode::Height
     }
 }
 
-fn text_transform_alignment(alignment: Option<&str>, anchor: Option<&str>) -> Option<String> {
+fn text_transform_alignment(
+    alignment: Option<&str>,
+    anchor: Option<&str>,
+    horizontal_align: Option<&str>,
+    vertical_align: Option<&str>,
+) -> Option<String> {
     alignment
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1025,11 +1037,39 @@ fn text_transform_alignment(alignment: Option<&str>, anchor: Option<&str>) -> Op
             if anchor.is_empty() {
                 None
             } else if anchor == "none" {
-                Some("left-center".to_string())
+                Some(text_alignment_from_axes(horizontal_align, vertical_align))
             } else {
                 Some(anchor)
             }
         })
+        .or_else(|| Some(text_alignment_from_axes(horizontal_align, vertical_align)))
+}
+
+fn text_alignment_from_axes(
+    horizontal_align: Option<&str>,
+    vertical_align: Option<&str>,
+) -> String {
+    let horizontal = match horizontal_align
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "left" => "left",
+        "right" => "right",
+        _ => "center",
+    };
+    let vertical = match vertical_align
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "top" => "top",
+        "bottom" => "bottom",
+        _ => "center",
+    };
+    format!("{horizontal}-{vertical}")
 }
 
 fn alignment_offset(container: f64, content: f64, alignment: &str) -> f64 {
@@ -3142,7 +3182,7 @@ mod tests {
                 neighboring_marker_text_layer(
                     502,
                     "right",
-                    [1140.0, 401.0, 0.0],
+                    [1620.0, 401.0, 0.0],
                     [475.0, 30.0],
                     "Longer caption beside marker",
                 ),
@@ -3190,6 +3230,102 @@ mod tests {
                 }
                 other => panic!("expected text object {id}, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn centered_script_text_keeps_authored_box_position_and_width_fit() {
+        clear_scene_text_script_runtime_cache();
+        let source = SceneManifest {
+            canvas_width: Some(1920.0),
+            canvas_height: Some(1080.0),
+            text_layers: vec![SceneTextLayer {
+                id: 601,
+                name: "Centered Script Caption".to_string(),
+                dependencies: vec![],
+                parent_id: None,
+                alignment: None,
+                anchor: Some("none".to_string()),
+                horizontal_align: Some("center".to_string()),
+                vertical_align: Some("center".to_string()),
+                content: "Placeholder Text\n<Name>".to_string(),
+                behavior: SceneTextBehavior::Script,
+                delimiter: None,
+                month_format: None,
+                day_format: None,
+                show_day: None,
+                align_vertical: None,
+                use_delimiter: None,
+                show_seconds: None,
+                use_24h_format: None,
+                visible: true,
+                visibility_binding: None,
+                text_binding: None,
+                position: [960.0, 180.0, 0.0],
+                position_bindings: None,
+                scale: [1.0, 1.0, 1.0],
+                size: Some([360.0, 84.0]),
+                render_bounds: None,
+                parallax_depth: None,
+                color: Some("1 1 1".to_string()),
+                color_binding: None,
+                alpha: Some(1.0),
+                alpha_binding: None,
+                point_size: Some(7.0),
+                point_size_binding: None,
+                font_reference: None,
+                font_path: None,
+                effect_paths: vec![],
+                script_text: Some(
+                    "export function update() { thisLayer.text = 'Have a nice evening, USER!'; }"
+                        .to_string(),
+                ),
+                script_refresh_interval_millis: None,
+                padding: Some(0.0),
+                max_rows: None,
+                max_width: None,
+                limit_width: Some(false),
+                limit_use_ellipsis: Some(false),
+                block_align: Some(false),
+            }],
+            render_graph: vec![SceneRenderNode {
+                id: 601,
+                name: "Centered Script Caption".to_string(),
+                parent_id: None,
+                kind: SceneRenderNodeKind::Text,
+                visible: true,
+                asset_path: None,
+                material_path: None,
+            }],
+            ..SceneManifest::default()
+        };
+
+        let evaluated = evaluate_scene_with_runtime_key(
+            Some("centered-script-width-fit"),
+            &source,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            Utc::now(),
+        );
+
+        match evaluated.objects.get(&601) {
+            Some(EvaluatedSceneObject::Text { text, base, .. }) => {
+                let [render_x, render_y, render_w, render_h] =
+                    base.transform.render_bounds.expect("render bounds");
+                assert_eq!(
+                    [render_x, render_y, render_w, render_h],
+                    [780.0, 858.0, 360.0, 84.0]
+                );
+                assert_eq!(text.value, "Have a nice evening, USER!");
+                assert!(text.layout.scaled_point_size < 40.0);
+                let [content_x, _, content_w, _] =
+                    text.layout.content_bounds.expect("content bounds");
+                assert!(content_w <= render_w);
+                assert!(((content_x + content_w * 0.5) - (render_x + render_w * 0.5)).abs() < 1.0);
+            }
+            other => panic!("expected text object 601, got {other:?}"),
         }
     }
 

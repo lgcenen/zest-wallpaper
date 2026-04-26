@@ -13,8 +13,8 @@ use crate::{
     services::asset_resolver::AssetResolver,
 };
 
-pub const SCENE_PARSER_REVISION: &str = "scene-parser:2026-04-26-1";
-pub const SCENE_EVALUATOR_REVISION: &str = "scene-evaluator:2026-04-26-1";
+pub const SCENE_PARSER_REVISION: &str = "scene-parser:2026-04-26-2";
+pub const SCENE_EVALUATOR_REVISION: &str = "scene-evaluator:2026-04-26-2";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

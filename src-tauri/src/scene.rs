@@ -799,7 +799,20 @@ fn parse_text_layer(
         .get("anchor")
         .and_then(Value::as_str)
         .map(|value| value.to_ascii_lowercase());
-    let bounds_alignment = text_bounds_alignment(alignment.as_deref(), anchor.as_deref());
+    let horizontal_align = object
+        .get("horizontalalign")
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase());
+    let vertical_align = object
+        .get("verticalalign")
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase());
+    let bounds_alignment = text_bounds_alignment(
+        alignment.as_deref(),
+        anchor.as_deref(),
+        horizontal_align.as_deref(),
+        vertical_align.as_deref(),
+    );
     let render_bounds = size.map(|resolved_size| {
         compute_render_bounds(
             position,
@@ -820,14 +833,8 @@ fn parse_text_layer(
             .map(|id| id as u32),
         alignment,
         anchor,
-        horizontal_align: object
-            .get("horizontalalign")
-            .and_then(Value::as_str)
-            .map(|value| value.to_ascii_lowercase()),
-        vertical_align: object
-            .get("verticalalign")
-            .and_then(Value::as_str)
-            .map(|value| value.to_ascii_lowercase()),
+        horizontal_align,
+        vertical_align,
         content,
         behavior,
         delimiter: script_properties
@@ -1505,7 +1512,12 @@ fn normalize_text_layout_size(
     Some([width.max(24.0), estimated_height.max(24.0)])
 }
 
-fn text_bounds_alignment(alignment: Option<&str>, anchor: Option<&str>) -> Option<String> {
+fn text_bounds_alignment(
+    alignment: Option<&str>,
+    anchor: Option<&str>,
+    horizontal_align: Option<&str>,
+    vertical_align: Option<&str>,
+) -> Option<String> {
     alignment
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1515,11 +1527,39 @@ fn text_bounds_alignment(alignment: Option<&str>, anchor: Option<&str>) -> Optio
             if anchor.is_empty() {
                 None
             } else if anchor == "none" {
-                Some("left-center".to_string())
+                Some(text_alignment_from_axes(horizontal_align, vertical_align))
             } else {
                 Some(anchor)
             }
         })
+        .or_else(|| Some(text_alignment_from_axes(horizontal_align, vertical_align)))
+}
+
+fn text_alignment_from_axes(
+    horizontal_align: Option<&str>,
+    vertical_align: Option<&str>,
+) -> String {
+    let horizontal = match horizontal_align
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "left" => "left",
+        "right" => "right",
+        _ => "center",
+    };
+    let vertical = match vertical_align
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "top" => "top",
+        "bottom" => "bottom",
+        _ => "center",
+    };
+    format!("{horizontal}-{vertical}")
 }
 
 fn sample_text_for_behavior(
@@ -2385,7 +2425,7 @@ mod tests {
                   "padding": 32,
                   "maxwidth": 500,
                   "maxrows": 1,
-                  "horizontalalign": "center",
+                  "horizontalalign": "left",
                   "verticalalign": "center",
                   "text": "<Date>",
                   "visible": { "user": { "name": "day", "condition": "3" }, "value": false }
@@ -2430,6 +2470,48 @@ mod tests {
                 .map(|binding| binding.property_key.as_str()),
             Some("day")
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn text_anchor_none_uses_text_align_to_center_authored_box() {
+        let root =
+            std::env::temp_dir().join(format!("scene-text-anchor-center-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("temp scene root");
+        fs::write(
+            root.join("scene.json"),
+            r#"{
+              "general": { "orthogonalprojection": { "width": 1920, "height": 1080 } },
+              "objects": [
+                {
+                  "id": 12,
+                  "name": "Centered Caption",
+                  "font": "systemfont_comicsans",
+                  "pointsize": 7,
+                  "origin": "960 180 0",
+                  "size": "360 84",
+                  "anchor": "none",
+                  "horizontalalign": "center",
+                  "verticalalign": "center",
+                  "text": "Centered caption"
+                }
+              ]
+            }"#,
+        )
+        .expect("scene json");
+
+        let manifest = parse_scene_manifest(&root.join("scene.json"), &root, &BTreeMap::new())
+            .expect("manifest");
+        let text = manifest
+            .text_layers
+            .iter()
+            .find(|layer| layer.id == 12)
+            .expect("text layer");
+        assert_eq!(text.anchor.as_deref(), Some("none"));
+        assert_eq!(text.horizontal_align.as_deref(), Some("center"));
+        assert_eq!(text.vertical_align.as_deref(), Some("center"));
+        assert_eq!(text.render_bounds, Some([780.0, 858.0, 360.0, 84.0]));
 
         let _ = fs::remove_dir_all(root);
     }
