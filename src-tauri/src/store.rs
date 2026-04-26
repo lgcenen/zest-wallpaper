@@ -47,6 +47,7 @@ struct PersistedPlayerState {
 pub struct AppState {
     pub library: Mutex<LibraryStore>,
     pub player: Mutex<DynamicPlayerState>,
+    pub runtime_sync: Mutex<()>,
     pub scene_runtime_settings: Mutex<SceneRuntimeSettings>,
 }
 
@@ -70,6 +71,7 @@ impl AppState {
         Ok(Self {
             library: Mutex::new(library),
             player: Mutex::new(player),
+            runtime_sync: Mutex::new(()),
             scene_runtime_settings: Mutex::new(scene_runtime_settings),
         })
     }

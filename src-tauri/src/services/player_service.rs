@@ -124,7 +124,7 @@ pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), S
     preflight_scene_apply(app, &record, &runtime_record)?;
 
     lifecycle_service::show_player_windows(app).map_err(|error| error.to_string())?;
-    sync_native_runtime(app, Some(&runtime_record), effective_paused)?;
+    sync_native_runtime_with_transaction_lock(app, state, Some(&runtime_record), effective_paused)?;
     if should_start_scene_update_loop(&runtime_record) {
         start_scene_update_loop(app.clone(), state);
     }
@@ -155,7 +155,7 @@ pub fn clear_active_wallpaper(app: &AppHandle, state: &AppState) -> Result<(), S
     clear_player_session_state(state)?;
 
     scene_support_service::clear_scene_support_diagnostics(app);
-    sync_native_runtime(app, None, false)?;
+    sync_native_runtime_with_transaction_lock(app, state, None, false)?;
     lifecycle_service::sync_pause_menu_state(app, false);
     app.emit("player:load", Option::<WallpaperRuntimeRecord>::None)
         .map_err(|error| error.to_string())?;
@@ -221,12 +221,29 @@ pub(crate) fn sync_native_runtime_for_active_wallpaper(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<(), String> {
+    let _runtime_sync = state
+        .runtime_sync
+        .lock()
+        .map_err(|error| error.to_string())?;
     match active_runtime_snapshot(state)? {
         Some((runtime_record, effective_paused)) => {
             sync_native_runtime(app, Some(&runtime_record), effective_paused)
         }
         None => sync_native_runtime(app, None, false),
     }
+}
+
+fn sync_native_runtime_with_transaction_lock(
+    app: &AppHandle,
+    state: &AppState,
+    runtime_record: Option<&WallpaperRuntimeRecord>,
+    paused: bool,
+) -> Result<(), String> {
+    let _runtime_sync = state
+        .runtime_sync
+        .lock()
+        .map_err(|error| error.to_string())?;
+    sync_native_runtime(app, runtime_record, paused)
 }
 
 fn sync_native_runtime(
@@ -353,6 +370,13 @@ fn start_scene_update_loop(app: AppHandle, state: &AppState) {
         };
 
         if should_emit {
+            let _runtime_sync = match state.runtime_sync.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            if !scene_update_sync_is_current(&state, generation, active_id.as_str()) {
+                return;
+            }
             let _ = scene_native_renderer_service::sync_native_scene_runtime(
                 &app,
                 Some(&runtime_record),
@@ -360,6 +384,17 @@ fn start_scene_update_loop(app: AppHandle, state: &AppState) {
             );
         }
     });
+}
+
+fn scene_update_sync_is_current(state: &AppState, generation: u64, active_id: &str) -> bool {
+    state
+        .player
+        .lock()
+        .map(|player| {
+            player.scene_update_generation == generation
+                && player.active_id.as_deref() == Some(active_id)
+        })
+        .unwrap_or(false)
 }
 
 fn active_runtime_snapshot(
@@ -422,19 +457,35 @@ where
     let candidate = build_apply_wallpaper_candidate(previous_player, runtime_record);
 
     ensure_player_windows()?;
+    let _runtime_sync = state
+        .runtime_sync
+        .lock()
+        .map_err(|error| error.to_string())?;
+    commit_player_state(state, candidate.player_state.clone())?;
 
     if let Err(error) = sync_native_runtime(Some(runtime_record), candidate.effective_paused) {
-        rollback_failed_apply(
+        let state_rollback_error = commit_player_state(state, previous_player.clone())
+            .err()
+            .map(|rollback_error| {
+                format!("failed to restore previous player state: {rollback_error}")
+            });
+        let runtime_rollback_error = rollback_failed_apply(
             previous_runtime.as_ref(),
             had_player_windows,
             &mut sync_native_runtime,
             &mut close_player_windows,
         )
-        .map_err(|rollback_error| format!("{error}; {rollback_error}"))?;
+        .err();
+        let rollback_errors = [state_rollback_error, runtime_rollback_error]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if !rollback_errors.is_empty() {
+            return Err(format!("{error}; {}", rollback_errors.join("; ")));
+        }
         return Err(error);
     }
 
-    commit_player_state(state, candidate.player_state.clone())?;
     persist_player(&candidate.player_state)?;
     Ok(candidate.effective_paused)
 }
@@ -800,8 +851,9 @@ mod tests {
         apply_pause_change, apply_runtime_record_transaction, build_apply_wallpaper_candidate,
         clear_player_session_state, native_host_sync_disposition, push_critical_sync_error,
         scene_requires_periodic_updates, scene_signature, scene_update_cadence,
-        should_emit_scene_update, should_start_scene_update_loop, validate_scene_apply_preflight,
-        NativeHostKind, NativeHostSyncDisposition, SceneUpdateCadence,
+        scene_update_sync_is_current, should_emit_scene_update, should_start_scene_update_loop,
+        validate_scene_apply_preflight, NativeHostKind, NativeHostSyncDisposition,
+        SceneUpdateCadence,
     };
 
     fn runtime_record(
@@ -828,6 +880,7 @@ mod tests {
         AppState {
             library: Mutex::new(LibraryStore::default()),
             player: Mutex::new(player),
+            runtime_sync: Mutex::new(()),
             scene_runtime_settings: Mutex::new(SceneRuntimeSettings::default()),
         }
     }
@@ -1334,6 +1387,78 @@ mod tests {
             player.last_scene_signature,
             previous_player.last_scene_signature
         );
+    }
+
+    #[test]
+    fn apply_transaction_commits_active_state_before_native_sync() {
+        let previous_player = DynamicPlayerState {
+            active_id: Some("old-wallpaper".to_string()),
+            manually_paused: true,
+            auto_pause_screen_labels: BTreeSet::new(),
+            scene_update_generation: 11,
+            last_scene_signature: Some("old-signature".to_string()),
+        };
+        let state = app_state(previous_player.clone());
+        let mut candidate_runtime = runtime_record(
+            WallpaperRuntime::Video {
+                video: Default::default(),
+            },
+            WallpaperType::Video,
+        );
+        candidate_runtime.id = "new-wallpaper".to_string();
+        let observed_sync_state = RefCell::new(Vec::new());
+
+        let result = apply_runtime_record_transaction(
+            &candidate_runtime,
+            &previous_player,
+            None,
+            &state,
+            true,
+            || Ok(()),
+            |runtime_record, paused| {
+                let player = state.player.lock().expect("player lock").clone();
+                observed_sync_state.borrow_mut().push((
+                    runtime_record.map(|record| record.id.clone()),
+                    paused,
+                    player.active_id,
+                    player.scene_update_generation,
+                    player.manually_paused,
+                ));
+                Ok(())
+            },
+            || Ok(()),
+            |_| Ok(()),
+        );
+
+        assert_eq!(result, Ok(false));
+        assert_eq!(
+            observed_sync_state.into_inner(),
+            vec![(
+                Some("new-wallpaper".to_string()),
+                false,
+                Some("new-wallpaper".to_string()),
+                12,
+                false,
+            )]
+        );
+        let player = state.player.lock().expect("player lock").clone();
+        assert_eq!(player.active_id.as_deref(), Some("new-wallpaper"));
+        assert_eq!(player.scene_update_generation, 12);
+    }
+
+    #[test]
+    fn scene_update_sync_guard_rejects_stale_active_state() {
+        let state = app_state(DynamicPlayerState {
+            active_id: Some("new-wallpaper".to_string()),
+            manually_paused: false,
+            auto_pause_screen_labels: BTreeSet::new(),
+            scene_update_generation: 8,
+            last_scene_signature: None,
+        });
+
+        assert!(scene_update_sync_is_current(&state, 8, "new-wallpaper"));
+        assert!(!scene_update_sync_is_current(&state, 7, "new-wallpaper"));
+        assert!(!scene_update_sync_is_current(&state, 8, "old-wallpaper"));
     }
 
     #[test]

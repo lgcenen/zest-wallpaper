@@ -350,6 +350,7 @@ mod tests {
                 scene_update_generation: 0,
                 last_scene_signature: None,
             }),
+            runtime_sync: std::sync::Mutex::new(()),
             scene_runtime_settings: std::sync::Mutex::new(SceneRuntimeSettings::default()),
         };
         let player = DynamicPlayerState {

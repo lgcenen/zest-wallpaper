@@ -14,7 +14,7 @@ use crate::{
         native_video_service, native_web_service, player_service, scene_native_renderer_service,
         window_service,
     },
-    store::AppState,
+    store::{AppState, DynamicPlayerState},
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -321,18 +321,18 @@ fn toggle_pause_from_tray(app: &AppHandle) {
 fn start_player_lifecycle_worker(app: AppHandle) {
     thread::spawn(move || {
         let app_bundle_id = app.config().identifier.clone();
-        let mut previous_plan_signature: Option<String> = None;
+        let mut previous_reconcile_signature: Option<PlayerLifecycleReconcileSignature> = None;
 
         loop {
             thread::sleep(PLAYER_MAINTENANCE_INTERVAL);
 
             let state = app.state::<AppState>();
-            let has_active_wallpaper = match state.player.lock() {
-                Ok(player) => player.active_id.is_some(),
+            let player_snapshot = match state.player.lock() {
+                Ok(player) => PlayerLifecycleSnapshot::from_player(&player),
                 Err(_) => continue,
             };
 
-            if !has_active_wallpaper {
+            if player_snapshot.active_id.is_none() {
                 let _ = player_service::sync_native_runtime_for_active_wallpaper(&app, &state);
                 if !window_service::player_window_labels(&app).is_empty() {
                     let _ = close_player_windows(&app);
@@ -342,7 +342,7 @@ fn start_player_lifecycle_worker(app: AppHandle) {
                     &app,
                     &state,
                 );
-                previous_plan_signature = None;
+                previous_reconcile_signature = None;
                 continue;
             }
 
@@ -355,9 +355,11 @@ fn start_player_lifecycle_worker(app: AppHandle) {
                 Ok(signature) => signature,
                 Err(_) => continue,
             };
+            let reconcile_signature =
+                player_lifecycle_reconcile_signature(plan_signature, &player_snapshot);
 
-            let needs_reconcile = previous_plan_signature.as_deref()
-                != Some(plan_signature.as_str())
+            let needs_reconcile = previous_reconcile_signature.as_ref()
+                != Some(&reconcile_signature)
                 || current_labels != expected_labels;
             if needs_reconcile {
                 let _ = show_player_windows(&app);
@@ -366,7 +368,7 @@ fn start_player_lifecycle_worker(app: AppHandle) {
                 record_player_visible(&app, !expected_labels.is_empty());
             }
 
-            previous_plan_signature = Some(plan_signature);
+            previous_reconcile_signature = Some(reconcile_signature);
 
             let auto_pause_labels =
                 auto_pause_service::sample_auto_pause_screen_labels(&app, &app_bundle_id)
@@ -378,6 +380,39 @@ fn start_player_lifecycle_worker(app: AppHandle) {
             );
         }
     });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlayerLifecycleSnapshot {
+    active_id: Option<String>,
+    scene_update_generation: u64,
+}
+
+impl PlayerLifecycleSnapshot {
+    fn from_player(player: &DynamicPlayerState) -> Self {
+        Self {
+            active_id: player.active_id.clone(),
+            scene_update_generation: player.scene_update_generation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlayerLifecycleReconcileSignature {
+    plan_signature: String,
+    active_id: Option<String>,
+    scene_update_generation: u64,
+}
+
+fn player_lifecycle_reconcile_signature(
+    plan_signature: String,
+    player: &PlayerLifecycleSnapshot,
+) -> PlayerLifecycleReconcileSignature {
+    PlayerLifecycleReconcileSignature {
+        plan_signature,
+        active_id: player.active_id.clone(),
+        scene_update_generation: player.scene_update_generation,
+    }
 }
 
 fn record_workbench_visible(app: &AppHandle, visible: bool) {
@@ -412,7 +447,10 @@ fn quit_requested(app: &AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_setup_restore_outcome, AppLifecycleState, SetupRestoreOutcome};
+    use super::{
+        player_lifecycle_reconcile_signature, resolve_setup_restore_outcome, AppLifecycleState,
+        PlayerLifecycleSnapshot, SetupRestoreOutcome,
+    };
 
     #[test]
     fn main_window_close_hides_workbench_without_touching_player_visibility() {
@@ -469,6 +507,26 @@ mod tests {
         assert!(snapshot.workbench_visible);
         assert!(snapshot.player_visible);
         assert!(!snapshot.quit_requested);
+    }
+
+    #[test]
+    fn lifecycle_reconcile_signature_tracks_active_runtime_identity() {
+        let old = player_lifecycle_reconcile_signature(
+            "display:player:0:0:1920:1080".to_string(),
+            &PlayerLifecycleSnapshot {
+                active_id: Some("old-wallpaper".to_string()),
+                scene_update_generation: 4,
+            },
+        );
+        let new_same_windows = player_lifecycle_reconcile_signature(
+            "display:player:0:0:1920:1080".to_string(),
+            &PlayerLifecycleSnapshot {
+                active_id: Some("new-wallpaper".to_string()),
+                scene_update_generation: 5,
+            },
+        );
+
+        assert_ne!(old, new_same_windows);
     }
 
     #[test]
