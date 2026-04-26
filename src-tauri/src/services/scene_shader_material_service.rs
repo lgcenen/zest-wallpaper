@@ -30,10 +30,8 @@ pub enum SceneCompatEffectKind {
     Shake,
     WaterRipple,
     WaterWaves,
-    Blur,
     Tint,
     Scroll,
-    Shine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1075,7 +1073,6 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::WaterWaves => Some(&WATERWAVES_CONTRACT),
         SceneCompatEffectKind::Tint => Some(&TINT_CONTRACT),
         SceneCompatEffectKind::Scroll => Some(&SCROLL_CONTRACT),
-        SceneCompatEffectKind::Blur | SceneCompatEffectKind::Shine => None,
     }
 }
 
@@ -1159,7 +1156,6 @@ fn compat_effect_shader_defines(
         SceneCompatEffectKind::Scroll => {
             defines.insert("PHASE10_EFFECT_SCROLL".to_string(), 1);
         }
-        SceneCompatEffectKind::Blur | SceneCompatEffectKind::Shine => {}
     }
     if let Some(contract) = phase10b_effect_contract_for_kind(kind) {
         for (name, value) in contract.supported_combo_defaults {

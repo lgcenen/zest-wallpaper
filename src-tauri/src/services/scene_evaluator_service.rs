@@ -7,30 +7,10 @@ use crate::models::{
     EvaluatedAudioState, EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
     EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
     SceneAxisBindings, SceneBinding, SceneCamera, SceneManifest, SceneRenderNodeKind,
-    SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer, SceneVisualLayer, WallpaperProperty,
+    SceneTextBehavior, SceneTextLayer, SceneVisualLayer, WallpaperProperty,
 };
 
 use super::{scene_text_script_runtime_service, system_service::MediaMetadata};
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn evaluate_scene_runtime_document(
-    source: SceneManifest,
-    properties: &BTreeMap<String, Value>,
-    persisted_properties: &BTreeMap<String, Value>,
-    property_definitions: &BTreeMap<String, WallpaperProperty>,
-    media: Option<&MediaMetadata>,
-    now: DateTime<Utc>,
-) -> SceneRuntimeDocument {
-    evaluate_scene_runtime_document_with_runtime_key(
-        None,
-        source,
-        properties,
-        persisted_properties,
-        property_definitions,
-        media,
-        now,
-    )
-}
 
 pub fn evaluate_scene_runtime_document_with_runtime_key(
     runtime_owner_key: Option<&str>,
@@ -40,7 +20,7 @@ pub fn evaluate_scene_runtime_document_with_runtime_key(
     property_definitions: &BTreeMap<String, WallpaperProperty>,
     media: Option<&MediaMetadata>,
     now: DateTime<Utc>,
-) -> SceneRuntimeDocument {
+) -> crate::models::SceneRuntimeDocument {
     let evaluated = evaluate_scene_with_runtime_key(
         runtime_owner_key,
         &source,
@@ -50,7 +30,7 @@ pub fn evaluate_scene_runtime_document_with_runtime_key(
         media,
         now,
     );
-    SceneRuntimeDocument {
+    crate::models::SceneRuntimeDocument {
         runtime_owner_key: runtime_owner_key.map(ToString::to_string),
         source,
         evaluated,

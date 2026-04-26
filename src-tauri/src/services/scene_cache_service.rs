@@ -220,7 +220,7 @@ fn phase_08_baseline_engine_fingerprint() -> String {
             env!("CARGO_MANIFEST_DIR"),
             "/src/services/scene_evaluator_service.rs"
         )),
-        "pub fn evaluate_scene_runtime_document(",
+        "pub fn evaluate_scene_runtime_document_with_runtime_key(",
         "#[cfg(test)]",
     );
     format!("{:x}", hasher.finalize())
