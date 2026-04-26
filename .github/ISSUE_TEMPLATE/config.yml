@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Read the README first
+    url: https://github.com/lgcenen/zest-wallpaper/blob/main/README.md
+    about: Check platform scope, supported wallpaper types, and setup notes before opening an issue.

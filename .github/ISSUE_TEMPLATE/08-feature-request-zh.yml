@@ -1,0 +1,64 @@
+name: 功能请求
+description: 提议一个新功能，或现有流程的明确改进。
+title: "[功能] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        使用这个模板来请求功能或工作流改进。
+
+        下列内容和项目固定非目标冲突，通常会被关闭：
+        - 静态快照生成
+        - 导出静态图片并替换系统壁纸
+        - 自动静态壁纸同步工作流
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经先搜索过现有 issue。
+          required: true
+        - label: 这个请求仍然属于一个 macOS-only 动态壁纸播放器的范围。
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 模块
+      options:
+        - Scene 运行时
+        - Video 运行时
+        - Web 运行时
+        - Workbench GUI
+        - 导入 / 本地库管理
+        - 设置 / 诊断
+        - 构建 / 打包 / 发布
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: feature
+    attributes:
+      label: 功能描述
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 这个功能要解决什么问题？
+      description: 重点说用户痛点，而不是只说实现想法。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你考虑过哪些替代方案？
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: 其他上下文、参考或草图
+    validations:
+      required: false

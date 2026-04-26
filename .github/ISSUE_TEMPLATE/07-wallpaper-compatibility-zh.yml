@@ -1,0 +1,119 @@
+name: 壁纸兼容性问题
+description: 报告某一张壁纸可以导入或应用，但渲染错误或无法正确应用。
+title: "[兼容性] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个模板用于单张壁纸或少量特定壁纸的兼容性问题。
+
+        好的报告应帮助判断问题更接近：
+        - Scene 基础布局
+        - 文本 / 音频 / 粒子运行时
+        - shader / material / effect 执行
+        - render graph / previous / background 路由
+        - video 或 web 运行时
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经先搜索过现有 issue。
+          required: true
+        - label: 我已经确认这是和某一张壁纸或一小类壁纸相关的问题，而不是通用应用级 bug。
+          required: true
+        - label: 我不是在要求应用直接分发第三方专有 assets。
+          required: true
+  - type: dropdown
+    id: wallpaper_type
+    attributes:
+      label: 壁纸类型
+      options:
+        - Scene
+        - Video
+        - Web
+        - 不确定
+    validations:
+      required: true
+  - type: input
+    id: title
+    attributes:
+      label: 壁纸标题
+      placeholder: "例如：Summer feeling"
+    validations:
+      required: true
+  - type: input
+    id: workshop_id
+    attributes:
+      label: Workshop ID 或来源标识
+      description: 如果知道的话请填写。
+      placeholder: "例如：1845706469"
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本或提交号
+      placeholder: "例如：f0c23c1"
+    validations:
+      required: true
+  - type: dropdown
+    id: external_assets
+    attributes:
+      label: 复现时是否挂载了外部 assets
+      options:
+        - "是"
+        - "否"
+        - 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 问题范围
+      description: 说明是导入失败、apply 失败，还是 apply 后画面明显不对。
+      placeholder: |
+        - 可以导入
+        - apply 进入 native runtime 但带 warning
+        - 文本 / effect / 粒子 / 布局 与预期不同
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期表现
+      description: 请描述正确画面或行为。最好附“正确 vs 实际”的对比图。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际表现
+      description: 请具体描述哪里不对，例如层级、文本布局、粒子、effect 作用域等。
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息 / support report / 日志
+      description: 粘贴 `zest-diagnostic`、support-report 或相关终端日志。
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: properties
+    attributes:
+      label: 属性覆盖或特殊设置
+      description: 包括你改过的壁纸属性、Scene runtime 设置、外部 assets 路径等。
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图或录屏
+      description: 可以直接拖拽截图或录屏。最好有“正确 vs 实际”对比。
+    validations:
+      required: false

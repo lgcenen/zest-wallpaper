@@ -1,0 +1,109 @@
+name: Bug Report
+description: Report a reproducible application bug that is not limited to one wallpaper package.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for application-level bugs such as import failures, library corruption, switching regressions, crashes, or runtime lifecycle problems.
+
+        If the problem is specific to one wallpaper rendering incorrectly, use **Wallpaper Compatibility Issue** instead.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues first.
+          required: true
+        - label: I can still reproduce this on the latest main branch build or latest release build available to me.
+          required: true
+        - label: This is not a request for static wallpaper export, snapshot generation, or automatic system wallpaper syncing.
+          required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Affected runtime
+      options:
+        - Scene
+        - Video
+        - Web
+        - Workbench / library management
+        - Player lifecycle / windowing
+        - Import / persistence
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version or commit
+      description: Release version, local commit hash, or branch tip.
+      placeholder: "e.g. f0c23c1"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "e.g. macOS 15.5"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Make this deterministic. Start from app launch if needed.
+      placeholder: |
+        1. Import ...
+        2. Apply ...
+        3. Change property ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: dropdown
+    id: external_assets
+    attributes:
+      label: External assets mounted
+      description: This project can run without external assets, but Scene compatibility often improves when they are mounted.
+      options:
+        - "Yes"
+        - "No"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics / logs
+      description: Paste the relevant terminal output, support diagnostics, or error messages.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: Drag images or recordings into the issue if they help.
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else that narrows scope, such as whether the issue started after a specific commit.
+    validations:
+      required: false

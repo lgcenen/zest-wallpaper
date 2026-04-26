@@ -1,0 +1,54 @@
+name: Code Cleanup / Refactor
+description: Suggest internal cleanup, maintainability work, or technical-debt reduction.
+title: "[Refactor] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for internal cleanup work such as dead code removal, service splitting, contract tightening, or test hardening.
+
+        Do not use this for user-facing bugs unless there is a concrete reproducible regression.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues first.
+          required: true
+        - label: This is about maintainability or internal correctness, not a feature request.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Scene parser / evaluator
+        - Scene renderer / render graph
+        - Player lifecycle / windowing
+        - Import / persistence
+        - Workbench frontend
+        - Tests / diagnostics
+        - Build / tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is the maintenance problem?
+      description: Explain the concrete debt or confusion, not just “this file is large”.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed cleanup or refactor
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks or phase boundaries to preserve
+      description: Note any `phase-08/09/10` or runtime boundaries that should not be crossed.
+    validations:
+      required: false

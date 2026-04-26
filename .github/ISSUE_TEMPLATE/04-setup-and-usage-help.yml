@@ -1,0 +1,70 @@
+name: Setup / Usage Help
+description: Ask for help installing, configuring, importing, or using the app.
+title: "[Help] "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for setup and usage questions.
+
+        If you already know this is a reproducible product bug, use **Bug Report** instead.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I read the README first.
+          required: true
+        - label: I searched existing issues first.
+          required: true
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      options:
+        - Building from source
+        - Importing wallpapers
+        - Mounting external assets
+        - Switching / pausing wallpapers
+        - Editing wallpaper properties
+        - Scene compatibility expectations
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version or commit
+      placeholder: "e.g. main @ f0c23c1"
+    validations:
+      required: false
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "e.g. macOS 15.5"
+    validations:
+      required: false
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      description: Describe the intended workflow first.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you already tried?
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      render: text
+    validations:
+      required: false

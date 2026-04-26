@@ -1,0 +1,119 @@
+name: Wallpaper Compatibility Issue
+description: Report a specific wallpaper that imports or applies but renders incorrectly or fails to apply.
+title: "[Compatibility] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for wallpaper-specific compatibility issues.
+
+        Good reports make it easy to determine whether the problem belongs to:
+        - baseline Scene layout
+        - text / audio / particle runtime
+        - shader / material / effect execution
+        - render graph / previous / background routing
+        - video or web runtime behavior
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues first.
+          required: true
+        - label: I verified this is tied to one wallpaper or a narrow class of wallpapers, not a general app bug.
+          required: true
+        - label: I am not asking for the app to bundle third-party proprietary assets.
+          required: true
+  - type: dropdown
+    id: wallpaper_type
+    attributes:
+      label: Wallpaper type
+      options:
+        - Scene
+        - Video
+        - Web
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: title
+    attributes:
+      label: Wallpaper title
+      placeholder: "e.g. Summer feeling"
+    validations:
+      required: true
+  - type: input
+    id: workshop_id
+    attributes:
+      label: Workshop ID or source identifier
+      description: If available.
+      placeholder: "e.g. 1845706469"
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: App version or commit
+      placeholder: "e.g. f0c23c1"
+    validations:
+      required: true
+  - type: dropdown
+    id: external_assets
+    attributes:
+      label: External assets mounted when reproducing
+      options:
+        - "Yes"
+        - "No"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction scope
+      description: Explain whether the wallpaper fails to import, fails to apply, or applies with visible rendering differences.
+      placeholder: |
+        - Imports successfully
+        - Apply enters native runtime with warnings
+        - Text/effect/particle/layout differs from expected
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected appearance or behavior
+      description: Describe the correct output. A side-by-side screenshot is ideal.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual appearance or behavior
+      description: Describe what is wrong. Be specific about layering, text layout, particles, effect scope, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics / support report / logs
+      description: Paste `zest-diagnostic` output, support-report output, or relevant terminal logs.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: properties
+    attributes:
+      label: Property overrides or special settings
+      description: Include any edited wallpaper properties, Scene runtime settings, or external assets path notes.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: Drag screenshots or recordings here. Include a “correct vs actual” comparison if possible.
+    validations:
+      required: false

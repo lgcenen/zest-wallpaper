@@ -1,0 +1,64 @@
+name: Feature Request
+description: Propose a new feature or a clear improvement to an existing workflow.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request a feature or workflow improvement.
+
+        Requests that conflict with the project's fixed non-goals will be closed:
+        - static snapshot generation
+        - replacing the macOS wallpaper with exported still images
+        - automatic static wallpaper sync workflows
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues first.
+          required: true
+        - label: This request is within the scope of a macOS-only dynamic wallpaper player.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Scene runtime
+        - Video runtime
+        - Web runtime
+        - Workbench GUI
+        - Import / library management
+        - Settings / diagnostics
+        - Build / packaging / release
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: feature
+    attributes:
+      label: Describe the feature
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Explain the user-facing pain point, not just the implementation idea.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context, references, or mockups
+    validations:
+      required: false

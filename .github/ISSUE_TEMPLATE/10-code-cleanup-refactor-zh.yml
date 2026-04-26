@@ -1,0 +1,54 @@
+name: 代码清理 / 重构建议
+description: 提议内部清理、可维护性改进或技术债处理。
+title: "[重构] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        使用这个模板提内部清理工作，例如 dead code 清理、service 拆分、contract 收紧或测试硬化。
+
+        如果这是用户可见 bug，请不要用这个模板，除非你已经有明确可复现的回归描述。
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经先搜索过现有 issue。
+          required: true
+        - label: 这是可维护性或内部正确性问题，不是功能请求。
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 模块
+      options:
+        - Scene parser / evaluator
+        - Scene renderer / render graph
+        - Player lifecycle / windowing
+        - 导入 / 持久化
+        - Workbench 前端
+        - 测试 / 诊断
+        - 构建 / 工具链
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 具体的维护性问题是什么？
+      description: 请说清楚具体债务或混乱点，不要只写“这个文件太大”。
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: 你建议的清理或重构方案
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: 需要保留的边界或风险
+      description: 例如不能跨越哪些 `phase-08/09/10` 边界。
+    validations:
+      required: false
