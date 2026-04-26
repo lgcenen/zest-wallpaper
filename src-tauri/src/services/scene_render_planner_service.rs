@@ -195,12 +195,28 @@ pub struct SceneRenderSoundItem {
     pub volume: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SceneRenderDrawKind {
+    Visual,
+    Text,
+    Audio,
+    Particle,
+    Sound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SceneRenderDrawItem {
+    pub object_id: u32,
+    pub kind: SceneRenderDrawKind,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneRenderPlan {
     pub clear_color: SceneClearColor,
     pub canvas_width: f64,
     pub canvas_height: f64,
     pub camera: SceneRenderCamera,
+    pub draw_order: Vec<SceneRenderDrawItem>,
     pub visuals: Vec<SceneRenderVisualItem>,
     pub texts: Vec<SceneRenderTextItem>,
     pub audios: Vec<SceneRenderAudioItem>,
@@ -292,6 +308,7 @@ pub fn build_scene_render_plan_with_resolver(
     let mut audios = Vec::new();
     let mut particles = Vec::new();
     let mut sounds = Vec::new();
+    let mut draw_order = Vec::new();
     let mut issues = Vec::new();
     let source_text_layers = scene
         .source
@@ -370,6 +387,10 @@ pub fn build_scene_render_plan_with_resolver(
                     quad: quad_from_bounds(bounds, base.transform.rotation, base.opacity, base),
                     blend_mode: parse_visual_blend_mode(blend_mode.as_deref(), *color_blend_mode),
                 });
+                draw_order.push(SceneRenderDrawItem {
+                    object_id: base.id,
+                    kind: SceneRenderDrawKind::Visual,
+                });
             }
             EvaluatedSceneObject::Text {
                 base,
@@ -393,6 +414,10 @@ pub fn build_scene_render_plan_with_resolver(
                     continue;
                 };
                 texts.push(text_item);
+                draw_order.push(SceneRenderDrawItem {
+                    object_id: base.id,
+                    kind: SceneRenderDrawKind::Text,
+                });
             }
             EvaluatedSceneObject::Audio { base, audio } => {
                 if !base.visible || base.opacity <= 0.001 {
@@ -405,6 +430,10 @@ pub fn build_scene_render_plan_with_resolver(
                     continue;
                 };
                 audios.push(audio_item);
+                draw_order.push(SceneRenderDrawItem {
+                    object_id: base.id,
+                    kind: SceneRenderDrawKind::Audio,
+                });
             }
             EvaluatedSceneObject::Particle {
                 base,
@@ -428,6 +457,10 @@ pub fn build_scene_render_plan_with_resolver(
                     ),
                     size: size.max(0.1),
                     emission_rate: emission_rate.max(0.0),
+                });
+                draw_order.push(SceneRenderDrawItem {
+                    object_id: base.id,
+                    kind: SceneRenderDrawKind::Particle,
                 });
             }
             EvaluatedSceneObject::Sound {
@@ -458,6 +491,10 @@ pub fn build_scene_render_plan_with_resolver(
                     looped: *looped,
                     volume: volume.clamp(0.0, 1.0),
                 });
+                draw_order.push(SceneRenderDrawItem {
+                    object_id: base.id,
+                    kind: SceneRenderDrawKind::Sound,
+                });
             }
         }
     }
@@ -474,6 +511,7 @@ pub fn build_scene_render_plan_with_resolver(
             camera_shake_speed: scene.evaluated.camera.camera_shake_speed.max(0.0),
             parallax_mouse_influence: scene.evaluated.camera.parallax_mouse_influence.max(0.0),
         },
+        draw_order,
         visuals,
         texts,
         audios,
@@ -1015,9 +1053,9 @@ mod tests {
 
     use super::{
         build_scene_render_plan, build_scene_render_plan_with_resolver, parse_scene_clear_color,
-        SceneClearColor, SceneRenderBlendMode, SceneRenderCamera, SceneRenderIssueCode,
-        SceneRenderIssueSeverity, SceneRenderPlan, SceneRenderSoundItem, SceneRenderSourceKind,
-        SceneTextHorizontalAlign,
+        SceneClearColor, SceneRenderBlendMode, SceneRenderCamera, SceneRenderDrawItem,
+        SceneRenderDrawKind, SceneRenderIssueCode, SceneRenderIssueSeverity, SceneRenderPlan,
+        SceneRenderSoundItem, SceneRenderSourceKind, SceneTextHorizontalAlign,
     };
     use crate::services::scene_resource_service::{
         SceneResourceResolver, SceneTextFontReferenceKind,
@@ -1386,6 +1424,144 @@ mod tests {
             SceneParticleKind::LineTrail
         );
         assert_eq!(report.plan.sounds[0].volume, 0.8);
+        assert_eq!(
+            report.plan.draw_order,
+            vec![
+                SceneRenderDrawItem {
+                    object_id: 1,
+                    kind: SceneRenderDrawKind::Visual,
+                },
+                SceneRenderDrawItem {
+                    object_id: 2,
+                    kind: SceneRenderDrawKind::Text,
+                },
+                SceneRenderDrawItem {
+                    object_id: 3,
+                    kind: SceneRenderDrawKind::Audio,
+                },
+                SceneRenderDrawItem {
+                    object_id: 4,
+                    kind: SceneRenderDrawKind::Particle,
+                },
+                SceneRenderDrawItem {
+                    object_id: 5,
+                    kind: SceneRenderDrawKind::Sound,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn render_plan_preserves_global_draw_order_across_typed_items() {
+        let temp = tempdir().expect("temp dir");
+        let texture_path = temp.path().join("hero.png");
+        let sound_path = temp.path().join("loop.m4a");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 2, Rgba([255, 255, 255, 255])))
+            .save(&texture_path)
+            .expect("save texture");
+        std::fs::write(&sound_path, b"fake-audio").expect("sound fixture");
+
+        let scene = runtime_scene_with_objects(
+            vec![
+                (
+                    1,
+                    visual_object(
+                        1,
+                        "Back",
+                        SceneAssetKind::Image,
+                        Some(texture_path.display().to_string()),
+                        Some([0.0, 0.0, 100.0, 100.0]),
+                        [1.0, 1.0, 1.0],
+                        None,
+                        None,
+                    ),
+                ),
+                (
+                    2,
+                    text_object(
+                        2,
+                        "Clock",
+                        [10.0, 10.0, 90.0, 30.0],
+                        [12.0, 12.0, 80.0, 24.0],
+                    ),
+                ),
+                (
+                    3,
+                    visual_object(
+                        3,
+                        "Front",
+                        SceneAssetKind::Image,
+                        Some(texture_path.display().to_string()),
+                        Some([20.0, 20.0, 80.0, 80.0]),
+                        [1.0, 1.0, 1.0],
+                        None,
+                        None,
+                    ),
+                ),
+                (4, particle_object(4, "Trail", SceneParticleKind::LineTrail)),
+                (5, audio_object(5, "Spectrum", [40.0, 40.0, 120.0, 64.0])),
+                (
+                    6,
+                    sound_object(6, "Ambient", sound_path.display().to_string()),
+                ),
+                (
+                    7,
+                    visual_object(
+                        7,
+                        "Overlay",
+                        SceneAssetKind::Image,
+                        Some(texture_path.display().to_string()),
+                        Some([30.0, 30.0, 60.0, 60.0]),
+                        [1.0, 1.0, 1.0],
+                        None,
+                        None,
+                    ),
+                ),
+            ],
+            vec![1, 2, 3, 4, 5, 6, 7],
+        );
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.visuals.len(), 3);
+        assert_eq!(report.plan.texts.len(), 1);
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(report.plan.audios.len(), 1);
+        assert_eq!(report.plan.sounds.len(), 1);
+        assert_eq!(
+            report.plan.draw_order,
+            vec![
+                SceneRenderDrawItem {
+                    object_id: 1,
+                    kind: SceneRenderDrawKind::Visual,
+                },
+                SceneRenderDrawItem {
+                    object_id: 2,
+                    kind: SceneRenderDrawKind::Text,
+                },
+                SceneRenderDrawItem {
+                    object_id: 3,
+                    kind: SceneRenderDrawKind::Visual,
+                },
+                SceneRenderDrawItem {
+                    object_id: 4,
+                    kind: SceneRenderDrawKind::Particle,
+                },
+                SceneRenderDrawItem {
+                    object_id: 5,
+                    kind: SceneRenderDrawKind::Audio,
+                },
+                SceneRenderDrawItem {
+                    object_id: 6,
+                    kind: SceneRenderDrawKind::Sound,
+                },
+                SceneRenderDrawItem {
+                    object_id: 7,
+                    kind: SceneRenderDrawKind::Visual,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1452,6 +1628,10 @@ mod tests {
                 camera_shake_speed: 0.0,
                 parallax_mouse_influence: 0.0,
             },
+            draw_order: vec![SceneRenderDrawItem {
+                object_id: 5,
+                kind: SceneRenderDrawKind::Sound,
+            }],
             visuals: Vec::new(),
             texts: Vec::new(),
             audios: Vec::new(),
@@ -1590,6 +1770,58 @@ mod tests {
         assert!(report.issues.iter().any(|issue| issue.code
             == SceneRenderIssueCode::NoRenderableVisuals
             && issue.severity == SceneRenderIssueSeverity::Fatal));
+    }
+
+    #[test]
+    fn warning_only_skipped_visual_does_not_block_drawable_text_order() {
+        let scene = runtime_scene_with_objects(
+            vec![
+                (
+                    9,
+                    visual_object(
+                        9,
+                        "Unsupported",
+                        SceneAssetKind::Unsupported,
+                        Some("/tmp/unsupported.bin".to_string()),
+                        Some([0.0, 0.0, 100.0, 100.0]),
+                        [1.0, 1.0, 1.0],
+                        None,
+                        None,
+                    ),
+                ),
+                (
+                    2,
+                    text_object(
+                        2,
+                        "Clock",
+                        [100.0, 100.0, 200.0, 50.0],
+                        [120.0, 108.0, 160.0, 32.0],
+                    ),
+                ),
+            ],
+            vec![9, 2],
+        );
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.visuals.len(), 0);
+        assert_eq!(report.plan.texts.len(), 1);
+        assert!(report.plan.has_renderable_output());
+        assert!(report.issues.iter().any(|issue| issue.code
+            == SceneRenderIssueCode::UnsupportedVisualAsset
+            && issue.severity == SceneRenderIssueSeverity::Warning));
+        assert!(!report
+            .issues
+            .iter()
+            .any(|issue| issue.code == SceneRenderIssueCode::NoRenderableVisuals));
+        assert_eq!(
+            report.plan.draw_order,
+            vec![SceneRenderDrawItem {
+                object_id: 2,
+                kind: SceneRenderDrawKind::Text,
+            }]
+        );
     }
 
     #[test]

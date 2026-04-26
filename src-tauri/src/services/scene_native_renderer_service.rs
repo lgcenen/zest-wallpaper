@@ -28,9 +28,10 @@ use crate::{
         },
         scene_render_planner_service::{
             build_scene_render_plan_with_resolver, SceneClearColor, SceneRenderAudioItem,
-            SceneRenderBlendMode, SceneRenderColor, SceneRenderIssue, SceneRenderParticleItem,
-            SceneRenderPlan, SceneRenderQuad, SceneRenderSoundItem, SceneRenderSourceKind,
-            SceneRenderTextItem, SceneRenderVisualItem, SceneTextHorizontalAlign,
+            SceneRenderBlendMode, SceneRenderColor, SceneRenderDrawKind, SceneRenderIssue,
+            SceneRenderParticleItem, SceneRenderPlan, SceneRenderQuad, SceneRenderSoundItem,
+            SceneRenderSourceKind, SceneRenderTextItem, SceneRenderVisualItem,
+            SceneTextHorizontalAlign,
         },
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
         scene_runtime_settings_service,
@@ -1694,43 +1695,131 @@ impl NativeSceneMetalRenderer {
             .iter()
             .map(|visual| (visual.object_id, visual))
             .collect::<BTreeMap<_, _>>();
+        let visual_items = plan
+            .visuals
+            .iter()
+            .map(|item| (item.object_id, item))
+            .collect::<BTreeMap<_, _>>();
+        let text_items = plan
+            .texts
+            .iter()
+            .map(|item| (item.object_id, item))
+            .collect::<BTreeMap<_, _>>();
+        let audio_items = plan
+            .audios
+            .iter()
+            .map(|item| (item.object_id, item))
+            .collect::<BTreeMap<_, _>>();
+        let particle_items = plan
+            .particles
+            .iter()
+            .map(|item| (item.object_id, item))
+            .collect::<BTreeMap<_, _>>();
         let mut drawn_phase10_ids = BTreeSet::new();
         let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(pass_descriptor)
         else {
             return;
         };
+        let white_texture = self.texture_cache.get(WHITE_TEXTURE_KEY).cloned();
+        let petal_texture = self.texture_cache.get(PETAL_TEXTURE_KEY).cloned();
+        let now_ms_f64 = now_ms as f64;
 
-        for item in &plan.visuals {
-            if let Some(visual) = phase10_visuals.get(&item.object_id) {
-                self.draw_phase10_visual(
-                    &encoder,
-                    &projection,
-                    visual,
-                    phase10_outputs.get(&item.object_id),
-                    self.animation_time_seconds,
-                );
-                drawn_phase10_ids.insert(item.object_id);
-                continue;
-            }
-            let texture = match item.source_kind {
-                SceneRenderSourceKind::Image => self
-                    .texture_cache
-                    .get(&visual_texture_cache_key(item))
-                    .cloned(),
-                SceneRenderSourceKind::Video => self.video_texture_for_item(item),
-            };
-            let Some(texture) = texture.as_ref() else {
-                continue;
-            };
-            let quad = quad_primitive_from_render_quad(item.quad, SceneRenderColor::default());
-            self.draw_quad(
-                &encoder,
-                texture.as_ref(),
-                item.blend_mode,
-                &projection,
-                quad,
-            );
+        if white_texture.is_some() && !plan.particles.is_empty() {
+            self.advance_particle_items(&plan.particles, input_response, now_ms_f64);
         }
+
+        for draw_item in &plan.draw_order {
+            match draw_item.kind {
+                SceneRenderDrawKind::Visual => {
+                    if let Some(visual) = phase10_visuals.get(&draw_item.object_id) {
+                        self.draw_phase10_visual(
+                            &encoder,
+                            &projection,
+                            visual,
+                            phase10_outputs.get(&draw_item.object_id),
+                            self.animation_time_seconds,
+                        );
+                        drawn_phase10_ids.insert(draw_item.object_id);
+                        continue;
+                    }
+                    let Some(item) = visual_items.get(&draw_item.object_id) else {
+                        continue;
+                    };
+                    let texture = match item.source_kind {
+                        SceneRenderSourceKind::Image => self
+                            .texture_cache
+                            .get(&visual_texture_cache_key(item))
+                            .cloned(),
+                        SceneRenderSourceKind::Video => self.video_texture_for_item(item),
+                    };
+                    let Some(texture) = texture.as_ref() else {
+                        continue;
+                    };
+                    let quad =
+                        quad_primitive_from_render_quad(item.quad, SceneRenderColor::default());
+                    self.draw_quad(
+                        &encoder,
+                        texture.as_ref(),
+                        item.blend_mode,
+                        &projection,
+                        quad,
+                    );
+                }
+                SceneRenderDrawKind::Text => {
+                    let Some(item) = text_items.get(&draw_item.object_id) else {
+                        continue;
+                    };
+                    let key = text_texture_cache_key(item);
+                    let Some(texture) = self.text_texture_cache.get(&key) else {
+                        continue;
+                    };
+                    let quad =
+                        quad_primitive_from_render_quad(item.quad, SceneRenderColor::default());
+                    self.draw_quad(
+                        &encoder,
+                        texture.as_ref(),
+                        SceneRenderBlendMode::Normal,
+                        &projection,
+                        quad,
+                    );
+                }
+                SceneRenderDrawKind::Audio => {
+                    let (Some(item), Some(white_texture)) = (
+                        audio_items.get(&draw_item.object_id),
+                        white_texture.as_ref(),
+                    ) else {
+                        continue;
+                    };
+                    self.draw_audio_item(
+                        &encoder,
+                        white_texture.as_ref(),
+                        &projection,
+                        item,
+                        shared_audio_snapshot.as_ref(),
+                        now_ms,
+                    );
+                }
+                SceneRenderDrawKind::Particle => {
+                    let (Some(item), Some(white_texture)) = (
+                        particle_items.get(&draw_item.object_id),
+                        white_texture.as_ref(),
+                    ) else {
+                        continue;
+                    };
+                    self.draw_particle_item(
+                        &encoder,
+                        white_texture.as_ref(),
+                        petal_texture.as_ref().map(|texture| texture.as_ref()),
+                        &projection,
+                        plan,
+                        item,
+                        now_ms_f64,
+                    );
+                }
+                SceneRenderDrawKind::Sound => {}
+            }
+        }
+
         for visual in &phase10_graph.visuals {
             if drawn_phase10_ids.insert(visual.object_id) {
                 self.draw_phase10_visual(
@@ -1741,44 +1830,6 @@ impl NativeSceneMetalRenderer {
                     self.animation_time_seconds,
                 );
             }
-        }
-
-        for item in &plan.texts {
-            let key = text_texture_cache_key(item);
-            let Some(texture) = self.text_texture_cache.get(&key) else {
-                continue;
-            };
-            let quad = quad_primitive_from_render_quad(item.quad, SceneRenderColor::default());
-            self.draw_quad(
-                &encoder,
-                texture.as_ref(),
-                SceneRenderBlendMode::Normal,
-                &projection,
-                quad,
-            );
-        }
-
-        let white_texture = self.texture_cache.get(WHITE_TEXTURE_KEY).cloned();
-        let petal_texture = self.texture_cache.get(PETAL_TEXTURE_KEY).cloned();
-        if let Some(white_texture) = white_texture.as_ref() {
-            self.draw_audio_items(
-                &encoder,
-                white_texture.as_ref(),
-                &projection,
-                &plan.audios,
-                shared_audio_snapshot.as_ref(),
-                now_ms,
-            );
-            self.draw_particle_items(
-                &encoder,
-                white_texture.as_ref(),
-                petal_texture.as_ref().map(|texture| texture.as_ref()),
-                &projection,
-                plan,
-                &plan.particles,
-                input_response,
-                now_ms as f64,
-            );
         }
 
         encoder.endEncoding();
@@ -3190,76 +3241,64 @@ impl NativeSceneMetalRenderer {
         }
     }
 
-    fn draw_audio_items(
+    fn draw_audio_item(
         &mut self,
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
         white_texture: &ProtocolObject<dyn MTLTexture>,
         projection: &SceneProjection,
-        items: &[SceneRenderAudioItem],
+        item: &SceneRenderAudioItem,
         shared_audio_snapshot: Option<&audio_input_service::AudioSnapshot>,
         now_ms: u64,
     ) {
-        for item in items {
-            let sound_levels = scene_soundscape_audio_levels(&self.app, item.bar_count);
-            let levels = self.audio_coordinator.levels_for_count(
-                shared_audio_snapshot,
-                sound_levels.as_deref(),
-                item.bar_count,
-                now_ms,
+        let sound_levels = scene_soundscape_audio_levels(&self.app, item.bar_count);
+        let levels = self.audio_coordinator.levels_for_count(
+            shared_audio_snapshot,
+            sound_levels.as_deref(),
+            item.bar_count,
+            now_ms,
+        );
+        let origin_x = item.quad.left + item.quad.width / 2.0;
+        let origin_y = item.quad.top + item.quad.height / 2.0;
+        for index in 0..item.bar_count {
+            let level = clamp_f64(
+                levels.get(index).copied().unwrap_or_default() * item.volume_factor,
+                0.0,
+                1.0,
             );
-            let origin_x = item.quad.left + item.quad.width / 2.0;
-            let origin_y = item.quad.top + item.quad.height / 2.0;
-            for index in 0..item.bar_count {
-                let level = clamp_f64(
-                    levels.get(index).copied().unwrap_or_default() * item.volume_factor,
-                    0.0,
-                    1.0,
-                );
-                let bounded =
-                    item.normalized_lower_bound + (1.0 - item.normalized_lower_bound) * level;
-                let scale_y = clamp_f64(bounded.max(item.min_scale), item.min_scale, 1.0);
-                let bar_height = item.drawable_height * scale_y;
-                let left = item.quad.left + index as f64 * (item.bar_width + item.gap);
-                let top = item.quad.top + item.drawable_top + (item.drawable_height - bar_height);
-                let quad = SceneQuadPrimitive {
-                    left,
-                    top,
-                    width: item.bar_width,
-                    height: bar_height.max(1.0),
-                    rotation: scene_audio_bar_rotation(item.quad.rotation),
-                    opacity: item.quad.opacity * clamp_f64(0.35 + scale_y * 0.65, 0.35, 1.0),
-                    flip_x: item.quad.flip_x,
-                    flip_y: item.quad.flip_y,
-                    color: item.color,
-                    transform_origin_x: origin_x,
-                    transform_origin_y: origin_y,
-                };
-                self.draw_quad(
-                    encoder,
-                    white_texture,
-                    SceneRenderBlendMode::Normal,
-                    projection,
-                    quad,
-                );
-            }
+            let bounded = item.normalized_lower_bound + (1.0 - item.normalized_lower_bound) * level;
+            let scale_y = clamp_f64(bounded.max(item.min_scale), item.min_scale, 1.0);
+            let bar_height = item.drawable_height * scale_y;
+            let left = item.quad.left + index as f64 * (item.bar_width + item.gap);
+            let top = item.quad.top + item.drawable_top + (item.drawable_height - bar_height);
+            let quad = SceneQuadPrimitive {
+                left,
+                top,
+                width: item.bar_width,
+                height: bar_height.max(1.0),
+                rotation: scene_audio_bar_rotation(item.quad.rotation),
+                opacity: item.quad.opacity * clamp_f64(0.35 + scale_y * 0.65, 0.35, 1.0),
+                flip_x: item.quad.flip_x,
+                flip_y: item.quad.flip_y,
+                color: item.color,
+                transform_origin_x: origin_x,
+                transform_origin_y: origin_y,
+            };
+            self.draw_quad(
+                encoder,
+                white_texture,
+                SceneRenderBlendMode::Normal,
+                projection,
+                quad,
+            );
         }
     }
 
-    fn draw_particle_items(
+    fn advance_particle_items(
         &mut self,
-        encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
-        white_texture: &ProtocolObject<dyn MTLTexture>,
-        petal_texture: Option<&ProtocolObject<dyn MTLTexture>>,
-        projection: &SceneProjection,
-        plan: &SceneRenderPlan,
         items: &[SceneRenderParticleItem],
         input_response: SceneInputResponse,
         now_ms: f64,
     ) {
-        if items.is_empty() {
-            return;
-        }
-
         let cursor = input_response
             .cursor()
             .map(|(x, y)| SceneParticleCursor { x, y });
@@ -3268,39 +3307,48 @@ impl NativeSceneMetalRenderer {
         } else {
             self.particle_scheduler.pause_cursor(cursor);
         }
+    }
 
-        for item in items {
-            match item.particle_kind {
-                crate::models::SceneParticleKind::LineTrail => {
-                    for segment in
-                        self.particle_scheduler
-                            .line_primitives(item, plan.canvas_height, now_ms)
-                    {
-                        self.draw_quad(
-                            encoder,
-                            white_texture,
-                            SceneRenderBlendMode::Additive,
-                            projection,
-                            quad_primitive_from_particle(segment),
-                        );
-                    }
+    fn draw_particle_item(
+        &mut self,
+        encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+        white_texture: &ProtocolObject<dyn MTLTexture>,
+        petal_texture: Option<&ProtocolObject<dyn MTLTexture>>,
+        projection: &SceneProjection,
+        plan: &SceneRenderPlan,
+        item: &SceneRenderParticleItem,
+        now_ms: f64,
+    ) {
+        match item.particle_kind {
+            crate::models::SceneParticleKind::LineTrail => {
+                for segment in
+                    self.particle_scheduler
+                        .line_primitives(item, plan.canvas_height, now_ms)
+                {
+                    self.draw_quad(
+                        encoder,
+                        white_texture,
+                        SceneRenderBlendMode::Additive,
+                        projection,
+                        quad_primitive_from_particle(segment),
+                    );
                 }
-                crate::models::SceneParticleKind::PetalTrail => {
-                    let Some(petal_texture) = petal_texture else {
-                        continue;
-                    };
-                    for petal in self
-                        .particle_scheduler
-                        .petal_primitives(plan.canvas_height, now_ms)
-                    {
-                        self.draw_quad(
-                            encoder,
-                            petal_texture,
-                            SceneRenderBlendMode::Normal,
-                            projection,
-                            quad_primitive_from_particle(petal),
-                        );
-                    }
+            }
+            crate::models::SceneParticleKind::PetalTrail => {
+                let Some(petal_texture) = petal_texture else {
+                    return;
+                };
+                for petal in self
+                    .particle_scheduler
+                    .petal_primitives(plan.canvas_height, now_ms)
+                {
+                    self.draw_quad(
+                        encoder,
+                        petal_texture,
+                        SceneRenderBlendMode::Normal,
+                        projection,
+                        quad_primitive_from_particle(petal),
+                    );
                 }
             }
         }
@@ -5288,8 +5336,8 @@ fn clamp_f64(value: f64, min: f64, max: f64) -> f64 {
 mod tests {
     use crate::services::scene_render_planner_service::{
         SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderCamera,
-        SceneRenderParticleItem, SceneRenderPlan, SceneRenderQuad, SceneRenderSourceKind,
-        SceneRenderTextFontBinding, SceneRenderVisualItem,
+        SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderParticleItem, SceneRenderPlan,
+        SceneRenderQuad, SceneRenderSourceKind, SceneRenderTextFontBinding, SceneRenderVisualItem,
     };
 
     #[cfg(target_os = "macos")]
@@ -5347,9 +5395,15 @@ mod tests {
                     camera_shake_speed: 0.0,
                     parallax_mouse_influence: 0.0,
                 },
-                visuals: vec![
-                    SceneRenderVisualItem {
-                        object_id: 1,
+                draw_order: (0..item_count)
+                    .map(|index| SceneRenderDrawItem {
+                        object_id: (index + 1) as u32,
+                        kind: SceneRenderDrawKind::Visual,
+                    })
+                    .collect(),
+                visuals: (0..item_count)
+                    .map(|index| SceneRenderVisualItem {
+                        object_id: (index + 1) as u32,
                         object_name: "Hero".to_string(),
                         texture_path: format!("/tmp/asset-{item_count}.png").into(),
                         source_kind: SceneRenderSourceKind::Image,
@@ -5364,9 +5418,8 @@ mod tests {
                             flip_y: false,
                         },
                         blend_mode: SceneRenderBlendMode::Normal,
-                    };
-                    item_count
-                ],
+                    })
+                    .collect(),
                 texts: Vec::new(),
                 audios: Vec::new(),
                 particles: Vec::new(),
@@ -5402,6 +5455,12 @@ mod tests {
                     camera_shake_speed: 0.0,
                     parallax_mouse_influence: 0.0,
                 },
+                draw_order: (0..sound_count)
+                    .map(|index| SceneRenderDrawItem {
+                        object_id: 50 + index as u32,
+                        kind: SceneRenderDrawKind::Sound,
+                    })
+                    .collect(),
                 visuals: Vec::new(),
                 texts: Vec::new(),
                 audios: Vec::new(),
@@ -5437,6 +5496,16 @@ mod tests {
                 camera_shake_speed: 0.0,
                 parallax_mouse_influence: 0.4,
             },
+            draw_order: vec![
+                SceneRenderDrawItem {
+                    object_id: 7,
+                    kind: SceneRenderDrawKind::Audio,
+                },
+                SceneRenderDrawItem {
+                    object_id: 8,
+                    kind: SceneRenderDrawKind::Particle,
+                },
+            ],
             visuals: Vec::new(),
             texts: Vec::new(),
             audios: vec![SceneRenderAudioItem {
@@ -5543,25 +5612,102 @@ mod tests {
             .iter()
             .map(|visual| (visual.object_id, true))
             .collect::<BTreeMap<_, _>>();
+        render_submission_sequence(spec)
+            .into_iter()
+            .filter_map(|(object_id, kind)| {
+                (kind == SceneRenderDrawKind::Visual)
+                    .then_some((object_id, phase10_visuals.contains_key(&object_id)))
+            })
+            .collect()
+    }
+
+    fn render_submission_sequence(spec: &SceneRendererSpec) -> Vec<(u32, SceneRenderDrawKind)> {
+        let phase10_visuals = spec
+            .phase10_graph
+            .visuals
+            .iter()
+            .map(|visual| visual.object_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let visual_ids = spec
+            .render_plan
+            .visuals
+            .iter()
+            .map(|item| item.object_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let text_ids = spec
+            .render_plan
+            .texts
+            .iter()
+            .map(|item| item.object_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let audio_ids = spec
+            .render_plan
+            .audios
+            .iter()
+            .map(|item| item.object_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let particle_ids = spec
+            .render_plan
+            .particles
+            .iter()
+            .map(|item| item.object_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let sound_ids = spec
+            .render_plan
+            .sounds
+            .iter()
+            .map(|item| item.object_id)
+            .collect::<std::collections::BTreeSet<_>>();
         let mut sequence = Vec::new();
         let mut drawn_phase10 = std::collections::BTreeSet::new();
 
-        for item in &spec.render_plan.visuals {
-            if phase10_visuals.contains_key(&item.object_id) {
-                sequence.push((item.object_id, true));
-                drawn_phase10.insert(item.object_id);
-            } else {
-                sequence.push((item.object_id, false));
+        for item in &spec.render_plan.draw_order {
+            match item.kind {
+                SceneRenderDrawKind::Visual => {
+                    if phase10_visuals.contains(&item.object_id)
+                        || visual_ids.contains(&item.object_id)
+                    {
+                        sequence.push((item.object_id, SceneRenderDrawKind::Visual));
+                        if phase10_visuals.contains(&item.object_id) {
+                            drawn_phase10.insert(item.object_id);
+                        }
+                    }
+                }
+                SceneRenderDrawKind::Text if text_ids.contains(&item.object_id) => {
+                    sequence.push((item.object_id, SceneRenderDrawKind::Text));
+                }
+                SceneRenderDrawKind::Audio if audio_ids.contains(&item.object_id) => {
+                    sequence.push((item.object_id, SceneRenderDrawKind::Audio));
+                }
+                SceneRenderDrawKind::Particle if particle_ids.contains(&item.object_id) => {
+                    sequence.push((item.object_id, SceneRenderDrawKind::Particle));
+                }
+                SceneRenderDrawKind::Sound if sound_ids.contains(&item.object_id) => {
+                    sequence.push((item.object_id, SceneRenderDrawKind::Sound));
+                }
+                _ => {}
             }
         }
 
         for visual in &spec.phase10_graph.visuals {
             if drawn_phase10.insert(visual.object_id) {
-                sequence.push((visual.object_id, true));
+                sequence.push((visual.object_id, SceneRenderDrawKind::Visual));
             }
         }
 
         sequence
+    }
+
+    fn sync_visual_draw_order(spec: &mut SceneRendererSpec) {
+        spec.render_plan.draw_order = spec
+            .render_plan
+            .visuals
+            .iter()
+            .map(|item| SceneRenderDrawItem {
+                object_id: item.object_id,
+                kind: SceneRenderDrawKind::Visual,
+            })
+            .collect();
     }
 
     #[cfg(target_os = "macos")]
@@ -6187,6 +6333,7 @@ mod tests {
                 _ => 3228,
             };
         }
+        sync_visual_draw_order(&mut spec);
         spec.phase10_graph.visuals = vec![
             super::ScenePhase10VisualPlan {
                 object_id: 67,
@@ -6244,11 +6391,85 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn renderer_submission_sequence_preserves_global_order_across_types() {
+        let mut spec = sample_spec("scene-a", &["player"], 3);
+        spec.render_plan.visuals[0].object_id = 11;
+        spec.render_plan.visuals[1].object_id = 33;
+        spec.render_plan.visuals[2].object_id = 77;
+
+        let mut text = sample_text_item();
+        text.object_id = 22;
+        let mut warning_plan = sample_runtime_warning_plan();
+        let mut audio = warning_plan.audios.remove(0);
+        audio.object_id = 66;
+        let mut particle = warning_plan.particles.remove(0);
+        particle.object_id = 44;
+
+        spec.render_plan.texts = vec![text];
+        spec.render_plan.particles = vec![particle];
+        spec.render_plan.audios = vec![audio];
+        spec.render_plan.sounds = vec![
+            crate::services::scene_render_planner_service::SceneRenderSoundItem {
+                object_id: 55,
+                object_name: "Ambient".to_string(),
+                asset_path: PathBuf::from("/tmp/ambient.m4a"),
+                looped: true,
+                volume: 0.8,
+            },
+        ];
+        spec.render_plan.draw_order = vec![
+            SceneRenderDrawItem {
+                object_id: 11,
+                kind: SceneRenderDrawKind::Visual,
+            },
+            SceneRenderDrawItem {
+                object_id: 22,
+                kind: SceneRenderDrawKind::Text,
+            },
+            SceneRenderDrawItem {
+                object_id: 33,
+                kind: SceneRenderDrawKind::Visual,
+            },
+            SceneRenderDrawItem {
+                object_id: 44,
+                kind: SceneRenderDrawKind::Particle,
+            },
+            SceneRenderDrawItem {
+                object_id: 55,
+                kind: SceneRenderDrawKind::Sound,
+            },
+            SceneRenderDrawItem {
+                object_id: 66,
+                kind: SceneRenderDrawKind::Audio,
+            },
+            SceneRenderDrawItem {
+                object_id: 77,
+                kind: SceneRenderDrawKind::Visual,
+            },
+        ];
+
+        assert_eq!(
+            render_submission_sequence(&spec),
+            vec![
+                (11, SceneRenderDrawKind::Visual),
+                (22, SceneRenderDrawKind::Text),
+                (33, SceneRenderDrawKind::Visual),
+                (44, SceneRenderDrawKind::Particle),
+                (55, SceneRenderDrawKind::Sound),
+                (66, SceneRenderDrawKind::Audio),
+                (77, SceneRenderDrawKind::Visual),
+            ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn phase10_consumed_visuals_stay_in_draw_plan_as_order_placeholders() {
         let mut spec = sample_spec("scene-a", &["player"], 4);
         for (index, item) in spec.render_plan.visuals.iter_mut().enumerate() {
             item.object_id = (index + 1) as u32;
         }
+        sync_visual_draw_order(&mut spec);
         let consumed = [
             spec.render_plan.visuals[1].object_id,
             spec.render_plan.visuals[2].object_id,
