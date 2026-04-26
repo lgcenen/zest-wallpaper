@@ -63,6 +63,7 @@ mod tests {
             managed_path,
             preview_path: None,
             entry_path: None,
+            last_snapshot_path: None,
             property_schema: vec![WallpaperProperty {
                 key: "enabled".to_string(),
                 label: "Enabled".to_string(),

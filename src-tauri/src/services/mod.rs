@@ -25,6 +25,7 @@ pub mod scene_runtime_settings_service;
 pub mod scene_shader_material_service;
 pub mod scene_support_service;
 pub mod scene_text_script_runtime_service;
+pub mod static_snapshot_service;
 pub mod system_service;
 pub mod web_runtime_service;
 pub mod window_service;

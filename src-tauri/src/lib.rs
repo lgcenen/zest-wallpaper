@@ -60,29 +60,31 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn phase_01_contract_removes_static_wallpaper_entry_points() {
+    fn phase_01a_contract_scopes_static_snapshot_sync_to_active_wallpapers() {
         let wallpaper_commands = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/commands/wallpaper_commands.rs"
         ));
-        let workbench = include_str!(concat!(
+        let workbench_copy = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../src/app-shell/WorkbenchApp.tsx"
+            "/../src/app-shell/workbench-copy.ts"
         ));
         let wallpaper_gateway = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../src/gateway/wallpaper-api.ts"
         ));
-        let player_gateway = include_str!(concat!(
+        let product_contract = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../src/gateway/player-api.ts"
+            "/../docs/static-snapshot-sync-contract.md"
         ));
 
         assert!(!wallpaper_commands.contains("apply_static_wallpaper"));
         assert!(!wallpaper_gateway.contains("applyStaticWallpaper"));
-        assert!(!player_gateway.contains("wallpaper:updated"));
-        assert!(!workbench.contains("替换系统壁纸"));
-        assert!(!workbench.contains("静态快照"));
+        assert!(workbench_copy.contains("静态快照同步"));
+        assert!(workbench_copy.contains("static snapshot sync"));
+        assert!(product_contract.contains("active dynamic wallpaper"));
+        assert!(product_contract.contains("MUST NOT fall back to `preview_path`"));
+        assert!(product_contract.contains("independent static wallpaper mode is forbidden"));
     }
 
     #[test]

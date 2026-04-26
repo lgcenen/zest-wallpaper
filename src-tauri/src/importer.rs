@@ -828,6 +828,7 @@ pub fn import_wallpaper_path(input_path: &Path) -> Result<WallpaperRecord> {
         managed_path: project.managed_root.display().to_string(),
         preview_path: project.preview_path.map(|path| path.display().to_string()),
         entry_path: project.entry_path.map(|path| path.display().to_string()),
+        last_snapshot_path: None,
         property_schema: project.property_schema,
         property_sections: project.property_sections,
         scene_cache: None,

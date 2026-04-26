@@ -259,7 +259,7 @@ mod tests {
     };
 
     #[test]
-    fn load_and_save_library_ignore_legacy_snapshot_fields() {
+    fn load_and_save_library_preserves_active_wallpaper_snapshot_cache() {
         let _lock = super::HOME_ENV_LOCK.lock().unwrap();
         let temp = tempdir().unwrap();
         let previous_home = env::var_os("HOME");
@@ -298,10 +298,14 @@ mod tests {
                 store.wallpapers[0].preview_path.as_deref(),
                 Some("/tmp/preview.png")
             );
+            assert_eq!(
+                store.wallpapers[0].last_snapshot_path.as_deref(),
+                Some("/tmp/old.png")
+            );
 
             save_library(&store).unwrap();
             let saved = fs::read_to_string(support_dir.join("library.json")).unwrap();
-            assert!(!saved.contains("lastSnapshotPath"));
+            assert!(saved.contains("\"lastSnapshotPath\": \"/tmp/old.png\""));
         })();
 
         match previous_home {

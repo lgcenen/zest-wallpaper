@@ -1390,6 +1390,7 @@ mod tests {
             managed_path: "/tmp/managed".to_string(),
             preview_path: None,
             entry_path: entry_path.map(str::to_string),
+            last_snapshot_path: None,
             property_schema: vec![],
             property_sections: vec![],
             imported_at: Utc::now(),

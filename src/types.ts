@@ -484,6 +484,7 @@ export interface WallpaperRuntimeRecord {
   managedPath: string;
   previewPath?: string | null;
   entryPath?: string | null;
+  lastSnapshotPath?: string | null;
   propertySchema: WallpaperProperty[];
   propertySections: PropertySection[];
   importedAt: string;

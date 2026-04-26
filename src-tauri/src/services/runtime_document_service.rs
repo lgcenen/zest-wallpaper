@@ -127,6 +127,7 @@ pub fn runtime_record_with_context(
         managed_path: record.managed_path.clone(),
         preview_path,
         entry_path,
+        last_snapshot_path: record.last_snapshot_path.clone(),
         property_schema: record.property_schema.clone(),
         property_sections: record.property_sections.clone(),
         imported_at: record.imported_at,
@@ -210,6 +211,7 @@ mod tests {
             managed_path: "/tmp/managed".to_string(),
             preview_path: Some("/tmp/preview.png".to_string()),
             entry_path: Some("/tmp/entry".to_string()),
+            last_snapshot_path: Some("/tmp/snapshot.png".to_string()),
             property_schema: vec![WallpaperProperty {
                 key: "enabled".to_string(),
                 label: "Enabled".to_string(),
@@ -371,11 +373,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_record_serialization_excludes_static_snapshot_fields() {
+    fn runtime_record_keeps_snapshot_metadata_out_of_runtime_documents() {
         let runtime = runtime_record(&sample_record(WallpaperType::Video));
         let payload = serde_json::to_value(&runtime).unwrap();
 
-        assert!(payload.get("lastSnapshotPath").is_none());
+        assert_eq!(payload["lastSnapshotPath"], "/tmp/snapshot.png");
         assert!(payload["runtime"]["video"]
             .get("lastSnapshotPath")
             .is_none());

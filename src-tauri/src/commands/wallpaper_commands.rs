@@ -264,6 +264,7 @@ mod tests {
             managed_path: managed_path.to_string(),
             preview_path: None,
             entry_path: None,
+            last_snapshot_path: None,
             property_schema: Vec::new(),
             property_sections: Vec::new(),
             scene_cache: None,

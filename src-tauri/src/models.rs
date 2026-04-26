@@ -896,6 +896,8 @@ pub struct WallpaperRuntimeRecord {
     pub preview_path: Option<String>,
     #[serde(default)]
     pub entry_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_snapshot_path: Option<String>,
     #[serde(default)]
     pub property_schema: Vec<WallpaperProperty>,
     #[serde(default)]
@@ -916,6 +918,8 @@ pub struct WallpaperRecord {
     pub managed_path: String,
     pub preview_path: Option<String>,
     pub entry_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_snapshot_path: Option<String>,
     pub property_schema: Vec<WallpaperProperty>,
     #[serde(default)]
     pub property_sections: Vec<PropertySection>,

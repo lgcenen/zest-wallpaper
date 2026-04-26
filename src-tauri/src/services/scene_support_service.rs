@@ -1368,6 +1368,7 @@ mod tests {
             managed_path: managed_path.display().to_string(),
             preview_path: None,
             entry_path: None,
+            last_snapshot_path: None,
             property_schema: vec![],
             property_sections: vec![],
             scene_cache: None,
