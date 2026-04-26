@@ -19,8 +19,6 @@ body:
           required: true
         - label: 我可以在当前最新的 main 分支构建或我能拿到的最新 release 上稳定复现。
           required: true
-        - label: 这不是关于静态导出、静态快照生成或自动同步系统壁纸的需求。
-          required: true
   - type: dropdown
     id: runtime
     attributes:

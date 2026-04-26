@@ -19,8 +19,6 @@ body:
           required: true
         - label: I can still reproduce this on the latest main branch build or latest release build available to me.
           required: true
-        - label: This is not a request for static wallpaper export, snapshot generation, or automatic system wallpaper syncing.
-          required: true
   - type: dropdown
     id: runtime
     attributes:

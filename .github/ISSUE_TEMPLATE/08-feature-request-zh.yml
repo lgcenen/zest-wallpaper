@@ -8,11 +8,6 @@ body:
     attributes:
       value: |
         使用这个模板来请求功能或工作流改进。
-
-        下列内容和项目固定非目标冲突，通常会被关闭：
-        - 静态快照生成
-        - 导出静态图片并替换系统壁纸
-        - 自动静态壁纸同步工作流
   - type: checkboxes
     id: preflight
     attributes:

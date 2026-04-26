@@ -8,11 +8,6 @@ body:
     attributes:
       value: |
         Use this form to request a feature or workflow improvement.
-
-        Requests that conflict with the project's fixed non-goals will be closed:
-        - static snapshot generation
-        - replacing the macOS wallpaper with exported still images
-        - automatic static wallpaper sync workflows
   - type: checkboxes
     id: preflight
     attributes:
