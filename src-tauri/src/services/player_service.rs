@@ -52,6 +52,8 @@ enum SceneUpdateCadence {
     Second,
 }
 
+const DESKTOP_WINDOW_REBUILD_SETTLE_DELAY: Duration = Duration::from_millis(180);
+
 #[derive(Debug, Clone)]
 struct ApplyWallpaperCandidate {
     player_state: DynamicPlayerState,
@@ -89,6 +91,7 @@ pub fn apply_dynamic_wallpaper(
         .clone();
     let previous_runtime = active_runtime_snapshot(state)?;
     let had_player_windows = !window_service::player_window_labels(app).is_empty();
+    let has_static_snapshot = static_snapshot_service::snapshot_for_record(&record).is_ok();
 
     let effective_paused = apply_runtime_record_transaction(
         &runtime_record,
@@ -96,6 +99,15 @@ pub fn apply_dynamic_wallpaper(
         previous_runtime,
         state,
         had_player_windows,
+        || {
+            prepare_static_snapshot_sync_before_runtime(
+                app,
+                state,
+                &record,
+                has_static_snapshot,
+                had_player_windows,
+            )
+        },
         || lifecycle_service::show_player_windows(app).map_err(|error| error.to_string()),
         |runtime_record, paused| sync_native_runtime(app, runtime_record, paused),
         || lifecycle_service::close_player_windows(app).map_err(|error| error.to_string()),
@@ -106,7 +118,9 @@ pub fn apply_dynamic_wallpaper(
     )?;
 
     lifecycle_service::sync_pause_menu_state(app, false);
-    let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
+    if !has_static_snapshot {
+        let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
+    }
     app.emit("player:load", Some(runtime_record.clone()))
         .map_err(|error| error.to_string())?;
     app.emit("player:pause", effective_paused)
@@ -117,6 +131,25 @@ pub fn apply_dynamic_wallpaper(
     Ok(runtime_record)
 }
 
+fn prepare_static_snapshot_sync_before_runtime(
+    app: &AppHandle,
+    state: &AppState,
+    record: &WallpaperRecord,
+    has_static_snapshot: bool,
+    had_player_windows: bool,
+) -> Result<(), String> {
+    if !has_static_snapshot {
+        return Ok(());
+    }
+
+    if had_player_windows {
+        let _ = lifecycle_service::close_player_windows(app);
+        thread::sleep(DESKTOP_WINDOW_REBUILD_SETTLE_DELAY);
+    }
+    let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, record);
+    Ok(())
+}
+
 pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let Some((record, effective_paused)) = active_record_snapshot(state)? else {
         return Ok(());
@@ -124,9 +157,9 @@ pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), S
     let runtime_record = runtime_document_service::runtime_record(&record);
     preflight_scene_apply(app, &record, &runtime_record)?;
 
+    let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
     lifecycle_service::show_player_windows(app).map_err(|error| error.to_string())?;
     sync_native_runtime_with_transaction_lock(app, state, Some(&runtime_record), effective_paused)?;
-    let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
     if should_start_scene_update_loop(&runtime_record) {
         start_scene_update_loop(app.clone(), state);
     }
@@ -436,6 +469,7 @@ fn active_record_snapshot(state: &AppState) -> Result<Option<(WallpaperRecord, b
 }
 
 fn apply_runtime_record_transaction<
+    SyncStaticSnapshot,
     EnsurePlayerWindows,
     SyncNativeRuntime,
     ClosePlayerWindows,
@@ -446,12 +480,14 @@ fn apply_runtime_record_transaction<
     previous_runtime: Option<(WallpaperRuntimeRecord, bool)>,
     state: &AppState,
     had_player_windows: bool,
+    mut sync_static_snapshot: SyncStaticSnapshot,
     mut ensure_player_windows: EnsurePlayerWindows,
     mut sync_native_runtime: SyncNativeRuntime,
     mut close_player_windows: ClosePlayerWindows,
     persist_player: PersistPlayer,
 ) -> Result<bool, String>
 where
+    SyncStaticSnapshot: FnMut() -> Result<(), String>,
     EnsurePlayerWindows: FnMut() -> Result<(), String>,
     SyncNativeRuntime: FnMut(Option<&WallpaperRuntimeRecord>, bool) -> Result<(), String>,
     ClosePlayerWindows: FnMut() -> Result<(), String>,
@@ -459,12 +495,55 @@ where
 {
     let candidate = build_apply_wallpaper_candidate(previous_player, runtime_record);
 
-    ensure_player_windows()?;
     let _runtime_sync = state
         .runtime_sync
         .lock()
         .map_err(|error| error.to_string())?;
     commit_player_state(state, candidate.player_state.clone())?;
+    if let Err(error) = sync_static_snapshot() {
+        let state_rollback_error = commit_player_state(state, previous_player.clone())
+            .err()
+            .map(|rollback_error| {
+                format!("failed to restore previous player state: {rollback_error}")
+            });
+        let runtime_rollback_error = rollback_failed_apply(
+            previous_runtime.as_ref(),
+            had_player_windows,
+            &mut sync_native_runtime,
+            &mut close_player_windows,
+        )
+        .err();
+        let rollback_errors = [state_rollback_error, runtime_rollback_error]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if !rollback_errors.is_empty() {
+            return Err(format!("{error}; {}", rollback_errors.join("; ")));
+        }
+        return Err(error);
+    }
+    if let Err(error) = ensure_player_windows() {
+        let state_rollback_error = commit_player_state(state, previous_player.clone())
+            .err()
+            .map(|rollback_error| {
+                format!("failed to restore previous player state: {rollback_error}")
+            });
+        let runtime_rollback_error = rollback_failed_apply(
+            previous_runtime.as_ref(),
+            had_player_windows,
+            &mut sync_native_runtime,
+            &mut close_player_windows,
+        )
+        .err();
+        let rollback_errors = [state_rollback_error, runtime_rollback_error]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if !rollback_errors.is_empty() {
+            return Err(format!("{error}; {}", rollback_errors.join("; ")));
+        }
+        return Err(error);
+    }
 
     if let Err(error) = sync_native_runtime(Some(runtime_record), candidate.effective_paused) {
         let state_rollback_error = commit_player_state(state, previous_player.clone())
@@ -1343,6 +1422,7 @@ mod tests {
             &state,
             true,
             || Ok(()),
+            || Ok(()),
             |runtime_record, paused| {
                 sync_calls
                     .borrow_mut()
@@ -1413,6 +1493,8 @@ mod tests {
         );
         candidate_runtime.id = "new-wallpaper".to_string();
         let observed_sync_state = RefCell::new(Vec::new());
+        let observed_static_state = RefCell::new(Vec::new());
+        let order = RefCell::new(Vec::new());
 
         let result = apply_runtime_record_transaction(
             &candidate_runtime,
@@ -1420,8 +1502,20 @@ mod tests {
             None,
             &state,
             true,
-            || Ok(()),
+            || {
+                let player = state.player.lock().expect("player lock").clone();
+                observed_static_state
+                    .borrow_mut()
+                    .push((player.active_id, player.scene_update_generation));
+                order.borrow_mut().push("static");
+                Ok(())
+            },
+            || {
+                order.borrow_mut().push("windows");
+                Ok(())
+            },
             |runtime_record, paused| {
+                order.borrow_mut().push("native");
                 let player = state.player.lock().expect("player lock").clone();
                 observed_sync_state.borrow_mut().push((
                     runtime_record.map(|record| record.id.clone()),
@@ -1437,6 +1531,11 @@ mod tests {
         );
 
         assert_eq!(result, Ok(false));
+        assert_eq!(
+            observed_static_state.into_inner(),
+            vec![(Some("new-wallpaper".to_string()), 12)]
+        );
+        assert_eq!(order.into_inner(), vec!["static", "windows", "native"]);
         assert_eq!(
             observed_sync_state.into_inner(),
             vec![(

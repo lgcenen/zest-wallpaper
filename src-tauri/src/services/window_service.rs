@@ -112,6 +112,42 @@ pub fn show_player_windows<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<usiz
     Ok(labels.len())
 }
 
+#[cfg(target_os = "macos")]
+pub fn set_player_windows_snapshot_background_color<R: Runtime>(
+    app: &AppHandle<R>,
+    red: f64,
+    green: f64,
+    blue: f64,
+) -> Result<usize, String> {
+    let labels = player_window_labels(app);
+    for label in &labels {
+        if let Some(window) = app.get_webview_window(label) {
+            window
+                .with_webview(move |webview| unsafe {
+                    let _marker = MainThreadMarker::new()
+                        .expect("player window tint must run on the main thread");
+                    let ns_window: &NSWindow = &*webview.ns_window().cast();
+                    let color = NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 1.0);
+                    ns_window.setOpaque(true);
+                    ns_window.setBackgroundColor(Some(&color));
+                    ns_window.orderBack(None);
+                })
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(labels.len())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_player_windows_snapshot_background_color<R: Runtime>(
+    _app: &AppHandle<R>,
+    _red: f64,
+    _green: f64,
+    _blue: f64,
+) -> Result<usize, String> {
+    Ok(0)
+}
+
 pub fn close_player_windows<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     for label in player_window_labels(app) {
         if let Some(window) = app.get_webview_window(&label) {
