@@ -1,4 +1,5 @@
 :root {
+  --wb-gui-opacity: 1;
   color-scheme: dark;
   --bg: #0d0d0e;
   --stage: #000000;
@@ -1183,19 +1184,19 @@ html[data-workbench-theme][data-theme="light"] body {
 .workbench-shell {
   --wb-text: #f0eee7;
   --wb-muted: rgba(240, 238, 231, 0.62);
-  --wb-line: rgba(255, 255, 255, 0.08);
-  --wb-line-strong: rgba(255, 255, 255, 0.14);
-  --wb-surface: rgba(20, 21, 23, 0.82);
-  --wb-surface-strong: rgba(29, 30, 33, 0.92);
-  --wb-control: rgba(255, 255, 255, 0.045);
-  --wb-control-hover: rgba(255, 255, 255, 0.075);
-  --wb-popover: rgba(24, 25, 28, 0.96);
+  --wb-line: rgba(255, 255, 255, calc(0.02 + (0.06 * var(--wb-gui-opacity))));
+  --wb-line-strong: rgba(255, 255, 255, calc(0.05 + (0.09 * var(--wb-gui-opacity))));
+  --wb-surface: rgba(20, 21, 23, calc(0.18 + (0.82 * var(--wb-gui-opacity))));
+  --wb-surface-strong: rgba(29, 30, 33, calc(0.24 + (0.76 * var(--wb-gui-opacity))));
+  --wb-control: rgba(255, 255, 255, calc(0.015 + (0.03 * var(--wb-gui-opacity))));
+  --wb-control-hover: rgba(255, 255, 255, calc(0.03 + (0.045 * var(--wb-gui-opacity))));
+  --wb-popover: rgba(24, 25, 28, calc(0.52 + (0.48 * var(--wb-gui-opacity))));
   --wb-accent: #c7b792;
   --wb-accent-soft: rgba(199, 183, 146, 0.14);
   --wb-success: #87b89b;
   --wb-warning: #d8a873;
   --wb-danger: #d38b83;
-  --wb-shadow: 0 24px 56px rgba(0, 0, 0, 0.24);
+  --wb-shadow: 0 24px 56px rgba(0, 0, 0, calc(0.08 + (0.16 * var(--wb-gui-opacity))));
   --wb-library-card-min: 184px;
   --wb-titlebar-offset: 34px;
   height: 100%;
@@ -1214,19 +1215,19 @@ html[data-workbench-theme][data-theme="light"] body {
 html[data-workbench-theme][data-theme="light"] .workbench-shell {
   --wb-text: #20231f;
   --wb-muted: rgba(32, 35, 31, 0.62);
-  --wb-line: rgba(32, 35, 31, 0.08);
-  --wb-line-strong: rgba(32, 35, 31, 0.16);
-  --wb-surface: rgba(250, 248, 243, 0.84);
-  --wb-surface-strong: rgba(255, 253, 248, 0.92);
-  --wb-control: rgba(32, 35, 31, 0.045);
-  --wb-control-hover: rgba(32, 35, 31, 0.075);
-  --wb-popover: rgba(255, 253, 248, 0.98);
+  --wb-line: rgba(32, 35, 31, calc(0.03 + (0.05 * var(--wb-gui-opacity))));
+  --wb-line-strong: rgba(32, 35, 31, calc(0.06 + (0.1 * var(--wb-gui-opacity))));
+  --wb-surface: rgba(250, 248, 243, calc(0.18 + (0.82 * var(--wb-gui-opacity))));
+  --wb-surface-strong: rgba(255, 253, 248, calc(0.24 + (0.76 * var(--wb-gui-opacity))));
+  --wb-control: rgba(32, 35, 31, calc(0.018 + (0.027 * var(--wb-gui-opacity))));
+  --wb-control-hover: rgba(32, 35, 31, calc(0.032 + (0.043 * var(--wb-gui-opacity))));
+  --wb-popover: rgba(255, 253, 248, calc(0.52 + (0.48 * var(--wb-gui-opacity))));
   --wb-accent: #7a7258;
   --wb-accent-soft: rgba(122, 114, 88, 0.12);
   --wb-success: #4e7b5f;
   --wb-warning: #9a6e3d;
   --wb-danger: #9f5a51;
-  --wb-shadow: 0 18px 34px rgba(69, 57, 36, 0.12);
+  --wb-shadow: 0 18px 34px rgba(69, 57, 36, calc(0.04 + (0.08 * var(--wb-gui-opacity))));
 }
 
 .workbench-shell h1,
@@ -1265,32 +1266,34 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell {
   position: relative;
   border-right: 1px solid color-mix(in srgb, var(--wb-text) 7%, transparent);
   background:
-    radial-gradient(circle at 0% 0%, rgba(116, 130, 78, 0.14), transparent 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035) 0%, transparent 22%),
-    rgba(14, 15, 17, 0.84);
+    radial-gradient(circle at 0% 0%, rgba(116, 130, 78, calc(0.1 + (0.04 * var(--wb-gui-opacity)))), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.018 + (0.022 * var(--wb-gui-opacity)))) 0%, transparent 22%),
+    rgba(14, 15, 17, var(--wb-gui-opacity));
   backdrop-filter: blur(20px) saturate(115%);
 }
 
 html[data-workbench-theme][data-theme="light"] .workbench-shell .library-pane {
   background:
-    radial-gradient(circle at 0% 0%, rgba(138, 150, 104, 0.18), transparent 22%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.36) 0%, rgba(255, 255, 255, 0.16) 26%),
-    rgba(247, 244, 237, 0.78);
+    radial-gradient(circle at 0% 0%, rgba(138, 150, 104, calc(0.1 + (0.08 * var(--wb-gui-opacity)))), transparent 22%),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.18 + (0.18 * var(--wb-gui-opacity)))) 0%, rgba(255, 255, 255, calc(0.08 + (0.08 * var(--wb-gui-opacity)))) 26%),
+    rgba(247, 244, 237, var(--wb-gui-opacity));
   backdrop-filter: blur(18px) saturate(112%);
 }
 
 .workbench-shell .detail-panel {
   position: relative;
   background:
-    radial-gradient(circle at 0% 0%, rgba(108, 126, 74, 0.14), transparent 22%),
-    linear-gradient(180deg, rgba(27, 29, 32, 0.22) 0%, rgba(15, 17, 19, 0.34) 100%);
+    radial-gradient(circle at 0% 0%, rgba(108, 126, 74, calc(0.1 + (0.04 * var(--wb-gui-opacity)))), transparent 22%),
+    linear-gradient(180deg, rgba(30, 32, 36, calc(0.06 + (0.1 * var(--wb-gui-opacity)))) 0%, rgba(17, 19, 22, calc(0.12 + (0.16 * var(--wb-gui-opacity)))) 100%),
+    rgba(16, 18, 20, var(--wb-gui-opacity));
   backdrop-filter: blur(24px) saturate(130%);
 }
 
 html[data-workbench-theme][data-theme="light"] .workbench-shell .detail-panel {
   background:
-    radial-gradient(circle at 0% 0%, rgba(134, 152, 96, 0.14), transparent 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.24) 0%, rgba(247, 243, 235, 0.36) 100%);
+    radial-gradient(circle at 0% 0%, rgba(134, 152, 96, calc(0.1 + (0.04 * var(--wb-gui-opacity)))), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.1 + (0.12 * var(--wb-gui-opacity)))) 0%, rgba(247, 243, 235, calc(0.16 + (0.18 * var(--wb-gui-opacity)))) 100%),
+    rgba(248, 245, 238, var(--wb-gui-opacity));
   backdrop-filter: blur(22px) saturate(124%);
 }
 
@@ -1299,7 +1302,7 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .detail-panel {
   position: absolute;
   inset: 0;
   border-left: 1px solid color-mix(in srgb, var(--wb-text) 7%, transparent);
-  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.03);
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, calc(0.03 * var(--wb-gui-opacity)));
   pointer-events: none;
 }
 
@@ -1308,8 +1311,8 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .detail-panel {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 0% 0%, rgba(123, 139, 78, 0.16), transparent 26%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.022) 0%, rgba(255, 255, 255, 0.01) 100%);
+    radial-gradient(circle at 0% 0%, rgba(123, 139, 78, calc(0.16 * var(--wb-gui-opacity))), transparent 26%),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.022 * var(--wb-gui-opacity))) 0%, rgba(255, 255, 255, calc(0.01 * var(--wb-gui-opacity))) 100%);
   pointer-events: none;
 }
 
@@ -1602,6 +1605,23 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .primary-button 
 .workbench-shell .settings-field > span {
   font-size: 12px;
   color: var(--wb-muted);
+}
+
+.workbench-shell .settings-range-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.workbench-shell .settings-range {
+  flex: 1 1 auto;
+}
+
+.workbench-shell .settings-range-value {
+  flex: 0 0 auto;
+  min-width: 42px;
+  font-size: 12px;
+  text-align: right;
 }
 
 .workbench-shell .settings-path-card {

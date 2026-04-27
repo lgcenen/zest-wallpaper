@@ -40,6 +40,9 @@ import {
   type DraftPropertyValues,
 } from "../state/property-drafts";
 import {
+  WORKBENCH_GUI_OPACITY_MAX,
+  WORKBENCH_GUI_OPACITY_MIN,
+  WORKBENCH_GUI_OPACITY_STEP,
   useWorkbenchPreferences,
   type WorkbenchLanguage,
   type WorkbenchSortKey,
@@ -210,6 +213,7 @@ function SettingsPopover({
   resolvedTheme,
   language,
   sortKey,
+  guiOpacity,
   sceneRuntimeSettings,
   sceneRuntimeSettingsLoading,
   sceneRuntimeSettingsSaving,
@@ -217,6 +221,7 @@ function SettingsPopover({
   onThemeModeChange,
   onLanguageChange,
   onSortKeyChange,
+  onGuiOpacityChange,
   onChooseSceneAssets,
   onClearSceneAssets,
 }: {
@@ -224,6 +229,7 @@ function SettingsPopover({
   resolvedTheme: "light" | "dark";
   language: WorkbenchLanguage;
   sortKey: WorkbenchSortKey;
+  guiOpacity: number;
   sceneRuntimeSettings: SceneRuntimeSettingsSnapshot;
   sceneRuntimeSettingsLoading: boolean;
   sceneRuntimeSettingsSaving: boolean;
@@ -231,6 +237,7 @@ function SettingsPopover({
   onThemeModeChange: (value: WorkbenchThemeMode) => void;
   onLanguageChange: (value: WorkbenchLanguage) => void;
   onSortKeyChange: (value: WorkbenchSortKey) => void;
+  onGuiOpacityChange: (value: number) => void;
   onChooseSceneAssets: () => void;
   onClearSceneAssets: () => void;
 }) {
@@ -284,6 +291,25 @@ function SettingsPopover({
           ]}
           onChange={(value) => onSortKeyChange(value as WorkbenchSortKey)}
         />
+        <label className="settings-field">
+          <span>{copy.guiOpacityLabel}</span>
+          <div className="settings-range-row">
+            <input
+              className="property-range settings-range"
+              type="range"
+              min={WORKBENCH_GUI_OPACITY_MIN}
+              max={WORKBENCH_GUI_OPACITY_MAX}
+              step={WORKBENCH_GUI_OPACITY_STEP}
+              value={guiOpacity}
+              aria-label={copy.guiOpacityLabel}
+              onInput={(event) =>
+                onGuiOpacityChange(Number((event.target as HTMLInputElement).value))
+              }
+              onChange={(event) => onGuiOpacityChange(Number(event.target.value))}
+            />
+            <strong className="settings-range-value">{copy.guiOpacityValue(guiOpacity)}</strong>
+          </div>
+        </label>
       </div>
 
       <div className="settings-runtime">
@@ -666,6 +692,7 @@ function LibraryPane({
   onSortChange,
   onThemeModeChange,
   onLanguageChange,
+  onGuiOpacityChange,
   onChooseSceneAssets,
   onClearSceneAssets,
   onSelect,
@@ -684,6 +711,7 @@ function LibraryPane({
     themeMode: WorkbenchThemeMode;
     language: WorkbenchLanguage;
     sortKey: WorkbenchSortKey;
+    guiOpacity: number;
   };
   sceneRuntimeSettings: SceneRuntimeSettingsSnapshot;
   sceneRuntimeSettingsLoading: boolean;
@@ -692,6 +720,7 @@ function LibraryPane({
   onSortChange: (value: WorkbenchSortKey) => void;
   onThemeModeChange: (value: WorkbenchThemeMode) => void;
   onLanguageChange: (value: WorkbenchLanguage) => void;
+  onGuiOpacityChange: (value: number) => void;
   onChooseSceneAssets: () => void;
   onClearSceneAssets: () => void;
   onSelect: (record: WallpaperRuntimeRecord) => void;
@@ -787,6 +816,7 @@ function LibraryPane({
                 resolvedTheme={resolvedTheme}
                 language={preferences.language}
                 sortKey={preferences.sortKey}
+                guiOpacity={preferences.guiOpacity}
                 sceneRuntimeSettings={sceneRuntimeSettings}
                 sceneRuntimeSettingsLoading={sceneRuntimeSettingsLoading}
                 sceneRuntimeSettingsSaving={sceneRuntimeSettingsSaving}
@@ -794,6 +824,7 @@ function LibraryPane({
                 onThemeModeChange={onThemeModeChange}
                 onLanguageChange={onLanguageChange}
                 onSortKeyChange={onSortChange}
+                onGuiOpacityChange={onGuiOpacityChange}
                 onChooseSceneAssets={onChooseSceneAssets}
                 onClearSceneAssets={onClearSceneAssets}
               />
@@ -1492,6 +1523,7 @@ export default function WorkbenchApp() {
         onSortChange={(value) => updatePreference("sortKey", value)}
         onThemeModeChange={(value) => updatePreference("themeMode", value)}
         onLanguageChange={(value) => updatePreference("language", value)}
+        onGuiOpacityChange={(value) => updatePreference("guiOpacity", value)}
         onChooseSceneAssets={() => void handleChooseSceneAssets()}
         onClearSceneAssets={() => void handleClearSceneAssets()}
         onSelect={(record) => void handleWallpaperCardClick(record)}

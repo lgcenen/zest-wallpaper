@@ -4,11 +4,15 @@ export type WorkbenchThemeMode = "light" | "dark" | "system";
 export type WorkbenchResolvedTheme = "light" | "dark";
 export type WorkbenchLanguage = "zh-CN" | "en";
 export type WorkbenchSortKey = "recent" | "title";
+export const WORKBENCH_GUI_OPACITY_MIN = 55;
+export const WORKBENCH_GUI_OPACITY_MAX = 100;
+export const WORKBENCH_GUI_OPACITY_STEP = 5;
 
 export interface WorkbenchPreferences {
   themeMode: WorkbenchThemeMode;
   language: WorkbenchLanguage;
   sortKey: WorkbenchSortKey;
+  guiOpacity: number;
 }
 
 const STORAGE_KEY = "wallpaper-workbench.preferences";
@@ -25,6 +29,7 @@ function defaultPreferences(): WorkbenchPreferences {
     themeMode: "system",
     language: inferLanguage(),
     sortKey: "recent",
+    guiOpacity: WORKBENCH_GUI_OPACITY_MAX,
   };
 }
 
@@ -38,6 +43,17 @@ function isLanguage(value: unknown): value is WorkbenchLanguage {
 
 function isSortKey(value: unknown): value is WorkbenchSortKey {
   return value === "recent" || value === "title";
+}
+
+function normalizeGuiOpacity(value: unknown, fallback = WORKBENCH_GUI_OPACITY_MAX) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(
+    WORKBENCH_GUI_OPACITY_MAX,
+    Math.max(WORKBENCH_GUI_OPACITY_MIN, Math.round(numeric)),
+  );
 }
 
 function systemTheme(): WorkbenchResolvedTheme {
@@ -63,6 +79,7 @@ export function readStoredWorkbenchPreferences(): WorkbenchPreferences {
       themeMode: isThemeMode(parsed.themeMode) ? parsed.themeMode : fallback.themeMode,
       language: isLanguage(parsed.language) ? parsed.language : fallback.language,
       sortKey: isSortKey(parsed.sortKey) ? parsed.sortKey : fallback.sortKey,
+      guiOpacity: normalizeGuiOpacity(parsed.guiOpacity, fallback.guiOpacity),
     };
   } catch {
     return fallback;
@@ -93,6 +110,10 @@ export function applyWorkbenchDocumentPreferences(
   document.documentElement.dataset.workbenchTheme = preferences.themeMode;
   document.documentElement.lang = preferences.language;
   document.documentElement.style.colorScheme = resolvedTheme;
+  document.documentElement.style.setProperty(
+    "--wb-gui-opacity",
+    (preferences.guiOpacity / 100).toFixed(2),
+  );
 }
 
 export function initializeWorkbenchDocumentPreferences() {

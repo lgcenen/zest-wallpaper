@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -147,6 +147,8 @@ async function chooseWorkbenchOption(
 
 describe("phase-06 workbench gui", () => {
   beforeEach(() => {
+    window.localStorage.clear();
+    document.documentElement.style.removeProperty("--wb-gui-opacity");
     mocks.gateway.listWallpapers.mockClear();
     mocks.gateway.applyDynamicWallpaper.mockClear();
     mocks.gateway.chooseSceneAssetsDirectory.mockClear();
@@ -189,7 +191,7 @@ describe("phase-06 workbench gui", () => {
     expect(screen.queryByRole("heading", { name: "路径" })).toBeNull();
   });
 
-  it("persists theme and language preferences across rerenders", async () => {
+  it("persists theme, language, and gui opacity preferences across rerenders", async () => {
     const user = userEvent.setup();
     const firstRender = render(<WorkbenchApp />);
 
@@ -198,6 +200,7 @@ describe("phase-06 workbench gui", () => {
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(screen.queryByLabelText("缩略图密度")).toBeNull();
     expect(screen.getByRole("heading", { name: "属性" })).toBeTruthy();
+    fireEvent.input(screen.getByLabelText("GUI 透明度"), { target: { value: "70" } });
     await chooseWorkbenchOption(user, "语言", "English");
 
     await screen.findByText("Wallpaper Library");
@@ -207,15 +210,37 @@ describe("phase-06 workbench gui", () => {
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe("light");
       expect(document.documentElement.dataset.workbenchTheme).toBe("light");
+      expect(document.documentElement.style.getPropertyValue("--wb-gui-opacity")).toBe("0.70");
     });
+    expect(
+      getComputedStyle(firstRender.container.querySelector(".workbench-shell") as HTMLElement)
+        .getPropertyValue("--wb-gui-opacity")
+        .trim(),
+    ).toBe("0.70");
 
     firstRender.unmount();
 
-    render(<WorkbenchApp />);
+    const secondRender = render(<WorkbenchApp />);
 
     await screen.findByText("Wallpaper Library");
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
+    expect(
+      getComputedStyle(secondRender.container.querySelector(".workbench-shell") as HTMLElement)
+        .getPropertyValue("--wb-gui-opacity")
+        .trim(),
+    ).toBe("0.70");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect((screen.getByLabelText("GUI Opacity") as HTMLInputElement).value).toBe("70");
+    fireEvent.input(screen.getByLabelText("GUI Opacity"), { target: { value: "100" } });
+    await waitFor(() => {
+      expect(document.documentElement.style.getPropertyValue("--wb-gui-opacity")).toBe("1.00");
+    });
+    expect(
+      getComputedStyle(secondRender.container.querySelector(".workbench-shell") as HTMLElement)
+        .getPropertyValue("--wb-gui-opacity")
+        .trim(),
+    ).toBe("1.00");
   });
 
   it("keeps no-preview library cards identifiable with a readable title fallback", async () => {

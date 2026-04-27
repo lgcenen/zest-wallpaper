@@ -73,9 +73,11 @@ export interface WorkbenchCopy {
   sceneAssetsHint: string;
   sceneAssetsLoading: string;
   sceneAssetsSaving: string;
+  guiOpacityLabel: string;
   themeModeLabel: string;
   languageLabel: string;
   defaultSortLabel: string;
+  guiOpacityValue: (value: number) => string;
   themeModeName: (mode: WorkbenchThemeMode) => string;
   languageName: (value: WorkbenchLanguage) => string;
   sortName: (value: WorkbenchSortKey) => string;
@@ -126,9 +128,11 @@ const zhCnCopy: WorkbenchCopy = {
   sceneAssetsHint: "这是可选的高兼容 Scene 资源根。未挂载时应用仍可启动、导入和浏览，只对缺失资源给出诊断。",
   sceneAssetsLoading: "读取中…",
   sceneAssetsSaving: "保存中…",
+  guiOpacityLabel: "GUI 透明度",
   themeModeLabel: "外观",
   languageLabel: "语言",
   defaultSortLabel: "默认排序",
+  guiOpacityValue: (value: number) => `${value}%`,
   themeModeName: (mode: WorkbenchThemeMode) => {
     switch (mode) {
       case "light":
@@ -250,9 +254,11 @@ const englishCopy: WorkbenchCopy = {
     "This is an optional high-compatibility Scene resource root. The app still starts, imports, and browses without it; missing resources surface as diagnostics instead.",
   sceneAssetsLoading: "Loading…",
   sceneAssetsSaving: "Saving…",
+  guiOpacityLabel: "GUI Opacity",
   themeModeLabel: "Appearance",
   languageLabel: "Language",
   defaultSortLabel: "Default Sort",
+  guiOpacityValue: (value: number) => `${value}%`,
   themeModeName: (mode: WorkbenchThemeMode) => {
     switch (mode) {
       case "light":
