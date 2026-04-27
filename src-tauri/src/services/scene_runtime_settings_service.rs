@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use tauri::{AppHandle, Manager};
 
@@ -22,6 +25,17 @@ pub fn external_assets_root_for_app(app: &AppHandle) -> Option<PathBuf> {
     let state = app.try_state::<AppState>()?;
     let settings = state.scene_runtime_settings.lock().ok()?;
     settings.external_assets_path.as_deref().map(PathBuf::from)
+}
+
+pub fn persisted_external_assets_root() -> Option<PathBuf> {
+    let path = crate::store::scene_runtime_settings_path().ok()?;
+    let contents = fs::read_to_string(path).ok()?;
+    let settings: SceneRuntimeSettings = serde_json::from_str(&contents).ok()?;
+    settings
+        .external_assets_path
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
 }
 
 pub fn set_external_assets_path(
@@ -104,13 +118,13 @@ fn validate_external_assets_path(path: Option<String>) -> Result<Option<String>,
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{env, fs};
 
     use tempfile::tempdir;
 
-    use crate::models::SceneRuntimeSettings;
+    use crate::{models::SceneRuntimeSettings, store::HOME_ENV_LOCK};
 
-    use super::snapshot_from_settings;
+    use super::{persisted_external_assets_root, snapshot_from_settings};
 
     #[test]
     fn snapshot_marks_missing_external_assets_path_as_unavailable() {
@@ -138,5 +152,31 @@ mod tests {
         });
 
         assert!(snapshot.external_assets_exists);
+    }
+
+    #[test]
+    fn persisted_external_assets_root_reads_saved_valid_directory() {
+        let _lock = HOME_ENV_LOCK.lock().expect("home lock");
+        let temp = tempdir().expect("temp dir");
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path());
+
+        let result = (|| {
+            let external = temp.path().join("external-assets");
+            fs::create_dir_all(&external).expect("external dir");
+            crate::store::save_scene_runtime_settings(&SceneRuntimeSettings {
+                external_assets_path: Some(external.display().to_string()),
+            })
+            .expect("save settings");
+
+            assert_eq!(persisted_external_assets_root(), Some(external));
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        result
     }
 }

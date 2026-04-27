@@ -34,7 +34,7 @@ use objc2_web_kit::{
 
 use crate::{
     models::{WallpaperRecord, WallpaperType},
-    services::{static_snapshot_service, web_runtime_service},
+    services::{scene_snapshot_capture_service, static_snapshot_service, web_runtime_service},
 };
 
 pub const STATIC_SNAPSHOT_FILE_NAME: &str = "snapshot.png";
@@ -68,6 +68,7 @@ pub fn ensure_static_snapshot_for_record(
         false,
         render_video_snapshot_file,
         render_web_snapshot_file,
+        render_scene_snapshot_file,
     )
 }
 
@@ -79,6 +80,7 @@ pub fn regenerate_static_snapshot_for_record(
         true,
         render_video_snapshot_file,
         render_web_snapshot_file,
+        render_scene_snapshot_file,
     )
 }
 
@@ -96,6 +98,9 @@ where
         render_video_snapshot,
         |_entry, _output| {
             Err("web static snapshot generation test renderer was not provided".to_string())
+        },
+        |_record, _output| {
+            Err("scene static snapshot generation test renderer was not provided".to_string())
         },
     )
 }
@@ -115,6 +120,9 @@ where
         |_entry, _output| {
             Err("web static snapshot generation test renderer was not provided".to_string())
         },
+        |_record, _output| {
+            Err("scene static snapshot generation test renderer was not provided".to_string())
+        },
     )
 }
 
@@ -133,6 +141,9 @@ where
         false,
         render_video_snapshot,
         render_web_snapshot,
+        |_record, _output| {
+            Err("scene static snapshot generation test renderer was not provided".to_string())
+        },
     )
 }
 
@@ -154,18 +165,77 @@ where
         true,
         render_video_snapshot,
         render_web_snapshot,
+        |_record, _output| {
+            Err("scene static snapshot generation test renderer was not provided".to_string())
+        },
     )
 }
 
-fn generate_static_snapshot_for_record_with<RenderVideoSnapshot, RenderWebSnapshot>(
+#[cfg(test)]
+pub fn ensure_static_snapshot_for_record_with_all_renderers<
+    RenderVideoSnapshot,
+    RenderWebSnapshot,
+    RenderSceneSnapshot,
+>(
     record: &mut WallpaperRecord,
-    refresh_existing: bool,
     render_video_snapshot: RenderVideoSnapshot,
     render_web_snapshot: RenderWebSnapshot,
+    render_scene_snapshot: RenderSceneSnapshot,
 ) -> StaticSnapshotGenerationOutcome
 where
     RenderVideoSnapshot: FnOnce(&Path, &Path) -> Result<(), String>,
     RenderWebSnapshot: FnOnce(&Path, &Path) -> Result<(), String>,
+    RenderSceneSnapshot: FnOnce(&WallpaperRecord, &Path) -> Result<(), String>,
+{
+    generate_static_snapshot_for_record_with(
+        record,
+        false,
+        render_video_snapshot,
+        render_web_snapshot,
+        render_scene_snapshot,
+    )
+}
+
+#[cfg(test)]
+pub fn regenerate_static_snapshot_for_record_with_all_renderers<
+    RenderVideoSnapshot,
+    RenderWebSnapshot,
+    RenderSceneSnapshot,
+>(
+    record: &mut WallpaperRecord,
+    render_video_snapshot: RenderVideoSnapshot,
+    render_web_snapshot: RenderWebSnapshot,
+    render_scene_snapshot: RenderSceneSnapshot,
+) -> StaticSnapshotGenerationOutcome
+where
+    RenderVideoSnapshot: FnOnce(&Path, &Path) -> Result<(), String>,
+    RenderWebSnapshot: FnOnce(&Path, &Path) -> Result<(), String>,
+    RenderSceneSnapshot: FnOnce(&WallpaperRecord, &Path) -> Result<(), String>,
+{
+    generate_static_snapshot_for_record_with(
+        record,
+        true,
+        render_video_snapshot,
+        render_web_snapshot,
+        render_scene_snapshot,
+    )
+}
+
+fn generate_static_snapshot_for_record_with<
+    RenderVideoSnapshot,
+    RenderWebSnapshot,
+    RenderSceneSnapshot,
+>(
+    record: &mut WallpaperRecord,
+    refresh_existing: bool,
+    render_video_snapshot: RenderVideoSnapshot,
+    render_web_snapshot: RenderWebSnapshot,
+    render_scene_snapshot: RenderSceneSnapshot,
+) -> StaticSnapshotGenerationOutcome
+where
+    RenderVideoSnapshot: FnOnce(&Path, &Path) -> Result<(), String>,
+    RenderWebSnapshot: FnOnce(&Path, &Path) -> Result<(), String>,
+    RenderSceneSnapshot: FnOnce(&WallpaperRecord, &Path) -> Result<(), String>,
 {
     if !refresh_existing {
         if let Ok(snapshot_path) = static_snapshot_service::snapshot_for_record(record) {
@@ -175,24 +245,26 @@ where
 
     record.last_snapshot_path = None;
 
-    let source = match snapshot_source_for_record(record) {
-        StaticSnapshotSource::Video(source_path) => SnapshotRenderPlan {
-            source_path,
-            render: Box::new(render_video_snapshot),
-        },
-        StaticSnapshotSource::Web(entry_path) => SnapshotRenderPlan {
-            source_path: entry_path,
-            render: Box::new(render_web_snapshot),
-        },
+    let source = snapshot_source_for_record(record);
+    match &source {
         StaticSnapshotSource::MissingVideoSource { reason } => {
-            return StaticSnapshotGenerationOutcome::MissingVideoSource { reason };
+            return StaticSnapshotGenerationOutcome::MissingVideoSource {
+                reason: reason.clone(),
+            };
         }
         StaticSnapshotSource::MissingWebEntry { reason } => {
-            return StaticSnapshotGenerationOutcome::MissingWebEntry { reason };
+            return StaticSnapshotGenerationOutcome::MissingWebEntry {
+                reason: reason.clone(),
+            };
         }
         StaticSnapshotSource::Unsupported { wallpaper_type } => {
-            return StaticSnapshotGenerationOutcome::Unsupported { wallpaper_type };
+            return StaticSnapshotGenerationOutcome::Unsupported {
+                wallpaper_type: wallpaper_type.clone(),
+            };
         }
+        StaticSnapshotSource::Video(_)
+        | StaticSnapshotSource::Web(_)
+        | StaticSnapshotSource::Scene => {}
     };
 
     let snapshot_path = static_snapshot_path_for_record(record);
@@ -201,9 +273,16 @@ where
         return StaticSnapshotGenerationOutcome::Failed { reason: error };
     }
 
-    match (source.render)(&source.source_path, &temp_path)
-        .and_then(|()| commit_generated_snapshot(&temp_path, &snapshot_path))
-    {
+    let render_result = match source {
+        StaticSnapshotSource::Video(source_path) => render_video_snapshot(&source_path, &temp_path),
+        StaticSnapshotSource::Web(entry_path) => render_web_snapshot(&entry_path, &temp_path),
+        StaticSnapshotSource::Scene => render_scene_snapshot(record, &temp_path),
+        StaticSnapshotSource::MissingVideoSource { .. }
+        | StaticSnapshotSource::MissingWebEntry { .. }
+        | StaticSnapshotSource::Unsupported { .. } => unreachable!(),
+    };
+
+    match render_result.and_then(|()| commit_generated_snapshot(&temp_path, &snapshot_path)) {
         Ok(()) => {
             record.last_snapshot_path = Some(snapshot_path.display().to_string());
             StaticSnapshotGenerationOutcome::Generated { snapshot_path }
@@ -215,14 +294,10 @@ where
     }
 }
 
-struct SnapshotRenderPlan<'a> {
-    source_path: PathBuf,
-    render: Box<dyn FnOnce(&Path, &Path) -> Result<(), String> + 'a>,
-}
-
 enum StaticSnapshotSource {
     Video(PathBuf),
     Web(PathBuf),
+    Scene,
     MissingVideoSource { reason: String },
     MissingWebEntry { reason: String },
     Unsupported { wallpaper_type: WallpaperType },
@@ -241,6 +316,7 @@ fn snapshot_source_for_record(record: &WallpaperRecord) -> StaticSnapshotSource 
             Ok(entry_path) => StaticSnapshotSource::Web(entry_path),
             Err(reason) => StaticSnapshotSource::MissingWebEntry { reason },
         },
+        WallpaperType::Scene => StaticSnapshotSource::Scene,
         _ => StaticSnapshotSource::Unsupported {
             wallpaper_type: record.wallpaper_type.clone(),
         },
@@ -444,6 +520,10 @@ fn render_web_snapshot_file(entry_path: &Path, output_path: &Path) -> Result<(),
 fn render_web_snapshot_file(entry_path: &Path, output_path: &Path) -> Result<(), String> {
     let _ = (entry_path, output_path);
     Err("web static snapshot generation is only implemented on macOS".to_string())
+}
+
+fn render_scene_snapshot_file(record: &WallpaperRecord, output_path: &Path) -> Result<(), String> {
+    scene_snapshot_capture_service::capture_scene_static_snapshot(record, output_path)
 }
 
 #[cfg(target_os = "macos")]
@@ -776,8 +856,11 @@ mod tests {
     use crate::models::{WallpaperRecord, WallpaperType};
 
     use super::{
-        ensure_static_snapshot_for_record_with, ensure_static_snapshot_for_record_with_renderers,
+        ensure_static_snapshot_for_record_with,
+        ensure_static_snapshot_for_record_with_all_renderers,
+        ensure_static_snapshot_for_record_with_renderers,
         regenerate_static_snapshot_for_record_with,
+        regenerate_static_snapshot_for_record_with_all_renderers,
         regenerate_static_snapshot_for_record_with_renderers, static_snapshot_path_for_record,
         StaticSnapshotGenerationOutcome, STATIC_SNAPSHOT_FILE_NAME, STATIC_SNAPSHOT_TEMP_FILE_NAME,
     };
@@ -1046,6 +1129,144 @@ mod tests {
     }
 
     #[test]
+    fn scene_generation_writes_managed_snapshot_and_registers_path() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        fs::create_dir_all(&managed).expect("managed dir");
+        let preview = managed.join("preview.png");
+        fs::write(&preview, b"preview").expect("preview");
+        let mut record = record(
+            WallpaperType::Scene,
+            managed.display().to_string(),
+            None,
+            Some(preview.display().to_string()),
+        );
+
+        let outcome = ensure_static_snapshot_for_record_with_all_renderers(
+            &mut record,
+            |_source_path, _output| {
+                panic!("scene snapshot generation must not invoke the video renderer")
+            },
+            |_entry_path, _output| {
+                panic!("scene snapshot generation must not invoke the web renderer")
+            },
+            |scene_record, output| {
+                assert_eq!(scene_record.wallpaper_type, WallpaperType::Scene);
+                assert_eq!(
+                    output.file_name().and_then(|value| value.to_str()),
+                    Some(STATIC_SNAPSHOT_TEMP_FILE_NAME)
+                );
+                fs::write(output, b"scene-snapshot").map_err(|error| error.to_string())
+            },
+        );
+
+        let expected_snapshot = managed.join(STATIC_SNAPSHOT_FILE_NAME);
+        assert_eq!(
+            outcome,
+            StaticSnapshotGenerationOutcome::Generated {
+                snapshot_path: expected_snapshot.clone(),
+            }
+        );
+        assert_eq!(
+            record.last_snapshot_path.as_deref(),
+            Some(expected_snapshot.to_string_lossy().as_ref())
+        );
+        assert_ne!(
+            record.last_snapshot_path.as_deref(),
+            record.preview_path.as_deref()
+        );
+        assert_eq!(
+            fs::read(&expected_snapshot).expect("snapshot"),
+            b"scene-snapshot"
+        );
+        assert!(!managed.join(STATIC_SNAPSHOT_TEMP_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn repeated_scene_generation_overwrites_stable_snapshot_path() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        fs::create_dir_all(&managed).expect("managed dir");
+        let snapshot = managed.join(STATIC_SNAPSHOT_FILE_NAME);
+        fs::write(&snapshot, b"old").expect("old snapshot");
+        let mut record = record(
+            WallpaperType::Scene,
+            managed.display().to_string(),
+            None,
+            None,
+        );
+        record.last_snapshot_path = Some(snapshot.display().to_string());
+
+        let outcome = regenerate_static_snapshot_for_record_with_all_renderers(
+            &mut record,
+            |_source_path, _output| {
+                panic!("scene snapshot generation must not invoke the video renderer")
+            },
+            |_entry_path, _output| {
+                panic!("scene snapshot generation must not invoke the web renderer")
+            },
+            |_scene_record, output| {
+                fs::write(output, b"new-scene").map_err(|error| error.to_string())
+            },
+        );
+
+        assert_eq!(
+            outcome,
+            StaticSnapshotGenerationOutcome::Generated {
+                snapshot_path: snapshot.clone(),
+            }
+        );
+        assert_eq!(fs::read(&snapshot).expect("snapshot"), b"new-scene");
+        assert_eq!(
+            record.last_snapshot_path.as_deref(),
+            Some(snapshot.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn scene_generation_failure_does_not_register_or_commit_snapshot_path() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        fs::create_dir_all(&managed).expect("managed dir");
+        let preview = managed.join("preview.png");
+        fs::write(&preview, b"preview").expect("preview");
+        let mut record = record(
+            WallpaperType::Scene,
+            managed.display().to_string(),
+            None,
+            Some(preview.display().to_string()),
+        );
+
+        let outcome = ensure_static_snapshot_for_record_with_all_renderers(
+            &mut record,
+            |_source_path, _output| {
+                panic!("scene snapshot generation must not invoke the video renderer")
+            },
+            |_entry_path, _output| {
+                panic!("scene snapshot generation must not invoke the web renderer")
+            },
+            |_scene_record, output| {
+                fs::write(output, b"partial").map_err(|error| error.to_string())?;
+                Err("simulated scene generation failure".to_string())
+            },
+        );
+
+        assert_eq!(
+            outcome,
+            StaticSnapshotGenerationOutcome::Failed {
+                reason: "simulated scene generation failure".to_string(),
+            }
+        );
+        assert!(record.last_snapshot_path.is_none());
+        assert_ne!(
+            record.last_snapshot_path.as_deref(),
+            record.preview_path.as_deref()
+        );
+        assert!(!static_snapshot_path_for_record(&record).exists());
+        assert!(!managed.join(STATIC_SNAPSHOT_TEMP_FILE_NAME).exists());
+    }
+
+    #[test]
     fn missing_web_entry_does_not_register_preview_as_snapshot() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -1077,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_generation_remains_explicitly_unsupported_without_preview_fallback() {
+    fn unknown_generation_remains_explicitly_unsupported_without_preview_fallback() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
         fs::create_dir_all(&managed).expect("managed dir");
@@ -1085,7 +1306,7 @@ mod tests {
         fs::write(&preview, b"preview").expect("preview");
 
         let mut record = record(
-            WallpaperType::Scene,
+            WallpaperType::Unknown,
             managed.display().to_string(),
             None,
             Some(preview.display().to_string()),
@@ -1094,17 +1315,17 @@ mod tests {
         let outcome = ensure_static_snapshot_for_record_with_renderers(
             &mut record,
             |_source, _output| {
-                panic!("scene snapshot generation must not invoke video snapshot generation")
+                panic!("unknown snapshot generation must not invoke video snapshot generation")
             },
             |_entry, _output| {
-                panic!("scene snapshot generation must not invoke web snapshot generation")
+                panic!("unknown snapshot generation must not invoke web snapshot generation")
             },
         );
 
         assert_eq!(
             outcome,
             StaticSnapshotGenerationOutcome::Unsupported {
-                wallpaper_type: WallpaperType::Scene
+                wallpaper_type: WallpaperType::Unknown
             }
         );
         assert!(record.last_snapshot_path.is_none());

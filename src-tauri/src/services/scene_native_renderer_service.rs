@@ -4712,6 +4712,13 @@ fn rasterize_text_texture(
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn rasterize_scene_text_item_snapshot(
+    item: &SceneRenderTextItem,
+) -> Result<DynamicImage, String> {
+    rasterize_text_texture(item).map(|rasterized| rasterized.image)
+}
+
+#[cfg(target_os = "macos")]
 fn standard_text_shadow() -> Retained<NSShadow> {
     let shadow = NSShadow::new();
     shadow.setShadowOffset(NSSize::new(0.0, 6.0));

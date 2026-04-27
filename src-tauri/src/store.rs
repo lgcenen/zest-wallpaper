@@ -161,15 +161,6 @@ fn record_needs_metadata_refresh(record: &WallpaperRecord) -> bool {
         return true;
     }
 
-    if matches!(record.wallpaper_type, crate::models::WallpaperType::Video)
-        && record.last_snapshot_path.as_deref().is_none_or(|path| {
-            let path = path.trim();
-            path.is_empty() || !Path::new(path).is_file()
-        })
-    {
-        return true;
-    }
-
     if record.property_schema.is_empty() && record.property_sections.is_empty() {
         return true;
     }
@@ -336,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn video_without_registered_snapshot_needs_metadata_refresh() {
+    fn missing_snapshot_does_not_force_startup_metadata_refresh() {
         let temp = tempdir().unwrap();
         let entry_path = temp.path().join("clip.mp4");
         let preview_path = temp.path().join("preview.png");
@@ -367,12 +358,19 @@ mod tests {
             tags: Vec::new(),
         };
 
-        assert!(super::record_needs_metadata_refresh(&record));
+        assert!(!super::record_needs_metadata_refresh(&record));
 
         let snapshot_path = temp.path().join("snapshot.png");
         fs::write(&snapshot_path, b"snapshot").unwrap();
         record.last_snapshot_path = Some(snapshot_path.display().to_string());
 
+        assert!(!super::record_needs_metadata_refresh(&record));
+
+        record.wallpaper_type = WallpaperType::Scene;
+        record.last_snapshot_path = None;
+        assert!(!super::record_needs_metadata_refresh(&record));
+
+        record.wallpaper_type = WallpaperType::Web;
         assert!(!super::record_needs_metadata_refresh(&record));
     }
 

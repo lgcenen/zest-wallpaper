@@ -237,7 +237,7 @@ where
 fn supports_apply_time_static_snapshot_generation(record: &WallpaperRecord) -> bool {
     matches!(
         record.wallpaper_type,
-        WallpaperType::Video | WallpaperType::Web
+        WallpaperType::Scene | WallpaperType::Video | WallpaperType::Web
     )
 }
 
@@ -1347,6 +1347,76 @@ mod tests {
 
             let record =
                 ensure_apply_record_current_by_id_with(&state, "web-demo", |record| {
+                    fs::write(&snapshot, b"snapshot").expect("snapshot");
+                    record.last_snapshot_path = Some(snapshot.display().to_string());
+                    crate::services::static_snapshot_generation_service::StaticSnapshotGenerationOutcome::Generated {
+                        snapshot_path: snapshot.clone(),
+                    }
+                })
+                .expect("apply record");
+
+            assert_eq!(
+                record.last_snapshot_path.as_deref(),
+                Some(snapshot.to_str().expect("snapshot path"))
+            );
+            let saved = fs::read_to_string(
+                temp.path()
+                    .join("Library/Application Support/WallpaperWorkbench/library.json"),
+            )
+            .expect("saved library");
+            assert!(saved.contains(snapshot.to_str().expect("snapshot path")));
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        result
+    }
+
+    #[test]
+    fn apply_time_record_resolution_generates_missing_scene_snapshot() {
+        let _lock = HOME_ENV_LOCK.lock().expect("home lock");
+        let temp = tempdir().expect("temp dir");
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path());
+
+        let result = (|| {
+            let managed_root = temp.path().join("managed-scene");
+            let source_root = managed_root.join("source");
+            fs::create_dir_all(&source_root).expect("source dir");
+            fs::write(
+                source_root.join("project.json"),
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "title": "Scene Demo",
+                    "type": "scene",
+                    "file": "scene.json"
+                }))
+                .expect("project json"),
+            )
+            .expect("project");
+            fs::write(
+                source_root.join("scene.json"),
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "general": { "orthogonalprojection": { "width": 200, "height": 120 } },
+                    "objects": []
+                }))
+                .expect("scene json"),
+            )
+            .expect("scene");
+            let snapshot = managed_root.join("snapshot.png");
+
+            let state = app_state(DynamicPlayerState::default());
+            {
+                let mut library = state.library.lock().expect("library lock");
+                library
+                    .wallpapers
+                    .push(scene_record(managed_root.to_str().expect("managed root")));
+            }
+
+            let record =
+                ensure_apply_record_current_by_id_with(&state, "scene-demo", |record| {
                     fs::write(&snapshot, b"snapshot").expect("snapshot");
                     record.last_snapshot_path = Some(snapshot.display().to_string());
                     crate::services::static_snapshot_generation_service::StaticSnapshotGenerationOutcome::Generated {

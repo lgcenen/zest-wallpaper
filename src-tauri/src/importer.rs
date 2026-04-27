@@ -1018,6 +1018,7 @@ mod tests {
         models::{PropertyPresentation, PropertySectionItemKind, WallpaperRecord, WallpaperType},
         services::static_snapshot_generation_service::{
             ensure_static_snapshot_for_record_with,
+            ensure_static_snapshot_for_record_with_all_renderers,
             ensure_static_snapshot_for_record_with_renderers,
             regenerate_static_snapshot_for_record_with,
             regenerate_static_snapshot_for_record_with_renderers, STATIC_SNAPSHOT_FILE_NAME,
@@ -1482,6 +1483,88 @@ mod tests {
     }
 
     #[test]
+    fn scene_import_generates_and_registers_static_snapshot() {
+        let _lock = crate::store::HOME_ENV_LOCK.lock().unwrap();
+        let temp = tempdir().expect("temp dir");
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path().join("home"));
+        let source = temp.path().join("scene-source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(source.join("preview.png"), b"preview").expect("preview");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Import Snapshot Scene",
+                "type": "scene",
+                "file": "scene.json",
+                "preview": "preview.png"
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+        fs::write(
+            source.join("scene.json"),
+            serde_json::to_string_pretty(&json!({
+                "general": {
+                    "orthogonalprojection": { "width": 200, "height": 120 },
+                    "clearcolor": "0 0 0 1"
+                },
+                "objects": [
+                    {
+                        "id": 1,
+                        "name": "Static Label",
+                        "text": "Hello",
+                        "visible": true,
+                        "origin": "100 60 0",
+                        "size": "120 40",
+                        "pointsize": 24,
+                        "color": "1 1 1",
+                        "horizontalalign": "center",
+                        "verticalalign": "center"
+                    }
+                ]
+            }))
+            .expect("scene json"),
+        )
+        .expect("write scene json");
+
+        let result = (|| {
+            import_wallpaper_path_inner(&source, |record| {
+                ensure_static_snapshot_for_record_with_all_renderers(
+                    record,
+                    |_source_path, _output| {
+                        panic!("scene import must not invoke video snapshot generation")
+                    },
+                    |_entry_path, _output| {
+                        panic!("scene import must not invoke web snapshot generation")
+                    },
+                    |_scene_record, output| {
+                        fs::write(output, b"scene-snapshot").map_err(|error| error.to_string())
+                    },
+                )
+            })
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        let record = result.expect("imported record");
+        assert_eq!(record.wallpaper_type, WallpaperType::Scene);
+        let snapshot_path = record
+            .last_snapshot_path
+            .as_deref()
+            .expect("snapshot registered");
+        assert!(snapshot_path.ends_with(STATIC_SNAPSHOT_FILE_NAME));
+        assert_ne!(record.preview_path.as_deref(), Some(snapshot_path));
+        assert_eq!(
+            fs::read(snapshot_path).expect("snapshot"),
+            b"scene-snapshot"
+        );
+    }
+
+    #[test]
     fn refresh_record_metadata_preserves_existing_valid_video_snapshot() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -1619,6 +1702,83 @@ mod tests {
             .as_deref()
             .expect("snapshot registered");
         assert_eq!(fs::read(snapshot_path).expect("snapshot"), b"web-generated");
+    }
+
+    #[test]
+    fn refresh_record_metadata_generates_missing_scene_snapshot() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Missing Snapshot Scene",
+                "type": "scene",
+                "file": "scene.json"
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+        fs::write(
+            source.join("scene.json"),
+            serde_json::to_string_pretty(&json!({
+                "general": {
+                    "orthogonalprojection": { "width": 200, "height": 120 },
+                    "clearcolor": "0 0 0 1"
+                },
+                "objects": [
+                    {
+                        "id": 1,
+                        "name": "Static Label",
+                        "text": "Hello",
+                        "visible": true,
+                        "origin": "100 60 0",
+                        "size": "120 40",
+                        "pointsize": 24,
+                        "color": "1 1 1"
+                    }
+                ]
+            }))
+            .expect("scene json"),
+        )
+        .expect("write scene json");
+        let project = detect_project(&source).expect("project");
+        let mut record = record_from_project(
+            "missing-snapshot-scene",
+            managed.display().to_string(),
+            project,
+        );
+        let invoked = Cell::new(false);
+
+        let changed = refresh_record_metadata_inner(&mut record, |record, refresh_existing| {
+            assert!(!refresh_existing);
+            invoked.set(true);
+            ensure_static_snapshot_for_record_with_all_renderers(
+                record,
+                |_source_path, _output| {
+                    panic!("scene refresh must not invoke video snapshot generation")
+                },
+                |_entry_path, _output| {
+                    panic!("scene refresh must not invoke web snapshot generation")
+                },
+                |_scene_record, output| {
+                    fs::write(output, b"scene-generated").map_err(|error| error.to_string())
+                },
+            )
+        })
+        .expect("refresh");
+
+        assert!(changed);
+        assert!(invoked.get());
+        let snapshot_path = record
+            .last_snapshot_path
+            .as_deref()
+            .expect("snapshot registered");
+        assert_eq!(
+            fs::read(snapshot_path).expect("snapshot"),
+            b"scene-generated"
+        );
     }
 
     #[test]
