@@ -33,9 +33,10 @@ uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
 dispatch2 = "0.3.1"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["NSAttributedString", "NSBitmapImageRep", "NSColor", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphicsContext", "NSImageRep", "NSParagraphStyle", "NSRunningApplication", "NSScreen", "NSShadow", "NSStringDrawing", "NSText", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation", "objc2-core-graphics"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSAttributedString", "NSBitmapImageRep", "NSColor", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphicsContext", "NSImage", "NSImageRep", "NSParagraphStyle", "NSRunningApplication", "NSScreen", "NSShadow", "NSStringDrawing", "NSText", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation", "objc2-core-graphics"] }
 objc2-avf-audio = { version = "0.3.2", features = ["AVAudioPlayer"] }
 objc2-av-foundation = { version = "0.3.2", features = ["AVAnimation", "AVAsset", "AVAssetImageGenerator", "AVAudioPlayer", "AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVPlayerLooper", "objc2-core-graphics", "objc2-core-media", "objc2-core-video"] }
 objc2-av-kit = { version = "0.3.2", default-features = false, features = ["AVPlayerView", "objc2-app-kit", "objc2-av-foundation"] }
@@ -44,9 +45,9 @@ objc2-core-graphics = { version = "0.3.2", features = ["CGBitmapContext", "CGCol
 objc2-core-text = { version = "0.3.2", features = ["CTFontDescriptor", "CTFontManager"] }
 objc2-core-media = { version = "0.3.2", features = ["CMTime"] }
 objc2-core-video = { version = "0.3.2", features = ["CVBase", "CVBuffer", "CVImageBuffer", "CVMetalTexture", "CVMetalTextureCache", "CVPixelBuffer", "CVReturn", "objc2", "objc2-metal"] }
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSDistributedNotificationCenter", "NSError", "NSAttributedString", "NSGeometry", "NSNotification", "NSString", "NSURL", "NSURLRequest", "NSValue", "std"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDate", "NSDictionary", "NSDistributedNotificationCenter", "NSError", "NSAttributedString", "NSGeometry", "NSNotification", "NSRunLoop", "NSString", "NSURL", "NSURLRequest", "NSValue", "std"] }
 objc2-metal = { version = "0.3.2", default-features = false, features = ["MTLAllocation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLTexture", "MTLTypes"] }
 objc2-metal-kit = { version = "0.3.2", default-features = false, features = ["MTKView", "objc2-app-kit", "objc2-core-foundation", "objc2-quartz-core"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CABase", "CALayer", "CAMetalLayer", "objc2-core-foundation", "objc2-metal"] }
-objc2-web-kit = { version = "0.3.2", features = ["WKNavigation", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "block2", "objc2-app-kit"] }
+objc2-web-kit = { version = "0.3.2", features = ["WKNavigation", "WKNavigationDelegate", "WKScriptMessage", "WKScriptMessageHandler", "WKSnapshotConfiguration", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "block2", "objc2-app-kit"] }
 screencapturekit = { version = "1.5.4", features = ["macos_13_0"] }

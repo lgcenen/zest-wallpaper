@@ -4505,6 +4505,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bcndecode",
+ "block2",
  "chrono",
  "dispatch2",
  "glam",

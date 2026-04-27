@@ -11,14 +11,14 @@ use crate::{
     models::{
         EvaluatedSceneCamera, EvaluatedSceneObject, PlayerRuntimeState, SceneParallax,
         SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer, WallpaperRecord, WallpaperRuntime,
-        WallpaperRuntimeRecord,
+        WallpaperRuntimeRecord, WallpaperType,
     },
     services::{
         audio_input_service, lifecycle_service, native_video_service, native_web_service,
         scene_manifest_service, scene_native_renderer_service, scene_support_service,
-        static_snapshot_service, window_service,
+        static_snapshot_generation_service, static_snapshot_service, window_service,
     },
-    store::{find_record, save_player_state, AppState, DynamicPlayerState},
+    store::{find_record, save_library, save_player_state, AppState, DynamicPlayerState},
 };
 
 use super::runtime_document_service;
@@ -81,7 +81,7 @@ pub fn apply_dynamic_wallpaper(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<WallpaperRuntimeRecord, String> {
-    let record = scene_manifest_service::ensure_scene_manifest_current_by_id(state, id)?;
+    let record = ensure_apply_record_current_by_id(state, id)?;
     let runtime_record = runtime_document_service::runtime_record(&record);
     preflight_scene_apply(app, &record, &runtime_record)?;
     let previous_player = state
@@ -151,9 +151,10 @@ fn prepare_static_snapshot_sync_before_runtime(
 }
 
 pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), String> {
-    let Some((record, effective_paused)) = active_record_snapshot(state)? else {
+    let Some((active_id, effective_paused)) = active_player_selection(state)? else {
         return Ok(());
     };
+    let record = ensure_apply_record_current_by_id(state, &active_id)?;
     let runtime_record = runtime_document_service::runtime_record(&record);
     preflight_scene_apply(app, &record, &runtime_record)?;
 
@@ -164,6 +165,90 @@ pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), S
         start_scene_update_loop(app.clone(), state);
     }
     Ok(())
+}
+
+fn ensure_apply_record_current_by_id(
+    state: &AppState,
+    id: &str,
+) -> Result<WallpaperRecord, String> {
+    ensure_apply_record_current_by_id_with(
+        state,
+        id,
+        static_snapshot_generation_service::ensure_static_snapshot_for_record,
+    )
+}
+
+fn ensure_apply_record_current_by_id_with<EnsureStaticSnapshot>(
+    state: &AppState,
+    id: &str,
+    mut ensure_static_snapshot: EnsureStaticSnapshot,
+) -> Result<WallpaperRecord, String>
+where
+    EnsureStaticSnapshot:
+        FnMut(
+            &mut WallpaperRecord,
+        ) -> static_snapshot_generation_service::StaticSnapshotGenerationOutcome,
+{
+    let (mut snapshot_candidate, needs_snapshot_generation) = {
+        let mut store = state.library.lock().map_err(|error| error.to_string())?;
+        let record = store
+            .wallpapers
+            .iter_mut()
+            .find(|record| record.id == id)
+            .ok_or_else(|| format!("Wallpaper {id} was not found"))?;
+
+        let scene_changed = scene_manifest_service::refresh_scene_manifest_for_record(record)?;
+        let needs_snapshot_generation = supports_apply_time_static_snapshot_generation(record)
+            && static_snapshot_service::snapshot_for_record(record).is_err();
+        let snapshot_candidate = record.clone();
+        if scene_changed {
+            save_library(&store).map_err(|error| error.to_string())?;
+        }
+        (snapshot_candidate, needs_snapshot_generation)
+    };
+
+    if needs_snapshot_generation {
+        let _ = ensure_static_snapshot(&mut snapshot_candidate);
+    }
+
+    let mut store = state.library.lock().map_err(|error| error.to_string())?;
+    let record = store
+        .wallpapers
+        .iter_mut()
+        .find(|record| record.id == id)
+        .ok_or_else(|| format!("Wallpaper {id} was not found"))?;
+
+    let previous_snapshot_path = record.last_snapshot_path.clone();
+    if needs_snapshot_generation
+        && snapshot_generation_inputs_match(record, &snapshot_candidate)
+        && static_snapshot_service::snapshot_for_record(&snapshot_candidate).is_ok()
+    {
+        record.last_snapshot_path = snapshot_candidate.last_snapshot_path.clone();
+    }
+
+    let snapshot_changed = record.last_snapshot_path != previous_snapshot_path;
+    let cloned = record.clone();
+    if snapshot_changed {
+        save_library(&store).map_err(|error| error.to_string())?;
+    }
+    Ok(cloned)
+}
+
+fn supports_apply_time_static_snapshot_generation(record: &WallpaperRecord) -> bool {
+    matches!(
+        record.wallpaper_type,
+        WallpaperType::Video | WallpaperType::Web
+    )
+}
+
+fn snapshot_generation_inputs_match(
+    current: &WallpaperRecord,
+    candidate: &WallpaperRecord,
+) -> bool {
+    current.id == candidate.id
+        && current.wallpaper_type == candidate.wallpaper_type
+        && current.managed_path == candidate.managed_path
+        && current.entry_path == candidate.entry_path
 }
 
 pub(crate) fn clear_player_session_state(state: &AppState) -> Result<DynamicPlayerState, String> {
@@ -447,11 +532,7 @@ fn active_runtime_snapshot(
 }
 
 fn active_record_snapshot(state: &AppState) -> Result<Option<(WallpaperRecord, bool)>, String> {
-    let (active_id, effective_paused) = {
-        let player = state.player.lock().map_err(|error| error.to_string())?;
-        (player.active_id.clone(), player.effective_paused())
-    };
-    let Some(active_id) = active_id else {
+    let Some((active_id, effective_paused)) = active_player_selection(state)? else {
         return Ok(None);
     };
 
@@ -466,6 +547,14 @@ fn active_record_snapshot(state: &AppState) -> Result<Option<(WallpaperRecord, b
         };
 
     Ok(Some((record, effective_paused)))
+}
+
+fn active_player_selection(state: &AppState) -> Result<Option<(String, bool)>, String> {
+    let player = state.player.lock().map_err(|error| error.to_string())?;
+    Ok(player
+        .active_id
+        .clone()
+        .map(|active_id| (active_id, player.effective_paused())))
 }
 
 fn apply_runtime_record_transaction<
@@ -931,11 +1020,11 @@ mod tests {
 
     use super::{
         apply_pause_change, apply_runtime_record_transaction, build_apply_wallpaper_candidate,
-        clear_player_session_state, native_host_sync_disposition, push_critical_sync_error,
-        scene_requires_periodic_updates, scene_signature, scene_update_cadence,
-        scene_update_sync_is_current, should_emit_scene_update, should_start_scene_update_loop,
-        validate_scene_apply_preflight, NativeHostKind, NativeHostSyncDisposition,
-        SceneUpdateCadence,
+        clear_player_session_state, ensure_apply_record_current_by_id_with,
+        native_host_sync_disposition, push_critical_sync_error, scene_requires_periodic_updates,
+        scene_signature, scene_update_cadence, scene_update_sync_is_current,
+        should_emit_scene_update, should_start_scene_update_loop, validate_scene_apply_preflight,
+        NativeHostKind, NativeHostSyncDisposition, SceneUpdateCadence,
     };
 
     fn runtime_record(
@@ -983,6 +1072,27 @@ mod tests {
             property_sections: vec![],
             scene_cache: None,
             scene_manifest: Some(SceneManifest::default()),
+            scene_manifest_version: None,
+            scene_manifest_dirty: false,
+            imported_at: Utc::now(),
+            tags: vec![],
+        }
+    }
+
+    fn web_record(id: &str, managed_root: &str, entry_path: String) -> WallpaperRecord {
+        WallpaperRecord {
+            id: id.to_string(),
+            title: "Web Demo".to_string(),
+            wallpaper_type: WallpaperType::Web,
+            source_path: managed_root.to_string(),
+            managed_path: managed_root.to_string(),
+            preview_path: Some(format!("{managed_root}/preview.png")),
+            entry_path: Some(entry_path),
+            last_snapshot_path: None,
+            property_schema: vec![],
+            property_sections: vec![],
+            scene_cache: None,
+            scene_manifest: None,
             scene_manifest_version: None,
             scene_manifest_dirty: false,
             imported_at: Utc::now(),
@@ -1208,6 +1318,61 @@ mod tests {
         assert!(scene_requires_periodic_updates(clock_runtime));
         assert!(!should_start_scene_update_loop(&static_scene));
         assert!(should_start_scene_update_loop(&clock_scene));
+    }
+
+    #[test]
+    fn apply_time_record_resolution_generates_missing_web_snapshot() {
+        let _lock = HOME_ENV_LOCK.lock().expect("home lock");
+        let temp = tempdir().expect("temp dir");
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path());
+
+        let result = (|| {
+            let managed_root = temp.path().join("managed-web");
+            let source_root = managed_root.join("source");
+            fs::create_dir_all(&source_root).expect("source dir");
+            let entry = source_root.join("index.html");
+            fs::write(&entry, "<html><body>Web</body></html>").expect("entry");
+            let snapshot = managed_root.join("snapshot.png");
+
+            let state = app_state(DynamicPlayerState::default());
+            {
+                let mut library = state.library.lock().expect("library lock");
+                library.wallpapers.push(web_record(
+                    "web-demo",
+                    managed_root.to_str().expect("managed root"),
+                    entry.display().to_string(),
+                ));
+            }
+
+            let record =
+                ensure_apply_record_current_by_id_with(&state, "web-demo", |record| {
+                    fs::write(&snapshot, b"snapshot").expect("snapshot");
+                    record.last_snapshot_path = Some(snapshot.display().to_string());
+                    crate::services::static_snapshot_generation_service::StaticSnapshotGenerationOutcome::Generated {
+                        snapshot_path: snapshot.clone(),
+                    }
+                })
+                .expect("apply record");
+
+            assert_eq!(
+                record.last_snapshot_path.as_deref(),
+                Some(snapshot.to_str().expect("snapshot path"))
+            );
+            let saved = fs::read_to_string(
+                temp.path()
+                    .join("Library/Application Support/WallpaperWorkbench/library.json"),
+            )
+            .expect("saved library");
+            assert!(saved.contains(snapshot.to_str().expect("snapshot path")));
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        result
     }
 
     #[test]

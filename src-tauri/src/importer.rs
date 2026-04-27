@@ -1017,8 +1017,10 @@ mod tests {
     use crate::{
         models::{PropertyPresentation, PropertySectionItemKind, WallpaperRecord, WallpaperType},
         services::static_snapshot_generation_service::{
-            ensure_static_snapshot_for_record_with, regenerate_static_snapshot_for_record_with,
-            STATIC_SNAPSHOT_FILE_NAME,
+            ensure_static_snapshot_for_record_with,
+            ensure_static_snapshot_for_record_with_renderers,
+            regenerate_static_snapshot_for_record_with,
+            regenerate_static_snapshot_for_record_with_renderers, STATIC_SNAPSHOT_FILE_NAME,
         },
     };
     use serde_json::json;
@@ -1428,6 +1430,58 @@ mod tests {
     }
 
     #[test]
+    fn web_import_generates_and_registers_static_snapshot() {
+        let _lock = crate::store::HOME_ENV_LOCK.lock().unwrap();
+        let temp = tempdir().expect("temp dir");
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path().join("home"));
+        let source = temp.path().join("web-source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(source.join("index.html"), "<html><body>web</body></html>").expect("web entry");
+        fs::write(source.join("preview.png"), b"preview").expect("preview");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Import Snapshot Web",
+                "type": "web",
+                "file": "index.html",
+                "preview": "preview.png"
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+
+        let result = (|| {
+            import_wallpaper_path_inner(&source, |record| {
+                ensure_static_snapshot_for_record_with_renderers(
+                    record,
+                    |_source_path, _output| {
+                        panic!("web import must not invoke video snapshot generation")
+                    },
+                    |_entry_path, output| {
+                        fs::write(output, b"web-snapshot").map_err(|error| error.to_string())
+                    },
+                )
+            })
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        let record = result.expect("imported record");
+        assert_eq!(record.wallpaper_type, WallpaperType::Web);
+        let snapshot_path = record
+            .last_snapshot_path
+            .as_deref()
+            .expect("snapshot registered");
+        assert!(snapshot_path.ends_with(STATIC_SNAPSHOT_FILE_NAME));
+        assert_ne!(record.preview_path.as_deref(), Some(snapshot_path));
+        assert_eq!(fs::read(snapshot_path).expect("snapshot"), b"web-snapshot");
+    }
+
+    #[test]
     fn refresh_record_metadata_preserves_existing_valid_video_snapshot() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -1519,6 +1573,55 @@ mod tests {
     }
 
     #[test]
+    fn refresh_record_metadata_generates_missing_web_snapshot() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(source.join("index.html"), "<html><body>web</body></html>").expect("web entry");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Missing Snapshot Web",
+                "type": "web",
+                "file": "index.html"
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+        let project = detect_project(&source).expect("project");
+        let mut record = record_from_project(
+            "missing-snapshot-web",
+            managed.display().to_string(),
+            project,
+        );
+        let invoked = Cell::new(false);
+
+        let changed = refresh_record_metadata_inner(&mut record, |record, refresh_existing| {
+            assert!(!refresh_existing);
+            invoked.set(true);
+            ensure_static_snapshot_for_record_with_renderers(
+                record,
+                |_source_path, _output| {
+                    panic!("web refresh must not invoke video snapshot generation")
+                },
+                |_entry_path, output| {
+                    fs::write(output, b"web-generated").map_err(|error| error.to_string())
+                },
+            )
+        })
+        .expect("refresh");
+
+        assert!(changed);
+        assert!(invoked.get());
+        let snapshot_path = record
+            .last_snapshot_path
+            .as_deref()
+            .expect("snapshot registered");
+        assert_eq!(fs::read(snapshot_path).expect("snapshot"), b"web-generated");
+    }
+
+    #[test]
     fn refresh_record_metadata_clears_stale_snapshot_when_video_entry_changes_and_generation_fails()
     {
         let temp = tempdir().expect("temp dir");
@@ -1558,6 +1661,52 @@ mod tests {
             .entry_path
             .as_deref()
             .is_some_and(|entry| entry.ends_with("clip-b.mp4")));
+        assert!(record.last_snapshot_path.is_none());
+    }
+
+    #[test]
+    fn refresh_record_metadata_clears_stale_snapshot_when_web_entry_changes_and_generation_fails() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(source.join("index-a.html"), "<html>A</html>").expect("web a");
+        fs::write(source.join("index-b.html"), "<html>B</html>").expect("web b");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Changed Entry Web",
+                "type": "web",
+                "file": "index-b.html"
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+        let project = detect_project(&source).expect("project");
+        let stale_snapshot = managed.join(STATIC_SNAPSHOT_FILE_NAME);
+        fs::write(&stale_snapshot, b"stale").expect("stale snapshot");
+        let mut record =
+            record_from_project("changed-web-entry", managed.display().to_string(), project);
+        record.entry_path = Some(source.join("index-a.html").display().to_string());
+        record.last_snapshot_path = Some(stale_snapshot.display().to_string());
+
+        let changed = refresh_record_metadata_inner(&mut record, |record, refresh_existing| {
+            assert!(refresh_existing);
+            regenerate_static_snapshot_for_record_with_renderers(
+                record,
+                |_source_path, _output| {
+                    panic!("web refresh must not invoke video snapshot generation")
+                },
+                |_entry_path, _output| Err("simulated web generator failure".to_string()),
+            )
+        })
+        .expect("refresh");
+
+        assert!(changed);
+        assert!(record
+            .entry_path
+            .as_deref()
+            .is_some_and(|entry| entry.ends_with("index-b.html")));
         assert!(record.last_snapshot_path.is_none());
     }
 
