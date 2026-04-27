@@ -1,23 +1,18 @@
-use std::{
-    path::{Path, PathBuf},
-    thread,
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::{
     models::WallpaperRecord,
     services::{diagnostic_service, window_service},
-    store::{find_record, AppState, StaticSnapshotSyncState},
+    store::{AppState, StaticSnapshotSyncState},
 };
 
 pub const DIAGNOSTIC_SUBSYSTEM: &str = "static-snapshot-sync";
 const SNAPSHOT_UNAVAILABLE_CODE: &str = "snapshot-unavailable";
 const APPLY_FAILED_CODE: &str = "apply-failed";
 const MENU_BAR_REFRESH_DEGRADED_CODE: &str = "menu-bar-refresh-degraded";
-const DELAYED_DESKTOP_REFRESH_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaticSnapshotResolutionIssue {
@@ -98,15 +93,6 @@ pub fn sync_after_active_wallpaper_change(
     state: &AppState,
     record: &WallpaperRecord,
 ) -> Result<StaticSnapshotSyncOutcome, String> {
-    sync_after_active_wallpaper_change_inner(app, state, record, true)
-}
-
-fn sync_after_active_wallpaper_change_inner(
-    app: &AppHandle,
-    state: &AppState,
-    record: &WallpaperRecord,
-    schedule_delayed_reapply: bool,
-) -> Result<StaticSnapshotSyncOutcome, String> {
     let active_record_id = state
         .player
         .lock()
@@ -127,9 +113,6 @@ fn sync_after_active_wallpaper_change_inner(
     };
     publish_static_snapshot_diagnostic(app, &outcome)?;
     sync_player_window_snapshot_background(app, &outcome)?;
-    if schedule_delayed_reapply {
-        schedule_delayed_active_snapshot_resync(app, &outcome);
-    }
     Ok(outcome)
 }
 
@@ -417,37 +400,6 @@ fn sync_player_window_snapshot_background(
     Ok(())
 }
 
-fn schedule_delayed_active_snapshot_resync(app: &AppHandle, outcome: &StaticSnapshotSyncOutcome) {
-    let Some(record_id) = delayed_resync_record_id(outcome).map(ToString::to_string) else {
-        return;
-    };
-    let app = app.clone();
-    thread::spawn(move || {
-        thread::sleep(DELAYED_DESKTOP_REFRESH_DELAY);
-        let state = app.state::<AppState>();
-        let record = {
-            let Ok(store) = state.library.lock() else {
-                return;
-            };
-            find_record(&store, &record_id)
-        };
-        let Some(record) = record else {
-            return;
-        };
-        let _ = sync_after_active_wallpaper_change_inner(&app, &state, &record, false);
-    });
-}
-
-fn delayed_resync_record_id(outcome: &StaticSnapshotSyncOutcome) -> Option<&str> {
-    match outcome {
-        StaticSnapshotSyncOutcome::Applied { record_id, .. } => Some(record_id.as_str()),
-        StaticSnapshotSyncOutcome::MissingSnapshot { .. }
-        | StaticSnapshotSyncOutcome::ApplyFailed { .. }
-        | StaticSnapshotSyncOutcome::InactiveRecord { .. }
-        | StaticSnapshotSyncOutcome::Cleared { .. } => None,
-    }
-}
-
 fn apply_system_wallpaper(snapshot_path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -623,10 +575,10 @@ mod tests {
     use crate::store::StaticSnapshotSyncState;
 
     use super::{
-        clear_active_snapshot_sync_state, delayed_resync_record_id, plan_active_snapshot_sync,
+        clear_active_snapshot_sync_state, plan_active_snapshot_sync,
         sampled_snapshot_top_band_color, snapshot_for_record, sync_active_snapshot_transaction,
-        StaticSnapshotResolutionError, StaticSnapshotResolutionIssue, StaticSnapshotSyncOutcome,
-        StaticSnapshotSyncPlan, APPLY_FAILED_CODE, SNAPSHOT_UNAVAILABLE_CODE,
+        StaticSnapshotResolutionIssue, StaticSnapshotSyncOutcome, StaticSnapshotSyncPlan,
+        APPLY_FAILED_CODE, SNAPSHOT_UNAVAILABLE_CODE,
     };
 
     fn record_with_paths(
@@ -912,30 +864,6 @@ mod tests {
         assert!(red > 0.99);
         assert!(green < 0.01);
         assert!(blue < 0.01);
-    }
-
-    #[test]
-    fn delayed_resync_is_only_scheduled_after_successful_apply() {
-        let applied = StaticSnapshotSyncOutcome::Applied {
-            record_id: "active-demo".to_string(),
-            snapshot_path: PathBuf::from("/tmp/snapshot.png"),
-            generation: 9,
-        };
-        let missing = StaticSnapshotSyncOutcome::MissingSnapshot {
-            error: StaticSnapshotResolutionError {
-                record_id: "active-demo".to_string(),
-                issue: StaticSnapshotResolutionIssue::SnapshotNotRecorded,
-                snapshot_path: None,
-            },
-            generation: 10,
-        };
-
-        assert_eq!(delayed_resync_record_id(&applied), Some("active-demo"));
-        assert_eq!(delayed_resync_record_id(&missing), None);
-        assert_eq!(
-            delayed_resync_record_id(&StaticSnapshotSyncOutcome::Cleared { generation: 11 }),
-            None
-        );
     }
 
     #[test]
