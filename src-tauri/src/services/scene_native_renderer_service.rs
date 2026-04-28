@@ -393,10 +393,6 @@ fn plan_native_scene_renderer_runtime(
         .map(|spec| spec.window_labels.iter().cloned().collect::<BTreeSet<_>>())
         .unwrap_or_default();
 
-    let remove_labels = current_labels
-        .difference(&desired_labels)
-        .cloned()
-        .collect::<Vec<_>>();
     let ensure_labels = desired_labels.iter().cloned().collect::<Vec<_>>();
 
     let session = match (current.spec.as_ref(), desired) {
@@ -410,6 +406,13 @@ fn plan_native_scene_renderer_runtime(
             SceneSessionPlan::UpdateScene { spec: spec.clone() }
         }
         (Some(_), Some(_)) => SceneSessionPlan::Keep,
+    };
+    let remove_labels = match session {
+        SceneSessionPlan::Replace { .. } => current_labels.iter().cloned().collect::<Vec<_>>(),
+        _ => current_labels
+            .difference(&desired_labels)
+            .cloned()
+            .collect::<Vec<_>>(),
     };
 
     NativeSceneRendererPlan {
@@ -5825,6 +5828,8 @@ mod tests {
             plan.session,
             SceneSessionPlan::Replace { ref spec } if spec.wallpaper_id == "scene-b"
         ));
+        assert_eq!(plan.remove_labels, vec!["player".to_string()]);
+        assert_eq!(plan.ensure_labels, vec!["player".to_string()]);
     }
 
     #[test]
@@ -5840,6 +5845,7 @@ mod tests {
         );
 
         assert!(matches!(plan.session, SceneSessionPlan::UpdateScene { .. }));
+        assert!(plan.remove_labels.is_empty());
     }
 
     #[test]
