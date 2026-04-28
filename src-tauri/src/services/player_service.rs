@@ -15,8 +15,9 @@ use crate::{
     },
     services::{
         audio_input_service, lifecycle_service, native_video_service, native_web_service,
-        scene_manifest_service, scene_native_renderer_service, scene_support_service,
-        static_snapshot_generation_service, static_snapshot_service, window_service,
+        scene_manifest_service, scene_native_renderer_service, scene_now_playing_provider_service,
+        scene_support_service, static_snapshot_generation_service, static_snapshot_service,
+        window_service,
     },
     store::{find_record, save_library, save_player_state, AppState, DynamicPlayerState},
 };
@@ -800,11 +801,24 @@ fn scene_requires_periodic_updates(scene: &SceneRuntimeDocument) -> bool {
 }
 
 fn scene_update_cadence(scene: &SceneRuntimeDocument) -> Option<SceneUpdateCadence> {
-    scene
+    let text_cadence = scene
         .source
         .text_layers
         .iter()
         .filter_map(text_layer_update_cadence)
+        .min_by_key(|cadence| cadence.interval_millis());
+    let now_playing_cadence =
+        scene_now_playing_provider_service::uses_now_playing_provider(&scene.source).then(|| {
+            SceneUpdateCadence::CustomMillis(
+                scene_now_playing_provider_service::provider_refresh_interval_millis(
+                    &scene.now_playing,
+                ),
+            )
+        });
+
+    [text_cadence, now_playing_cadence]
+        .into_iter()
+        .flatten()
         .min_by_key(|cadence| cadence.interval_millis())
 }
 
@@ -880,13 +894,12 @@ fn text_layer_update_cadence(layer: &SceneTextLayer) -> Option<SceneUpdateCadenc
         SceneTextBehavior::Clock if layer.show_seconds == Some(true) => {
             Some(SceneUpdateCadence::Second)
         }
-        SceneTextBehavior::MediaTitle => Some(SceneUpdateCadence::TwoSeconds),
         SceneTextBehavior::Script => scripted_text_update_cadence(layer.script_text.as_deref()),
         SceneTextBehavior::Clock
         | SceneTextBehavior::Date
         | SceneTextBehavior::Weekday
         | SceneTextBehavior::DayPeriod => Some(SceneUpdateCadence::Minute),
-        SceneTextBehavior::Fps | SceneTextBehavior::Static => None,
+        SceneTextBehavior::MediaTitle | SceneTextBehavior::Fps | SceneTextBehavior::Static => None,
     }
 }
 
@@ -1015,6 +1028,7 @@ mod tests {
             SceneRuntimeSettings, SceneTextBehavior, SceneTextLayer, WallpaperRecord,
             WallpaperRuntime, WallpaperRuntimeRecord, WallpaperType,
         },
+        services::scene_now_playing_provider_service,
         store::{AppState, DynamicPlayerState, HOME_ENV_LOCK},
     };
 
@@ -1143,6 +1157,7 @@ mod tests {
                     scaled_padding: 0.0,
                     world_scale: [1.0, 1.0, 1.0],
                 },
+                dynamic_input_generation: None,
             },
         }
     }
@@ -1231,6 +1246,7 @@ mod tests {
                 render_list: vec![7],
                 evaluated_at,
             },
+            now_playing: Default::default(),
         }
     }
 
@@ -1473,7 +1489,9 @@ mod tests {
         );
         assert_eq!(
             scene_update_cadence(&media_runtime),
-            Some(SceneUpdateCadence::TwoSeconds)
+            Some(SceneUpdateCadence::CustomMillis(
+                scene_now_playing_provider_service::DEFAULT_NOW_PLAYING_REFRESH_INTERVAL_MILLIS
+            ))
         );
         assert_eq!(
             scene_update_cadence(&minute_runtime),

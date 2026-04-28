@@ -1,7 +1,8 @@
 use crate::{
     models::{
-        PlayerRuntimeState, SceneManifest, VideoRuntimeDocument, WallpaperRecord, WallpaperRuntime,
-        WallpaperRuntimeRecord, WallpaperType, WebRuntimeDocument,
+        PlayerRuntimeState, SceneManifest, SceneNowPlayingSnapshot, VideoRuntimeDocument,
+        WallpaperRecord, WallpaperRuntime, WallpaperRuntimeRecord, WallpaperType,
+        WebRuntimeDocument,
     },
     store::{find_record, AppState, DynamicPlayerState},
 };
@@ -13,7 +14,8 @@ use std::{
 };
 
 use super::{
-    asset_resolver::AssetResolver, scene_cache_service, scene_evaluator_service, system_service,
+    asset_resolver::AssetResolver, scene_cache_service, scene_evaluator_service,
+    scene_now_playing_provider_service,
 };
 
 fn scene_manifest_runtime_cache() -> &'static Mutex<BTreeMap<String, SceneManifest>> {
@@ -65,17 +67,13 @@ fn clear_scene_manifest_runtime_cache() {
 }
 
 pub fn runtime_record(record: &WallpaperRecord) -> WallpaperRuntimeRecord {
-    runtime_record_with_context(
-        record,
-        Utc::now(),
-        system_service::get_media_metadata().as_ref(),
-    )
+    runtime_record_with_context(record, Utc::now(), None)
 }
 
 pub fn runtime_record_with_context(
     record: &WallpaperRecord,
     now: chrono::DateTime<Utc>,
-    media: Option<&system_service::MediaMetadata>,
+    now_playing: Option<&SceneNowPlayingSnapshot>,
 ) -> WallpaperRuntimeRecord {
     let runtime_owner_key = scene_runtime_owner_key(record);
     let resolver = AssetResolver::for_record(record);
@@ -88,17 +86,23 @@ pub fn runtime_record_with_context(
         .clone()
         .or_else(|| resolver.resolve_entry_path(None, wallpaper_type_name(&record.wallpaper_type)));
     let runtime = match record.wallpaper_type {
-        WallpaperType::Scene => WallpaperRuntime::Scene {
-            scene: scene_evaluator_service::evaluate_scene_runtime_document_with_runtime_key(
-                Some(runtime_owner_key.as_str()),
-                cached_scene_manifest(record),
-                &scene_evaluator_service::property_values_from_schema(&record.property_schema),
-                &scene_evaluator_service::property_values_from_schema(&record.property_schema),
-                &scene_evaluator_service::property_definitions_from_schema(&record.property_schema),
-                media,
-                now,
-            ),
-        },
+        WallpaperType::Scene => {
+            let manifest = cached_scene_manifest(record);
+            let now_playing_snapshot = scene_now_playing_snapshot(&manifest, now_playing);
+            WallpaperRuntime::Scene {
+                scene: scene_evaluator_service::evaluate_scene_runtime_document_with_runtime_key(
+                    Some(runtime_owner_key.as_str()),
+                    manifest,
+                    &scene_evaluator_service::property_values_from_schema(&record.property_schema),
+                    &scene_evaluator_service::property_values_from_schema(&record.property_schema),
+                    &scene_evaluator_service::property_definitions_from_schema(
+                        &record.property_schema,
+                    ),
+                    Some(&now_playing_snapshot),
+                    now,
+                ),
+            }
+        }
         WallpaperType::Video => WallpaperRuntime::Video {
             video: VideoRuntimeDocument {
                 entry_path: entry_path.clone(),
@@ -138,10 +142,9 @@ pub fn runtime_record_with_context(
 
 pub fn runtime_records(records: &[WallpaperRecord]) -> Vec<WallpaperRuntimeRecord> {
     let now = Utc::now();
-    let media = system_service::get_media_metadata();
     records
         .iter()
-        .map(|record| runtime_record_with_context(record, now, media.as_ref()))
+        .map(|record| runtime_record_with_context(record, now, None))
         .collect()
 }
 
@@ -151,16 +154,28 @@ pub fn player_runtime_state(
 ) -> Result<PlayerRuntimeState, String> {
     let store = state.library.lock().map_err(|error| error.to_string())?;
     let now = Utc::now();
-    let media = system_service::get_media_metadata();
     let active = player
         .active_id
         .as_deref()
         .and_then(|id| find_record(&store, id))
-        .map(|record| runtime_record_with_context(&record, now, media.as_ref()));
+        .map(|record| runtime_record_with_context(&record, now, None));
     Ok(PlayerRuntimeState {
         active,
         paused: player.effective_paused(),
     })
+}
+
+fn scene_now_playing_snapshot(
+    manifest: &SceneManifest,
+    explicit: Option<&SceneNowPlayingSnapshot>,
+) -> SceneNowPlayingSnapshot {
+    if !scene_now_playing_provider_service::uses_now_playing_provider(manifest) {
+        return SceneNowPlayingSnapshot::default();
+    }
+
+    explicit
+        .cloned()
+        .unwrap_or_else(scene_now_playing_provider_service::now_playing_snapshot)
 }
 
 fn wallpaper_type_name(value: &WallpaperType) -> &'static str {
@@ -194,13 +209,18 @@ mod tests {
 
     use crate::{
         models::{
-            LibraryStore, PlayerRuntimeState, PropertyKind, PropertyPresentation, SceneManifest,
-            SceneRuntimeSettings, WallpaperProperty, WallpaperType,
+            EvaluatedSceneObject, LibraryStore, PlayerRuntimeState, PropertyKind,
+            PropertyPresentation, SceneManifest, SceneNowPlayingAvailability,
+            SceneNowPlayingSnapshot, SceneNowPlayingState, SceneRuntimeSettings, SceneTextBehavior,
+            SceneTextLayer, WallpaperProperty, WallpaperType,
         },
         store::{AppState, DynamicPlayerState},
     };
 
-    use super::{clear_scene_manifest_runtime_cache, player_runtime_state, runtime_record};
+    use super::{
+        clear_scene_manifest_runtime_cache, player_runtime_state, runtime_record,
+        runtime_record_with_context,
+    };
 
     fn sample_record(wallpaper_type: WallpaperType) -> crate::models::WallpaperRecord {
         crate::models::WallpaperRecord {
@@ -234,6 +254,73 @@ mod tests {
             scene_manifest_dirty: false,
             imported_at: Utc::now(),
             tags: vec!["demo".to_string()],
+        }
+    }
+
+    fn media_title_layer() -> SceneTextLayer {
+        SceneTextLayer {
+            id: 44,
+            name: "Media Title".to_string(),
+            dependencies: vec![],
+            parent_id: None,
+            alignment: None,
+            anchor: None,
+            horizontal_align: Some("center".to_string()),
+            vertical_align: Some("center".to_string()),
+            content: "Fallback".to_string(),
+            behavior: SceneTextBehavior::MediaTitle,
+            delimiter: None,
+            month_format: None,
+            day_format: None,
+            show_day: None,
+            align_vertical: None,
+            use_delimiter: None,
+            show_seconds: None,
+            use_24h_format: None,
+            visible: true,
+            visibility_binding: None,
+            text_binding: None,
+            position: [0.0, 0.0, 0.0],
+            position_bindings: None,
+            scale: [1.0, 1.0, 1.0],
+            scale_binding: None,
+            angles: None,
+            rotation: None,
+            size: Some([300.0, 80.0]),
+            render_bounds: Some([0.0, 0.0, 300.0, 80.0]),
+            parallax_depth: None,
+            color: None,
+            color_binding: None,
+            alpha: None,
+            alpha_binding: None,
+            point_size: Some(32.0),
+            point_size_binding: None,
+            font_reference: None,
+            font_path: None,
+            effect_paths: vec![],
+            script_text: None,
+            script_refresh_interval_millis: None,
+            padding: None,
+            max_rows: None,
+            max_width: None,
+            limit_width: None,
+            limit_use_ellipsis: None,
+            block_align: None,
+        }
+    }
+
+    fn ready_now_playing_snapshot(title: &str, generation: u64) -> SceneNowPlayingSnapshot {
+        SceneNowPlayingSnapshot {
+            availability: SceneNowPlayingAvailability::Available,
+            state: SceneNowPlayingState::Ready,
+            title: Some(title.to_string()),
+            artist: Some("Artist".to_string()),
+            album: Some("Album".to_string()),
+            source: Some("Music".to_string()),
+            generation,
+            updated_at: Utc::now(),
+            refresh_interval_millis: 1500,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -307,6 +394,33 @@ mod tests {
                 assert_eq!(scene.source.object_count, 0);
                 assert_eq!(scene.evaluated.canvas_width, 3840.0);
                 assert_eq!(scene.evaluated.canvas_height, 2160.0);
+            }
+            _ => panic!("expected scene runtime"),
+        }
+    }
+
+    #[test]
+    fn scene_runtime_consumes_now_playing_provider_snapshot_for_media_title() {
+        let mut record = sample_record(WallpaperType::Scene);
+        record.scene_manifest = Some(SceneManifest {
+            canvas_width: Some(800.0),
+            canvas_height: Some(450.0),
+            text_layers: vec![media_title_layer()],
+            ..SceneManifest::default()
+        });
+        let snapshot = ready_now_playing_snapshot("Provider Track", 12);
+
+        let runtime = runtime_record_with_context(&record, Utc::now(), Some(&snapshot));
+        match runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => {
+                assert_eq!(scene.now_playing.generation, 12);
+                assert_eq!(scene.now_playing.title.as_deref(), Some("Provider Track"));
+                let object = scene.evaluated.objects.get(&44).expect("media text");
+                let EvaluatedSceneObject::Text { text, .. } = object else {
+                    panic!("expected text object");
+                };
+                assert_eq!(text.value, "Provider Track");
+                assert_eq!(text.dynamic_input_generation, Some(12));
             }
             _ => panic!("expected scene runtime"),
         }

@@ -88,6 +88,30 @@ export type SceneTextBehavior =
   | "dayPeriod"
   | "fps"
   | "mediaTitle";
+export type SceneNowPlayingAvailability = "available" | "unavailable";
+export type SceneNowPlayingState = "unavailable" | "idle" | "playingWithoutTitle" | "ready";
+export type SceneNowPlayingDiagnosticSeverity = "info" | "warning";
+
+export interface SceneNowPlayingDiagnostic {
+  severity: SceneNowPlayingDiagnosticSeverity;
+  code: string;
+  message: string;
+  detail?: string | null;
+}
+
+export interface SceneNowPlayingSnapshot {
+  availability: SceneNowPlayingAvailability;
+  state: SceneNowPlayingState;
+  title?: string | null;
+  artist?: string | null;
+  album?: string | null;
+  source?: string | null;
+  generation: number;
+  updatedAt: string;
+  refreshIntervalMillis: number;
+  diagnostics: SceneNowPlayingDiagnostic[];
+}
+
 export type SceneAssetKind = "image" | "video" | "system" | "unsupported";
 export type SceneParticleKind = "lineTrail" | "petalTrail";
 export type SceneLogicNodeKind = "container" | "visual" | "text" | "audio" | "particle" | "sound";
@@ -364,6 +388,7 @@ export interface EvaluatedTextState {
   value: string;
   style: EvaluatedTextStyle;
   layout: EvaluatedTextLayout;
+  dynamicInputGeneration?: number | null;
 }
 
 export interface EvaluatedAudioState {
@@ -453,6 +478,7 @@ export interface SceneRuntimeDocument {
   runtimeOwnerKey?: string | null;
   source: SceneManifest;
   evaluated: SceneEvaluatedDocument;
+  nowPlaying: SceneNowPlayingSnapshot;
 }
 
 export interface VideoRuntimeDocument {

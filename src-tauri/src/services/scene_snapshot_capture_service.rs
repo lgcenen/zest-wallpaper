@@ -600,6 +600,7 @@ mod tests {
                     scaled_padding: 0.0,
                     world_scale: [1.0, 1.0, 1.0],
                 },
+                dynamic_input_generation: None,
             },
         }
     }
@@ -628,6 +629,7 @@ mod tests {
                 render_list,
                 evaluated_at: Utc::now(),
             },
+            now_playing: Default::default(),
         }
     }
 

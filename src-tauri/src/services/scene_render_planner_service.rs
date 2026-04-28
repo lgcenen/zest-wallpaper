@@ -148,6 +148,7 @@ pub struct SceneRenderTextItem {
     pub max_rows: Option<usize>,
     pub limit_width: bool,
     pub limit_use_ellipsis: bool,
+    pub dynamic_input_generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -711,6 +712,7 @@ fn plan_text_item(
         max_rows: text.style.max_rows.map(|rows| rows as usize),
         limit_width: text.style.limit_width.unwrap_or(false),
         limit_use_ellipsis: text.style.limit_use_ellipsis.unwrap_or(false),
+        dynamic_input_generation: text.dynamic_input_generation,
     })
 }
 
@@ -1085,6 +1087,7 @@ mod tests {
                 render_list,
                 evaluated_at: Utc::now(),
             },
+            now_playing: Default::default(),
         }
     }
 
@@ -1245,6 +1248,7 @@ mod tests {
                     scaled_padding: 0.0,
                     world_scale: [1.0, 1.0, 1.0],
                 },
+                dynamic_input_generation: None,
             },
         }
     }

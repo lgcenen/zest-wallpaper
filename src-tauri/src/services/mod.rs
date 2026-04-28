@@ -17,6 +17,7 @@ pub mod scene_input_response_service;
 pub mod scene_manifest_service;
 pub mod scene_mdl_service;
 pub mod scene_native_renderer_service;
+pub mod scene_now_playing_provider_service;
 pub mod scene_particle_scheduler_service;
 pub mod scene_render_graph_service;
 pub mod scene_render_planner_service;

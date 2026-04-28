@@ -10,7 +10,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::{
-    models::{SceneRuntimeDocument, WallpaperRuntimeRecord},
+    models::{
+        SceneNowPlayingDiagnostic, SceneNowPlayingDiagnosticSeverity, SceneRuntimeDocument,
+        WallpaperRuntimeRecord,
+    },
     services::{
         audio_input_service, diagnostic_service, input_service,
         scene_audio_coordinator_service::SceneAudioCoordinator,
@@ -19,6 +22,7 @@ use crate::{
             SceneInputResponse, SceneInputResponseState, SceneInputTarget,
         },
         scene_mdl_service::{evaluate_scene_mdl_mesh, parse_scene_mdl_file, SceneMdlDocument},
+        scene_now_playing_provider_service,
         scene_particle_scheduler_service::{
             SceneParticleCursor, SceneParticlePrimitive, SceneParticleScheduler,
         },
@@ -359,6 +363,7 @@ fn desired_scene_renderer_spec(
         .map(NativeSceneWarning::from_render_issue)
         .collect::<Vec<_>>();
     warnings.extend(text_script_runtime_warnings_for_scene(scene));
+    warnings.extend(now_playing_runtime_warnings_for_scene(scene));
     warnings.extend(text_font_runtime_warnings_for_plan(&plan_report.plan));
     warnings.extend(
         graph_report
@@ -699,6 +704,25 @@ impl NativeSceneWarning {
         }
     }
 
+    fn now_playing_provider(diagnostic: &SceneNowPlayingDiagnostic) -> Self {
+        let detail_text = diagnostic
+            .detail
+            .as_deref()
+            .unwrap_or(diagnostic.message.as_str());
+        Self {
+            code: format!("now-playing-{}", diagnostic.code),
+            message: diagnostic.message.clone(),
+            detail: Some(
+                SceneDiagnosticDetail::runtime(
+                    SceneDiagnosticDomain::Text,
+                    "now-playing-provider",
+                    detail_text,
+                )
+                .with_underlying_diagnostic(format!("now-playing/{}", diagnostic.code)),
+            ),
+        }
+    }
+
     fn detail_json(&self) -> Option<String> {
         serde_json::to_string_pretty(self).ok()
     }
@@ -792,6 +816,20 @@ fn text_script_runtime_warnings_for_scene(scene: &SceneRuntimeDocument) -> Vec<N
         )),
     })
     .collect()
+}
+
+fn now_playing_runtime_warnings_for_scene(scene: &SceneRuntimeDocument) -> Vec<NativeSceneWarning> {
+    if !scene_now_playing_provider_service::uses_now_playing_provider(&scene.source) {
+        return Vec::new();
+    }
+
+    scene
+        .now_playing
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == SceneNowPlayingDiagnosticSeverity::Warning)
+        .map(NativeSceneWarning::now_playing_provider)
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -4012,6 +4050,7 @@ fn text_texture_cache_key(item: &SceneRenderTextItem) -> String {
     item.max_rows.hash(&mut hasher);
     item.limit_width.hash(&mut hasher);
     item.limit_use_ellipsis.hash(&mut hasher);
+    item.dynamic_input_generation.hash(&mut hasher);
     item.quad.width.to_bits().hash(&mut hasher);
     item.quad.height.to_bits().hash(&mut hasher);
     item.content_left.to_bits().hash(&mut hasher);
@@ -5355,10 +5394,15 @@ mod tests {
         unpremultiply_rgba_pixels, SceneTextHorizontalAlign,
     };
     use super::{
-        plan_native_scene_renderer_runtime, runtime_dependency_warnings_for_plan,
-        video_texture_frame_warning, NativeSceneRendererSnapshot, SceneRenderColor,
-        SceneRendererSpec, SceneSessionPlan, AUDIO_INPUT_UNAVAILABLE_CODE,
-        INPUT_SNAPSHOT_UNAVAILABLE_CODE,
+        now_playing_runtime_warnings_for_scene, plan_native_scene_renderer_runtime,
+        runtime_dependency_warnings_for_plan, video_texture_frame_warning,
+        NativeSceneRendererSnapshot, SceneDiagnosticDomain, SceneRenderColor, SceneRendererSpec,
+        SceneSessionPlan, AUDIO_INPUT_UNAVAILABLE_CODE, INPUT_SNAPSHOT_UNAVAILABLE_CODE,
+    };
+    use crate::models::{
+        SceneEvaluatedDocument, SceneManifest, SceneNowPlayingAvailability,
+        SceneNowPlayingDiagnostic, SceneNowPlayingDiagnosticSeverity, SceneNowPlayingSnapshot,
+        SceneNowPlayingState, SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer,
     };
     #[cfg(target_os = "macos")]
     use crate::services::scene_render_graph_service::ScenePhase10InputBinding;
@@ -5762,6 +5806,7 @@ mod tests {
             max_rows: Some(1),
             limit_width: true,
             limit_use_ellipsis: false,
+            dynamic_input_generation: None,
         }
     }
 
@@ -5897,6 +5942,106 @@ mod tests {
         assert!(warnings
             .iter()
             .all(|warning| warning.code != INPUT_SNAPSHOT_UNAVAILABLE_CODE));
+    }
+
+    #[test]
+    fn phase_09g_now_playing_provider_warnings_stay_in_text_runtime_diagnostic_layer() {
+        let scene = SceneRuntimeDocument {
+            runtime_owner_key: None,
+            source: SceneManifest {
+                text_layers: vec![SceneTextLayer {
+                    id: 9,
+                    name: "Media Title".to_string(),
+                    dependencies: vec![],
+                    parent_id: None,
+                    alignment: None,
+                    anchor: None,
+                    horizontal_align: None,
+                    vertical_align: None,
+                    content: "Fallback".to_string(),
+                    behavior: SceneTextBehavior::MediaTitle,
+                    delimiter: None,
+                    month_format: None,
+                    day_format: None,
+                    show_day: None,
+                    align_vertical: None,
+                    use_delimiter: None,
+                    show_seconds: None,
+                    use_24h_format: None,
+                    visible: true,
+                    visibility_binding: None,
+                    text_binding: None,
+                    position: [0.0, 0.0, 0.0],
+                    position_bindings: None,
+                    scale: [1.0, 1.0, 1.0],
+                    scale_binding: None,
+                    angles: None,
+                    rotation: None,
+                    size: None,
+                    render_bounds: Some([0.0, 0.0, 300.0, 80.0]),
+                    parallax_depth: None,
+                    color: None,
+                    color_binding: None,
+                    alpha: None,
+                    alpha_binding: None,
+                    point_size: None,
+                    point_size_binding: None,
+                    font_reference: None,
+                    font_path: None,
+                    effect_paths: vec![],
+                    script_text: None,
+                    script_refresh_interval_millis: None,
+                    padding: None,
+                    max_rows: None,
+                    max_width: None,
+                    limit_width: None,
+                    limit_use_ellipsis: None,
+                    block_align: None,
+                }],
+                ..SceneManifest::default()
+            },
+            evaluated: SceneEvaluatedDocument::default(),
+            now_playing: SceneNowPlayingSnapshot {
+                availability: SceneNowPlayingAvailability::Available,
+                state: SceneNowPlayingState::PlayingWithoutTitle,
+                title: None,
+                artist: Some("Artist".to_string()),
+                album: None,
+                source: Some("Music".to_string()),
+                generation: 3,
+                updated_at: chrono::Utc::now(),
+                refresh_interval_millis: 1500,
+                diagnostics: vec![
+                    SceneNowPlayingDiagnostic {
+                        severity: SceneNowPlayingDiagnosticSeverity::Info,
+                        code: "no-media".to_string(),
+                        message: "No media.".to_string(),
+                        detail: None,
+                    },
+                    SceneNowPlayingDiagnostic {
+                        severity: SceneNowPlayingDiagnosticSeverity::Warning,
+                        code: "title-missing".to_string(),
+                        message: "Title missing.".to_string(),
+                        detail: Some("source: Music".to_string()),
+                    },
+                ],
+            },
+        };
+
+        let warnings = now_playing_runtime_warnings_for_scene(&scene);
+
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, "now-playing-title-missing");
+        let detail = warnings[0].detail.as_ref().expect("detail");
+        assert_eq!(detail.domain, SceneDiagnosticDomain::Text);
+        assert_eq!(
+            detail.runtime_stage.as_deref(),
+            Some("now-playing-provider")
+        );
+        assert_eq!(
+            detail.underlying_diagnostic.as_deref(),
+            Some("now-playing/title-missing")
+        );
     }
 
     #[test]
@@ -6121,6 +6266,19 @@ mod tests {
 
         let mut item = sample_text_item();
         item.effect_paths.push("effects/glow.json".to_string());
+        assert_ne!(key, text_texture_cache_key(&item));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn text_texture_cache_key_tracks_dynamic_input_generation() {
+        let mut item = sample_text_item();
+        item.behavior = crate::models::SceneTextBehavior::MediaTitle;
+        item.dynamic_input_generation = Some(1);
+        let key = text_texture_cache_key(&item);
+
+        item.dynamic_input_generation = Some(2);
+
         assert_ne!(key, text_texture_cache_key(&item));
     }
 

@@ -6,11 +6,12 @@ use serde_json::Value;
 use crate::models::{
     EvaluatedAudioState, EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
     EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
-    SceneAxisBindings, SceneBinding, SceneCamera, SceneManifest, SceneRenderNodeKind,
-    SceneTextBehavior, SceneTextLayer, SceneVisualLayer, WallpaperProperty,
+    SceneAxisBindings, SceneBinding, SceneCamera, SceneManifest, SceneNowPlayingSnapshot,
+    SceneNowPlayingState, SceneRenderNodeKind, SceneTextBehavior, SceneTextLayer, SceneVisualLayer,
+    WallpaperProperty,
 };
 
-use super::{scene_text_script_runtime_service, system_service::MediaMetadata};
+use super::scene_text_script_runtime_service;
 
 pub fn evaluate_scene_runtime_document_with_runtime_key(
     runtime_owner_key: Option<&str>,
@@ -18,7 +19,7 @@ pub fn evaluate_scene_runtime_document_with_runtime_key(
     properties: &BTreeMap<String, Value>,
     persisted_properties: &BTreeMap<String, Value>,
     property_definitions: &BTreeMap<String, WallpaperProperty>,
-    media: Option<&MediaMetadata>,
+    now_playing: Option<&SceneNowPlayingSnapshot>,
     now: DateTime<Utc>,
 ) -> crate::models::SceneRuntimeDocument {
     let evaluated = evaluate_scene_with_runtime_key(
@@ -27,13 +28,14 @@ pub fn evaluate_scene_runtime_document_with_runtime_key(
         properties,
         persisted_properties,
         property_definitions,
-        media,
+        now_playing,
         now,
     );
     crate::models::SceneRuntimeDocument {
         runtime_owner_key: runtime_owner_key.map(ToString::to_string),
         source,
         evaluated,
+        now_playing: now_playing.cloned().unwrap_or_default(),
     }
 }
 
@@ -43,7 +45,7 @@ pub fn evaluate_scene(
     properties: &BTreeMap<String, Value>,
     persisted_properties: &BTreeMap<String, Value>,
     property_definitions: &BTreeMap<String, WallpaperProperty>,
-    media: Option<&MediaMetadata>,
+    now_playing: Option<&SceneNowPlayingSnapshot>,
     now: DateTime<Utc>,
 ) -> crate::models::SceneEvaluatedDocument {
     evaluate_scene_with_runtime_key(
@@ -52,7 +54,7 @@ pub fn evaluate_scene(
         properties,
         persisted_properties,
         property_definitions,
-        media,
+        now_playing,
         now,
     )
 }
@@ -63,7 +65,7 @@ fn evaluate_scene_with_runtime_key(
     properties: &BTreeMap<String, Value>,
     persisted_properties: &BTreeMap<String, Value>,
     property_definitions: &BTreeMap<String, WallpaperProperty>,
-    media: Option<&MediaMetadata>,
+    now_playing: Option<&SceneNowPlayingSnapshot>,
     now: DateTime<Utc>,
 ) -> crate::models::SceneEvaluatedDocument {
     let canvas_width = source.canvas_width.unwrap_or(3840.0).max(1.0);
@@ -208,7 +210,13 @@ fn evaluate_scene_with_runtime_key(
         let resolved_point_size =
             resolve_bound_number(layer.point_size_binding.as_deref(), properties)
                 .unwrap_or(layer.point_size.unwrap_or(24.0));
-        let resolved_text = resolve_text(runtime_owner_key, layer, properties, &local_now, media);
+        let resolved_text = resolve_text(
+            runtime_owner_key,
+            layer,
+            properties,
+            &local_now,
+            now_playing,
+        );
         let measured_size = layer.size.or_else(|| {
             estimate_text_size(&resolved_text, resolved_point_size, layer.behavior.clone())
         });
@@ -268,6 +276,7 @@ fn evaluate_scene_with_runtime_key(
                         block_align: layer.block_align,
                     },
                     layout: text_layout,
+                    dynamic_input_generation: text_dynamic_input_generation(layer, now_playing),
                 },
             },
         );
@@ -844,7 +853,7 @@ fn resolve_text(
     layer: &SceneTextLayer,
     properties: &BTreeMap<String, Value>,
     now: &DateTime<Local>,
-    media: Option<&MediaMetadata>,
+    now_playing: Option<&SceneNowPlayingSnapshot>,
 ) -> String {
     if let Some(binding) = layer.text_binding.as_deref() {
         if let Some(value) = properties.get(binding) {
@@ -878,8 +887,9 @@ fn resolve_text(
         SceneTextBehavior::Date => format_calendar_text(layer, now, false),
         SceneTextBehavior::Weekday => format_calendar_text(layer, now, true),
         SceneTextBehavior::DayPeriod => format_day_period(layer, now),
-        SceneTextBehavior::MediaTitle => media
-            .and_then(|metadata| metadata.title.as_ref())
+        SceneTextBehavior::MediaTitle => now_playing
+            .filter(|snapshot| snapshot.state == SceneNowPlayingState::Ready)
+            .and_then(|snapshot| snapshot.title.as_ref())
             .map(|title| title.trim().to_string())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| {
@@ -897,6 +907,17 @@ fn resolve_text(
                 layer.content.clone()
             }
         }
+    }
+}
+
+fn text_dynamic_input_generation(
+    layer: &SceneTextLayer,
+    now_playing: Option<&SceneNowPlayingSnapshot>,
+) -> Option<u64> {
+    if layer.behavior == SceneTextBehavior::MediaTitle {
+        now_playing.map(|snapshot| snapshot.generation)
+    } else {
+        None
     }
 }
 
@@ -2013,7 +2034,8 @@ mod tests {
     use super::*;
     use crate::models::{
         PropertyKind, PropertyPresentation, SceneAudioLayer, SceneBinding, SceneManifest,
-        SceneNodeState, SceneRenderNode, SceneRenderNodeKind, SceneRuntimeDocument, SceneTextLayer,
+        SceneNodeState, SceneNowPlayingAvailability, SceneNowPlayingSnapshot, SceneNowPlayingState,
+        SceneRenderNode, SceneRenderNodeKind, SceneRuntimeDocument, SceneTextLayer,
         WallpaperOption, WallpaperProperty,
     };
     use crate::services::scene_render_planner_service::build_scene_render_plan;
@@ -2371,20 +2393,110 @@ mod tests {
             block_align: None,
         };
         let now = Utc::now().with_timezone(&Local);
-        let media = MediaMetadata {
+        let now_playing = SceneNowPlayingSnapshot {
+            availability: SceneNowPlayingAvailability::Available,
+            state: SceneNowPlayingState::Ready,
             title: Some("Now Playing".to_string()),
             artist: None,
             album: None,
             source: None,
+            generation: 4,
+            updated_at: Utc::now(),
+            refresh_interval_millis: 1500,
+            diagnostics: Vec::new(),
         };
         assert_eq!(
-            resolve_text(None, &layer, &BTreeMap::new(), &now, Some(&media)),
+            resolve_text(None, &layer, &BTreeMap::new(), &now, Some(&now_playing)),
             "Now Playing"
         );
         assert_eq!(
             resolve_text(None, &layer, &BTreeMap::new(), &now, None),
             "Fallback"
         );
+    }
+
+    #[test]
+    fn media_title_tracks_provider_generation_as_dynamic_input() {
+        let layer = SceneTextLayer {
+            id: 1,
+            name: "Title".to_string(),
+            dependencies: vec![],
+            parent_id: None,
+            alignment: None,
+            anchor: None,
+            horizontal_align: None,
+            vertical_align: None,
+            content: "Fallback".to_string(),
+            behavior: SceneTextBehavior::MediaTitle,
+            delimiter: None,
+            month_format: None,
+            day_format: None,
+            show_day: None,
+            align_vertical: None,
+            use_delimiter: None,
+            show_seconds: None,
+            use_24h_format: None,
+            visible: true,
+            visibility_binding: None,
+            text_binding: None,
+            position: [0.0, 0.0, 0.0],
+            position_bindings: None,
+            scale: [1.0, 1.0, 1.0],
+            scale_binding: None,
+            angles: None,
+            rotation: None,
+            size: None,
+            render_bounds: Some([0.0, 0.0, 300.0, 80.0]),
+            parallax_depth: None,
+            color: None,
+            color_binding: None,
+            alpha: None,
+            alpha_binding: None,
+            point_size: None,
+            point_size_binding: None,
+            font_reference: None,
+            font_path: None,
+            effect_paths: vec![],
+            script_text: None,
+            script_refresh_interval_millis: None,
+            padding: None,
+            max_rows: None,
+            max_width: None,
+            limit_width: None,
+            limit_use_ellipsis: None,
+            block_align: None,
+        };
+        let now_playing = SceneNowPlayingSnapshot {
+            availability: SceneNowPlayingAvailability::Available,
+            state: SceneNowPlayingState::PlayingWithoutTitle,
+            generation: 9,
+            refresh_interval_millis: 1500,
+            updated_at: Utc::now(),
+            title: None,
+            artist: None,
+            album: None,
+            source: Some("Music".to_string()),
+            diagnostics: Vec::new(),
+        };
+        let scene = SceneManifest {
+            text_layers: vec![layer],
+            ..SceneManifest::default()
+        };
+        let evaluated = evaluate_scene(
+            &scene,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Some(&now_playing),
+            Utc::now(),
+        );
+        let object = evaluated.objects.get(&1).expect("text object");
+        let EvaluatedSceneObject::Text { text, .. } = object else {
+            panic!("expected text object");
+        };
+
+        assert_eq!(text.value, "Fallback");
+        assert_eq!(text.dynamic_input_generation, Some(9));
     }
 
     #[test]
@@ -2706,6 +2818,7 @@ mod tests {
             runtime_owner_key: None,
             source,
             evaluated,
+            now_playing: Default::default(),
         };
         let report = build_scene_render_plan(&runtime);
 
@@ -2767,6 +2880,7 @@ mod tests {
             runtime_owner_key: None,
             source,
             evaluated,
+            now_playing: Default::default(),
         };
         let report = build_scene_render_plan(&runtime);
 

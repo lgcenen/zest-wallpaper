@@ -150,6 +150,78 @@ pub enum SceneTextBehavior {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
+pub enum SceneNowPlayingAvailability {
+    Available,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SceneNowPlayingState {
+    #[default]
+    Unavailable,
+    Idle,
+    PlayingWithoutTitle,
+    Ready,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SceneNowPlayingDiagnosticSeverity {
+    Info,
+    Warning,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneNowPlayingDiagnostic {
+    pub severity: SceneNowPlayingDiagnosticSeverity,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneNowPlayingSnapshot {
+    pub availability: SceneNowPlayingAvailability,
+    pub state: SceneNowPlayingState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub generation: u64,
+    pub updated_at: DateTime<Utc>,
+    pub refresh_interval_millis: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<SceneNowPlayingDiagnostic>,
+}
+
+impl Default for SceneNowPlayingSnapshot {
+    fn default() -> Self {
+        Self {
+            availability: SceneNowPlayingAvailability::Unavailable,
+            state: SceneNowPlayingState::Unavailable,
+            title: None,
+            artist: None,
+            album: None,
+            source: None,
+            generation: 0,
+            updated_at: Utc::now(),
+            refresh_interval_millis: 0,
+            diagnostics: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
 pub enum SceneAssetKind {
     Image,
     Video,
@@ -687,6 +759,8 @@ pub struct EvaluatedTextState {
     pub value: String,
     pub style: EvaluatedTextStyle,
     pub layout: EvaluatedTextLayout,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_input_generation: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -850,6 +924,8 @@ pub struct SceneRuntimeDocument {
     pub runtime_owner_key: Option<String>,
     pub source: SceneManifest,
     pub evaluated: SceneEvaluatedDocument,
+    #[serde(default)]
+    pub now_playing: SceneNowPlayingSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
