@@ -340,6 +340,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../docs/release-checklist.md"
         ));
+        let static_snapshot_contract = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/static-snapshot-sync-contract.md"
+        ));
 
         assert!(services_mod.contains("pub mod diagnostic_service"));
         assert!(lifecycle_service.contains("DiagnosticServiceState::default"));
@@ -372,6 +376,8 @@ mod tests {
         assert!(known_limitations.contains("WKWebView"));
         assert!(known_limitations.contains("AVPlayer"));
         assert!(known_limitations.contains("player:diagnostic"));
+        assert!(known_limitations.contains("static-snapshot-sync/snapshot-unavailable"));
+        assert!(known_limitations.contains("static-snapshot-sync/apply-failed"));
         assert!(known_limitations.contains("手工 smoke"));
         assert!(known_limitations.contains("会直接失败并回传错误"));
         assert!(release_checklist.contains("cargo test -j 1"));
@@ -380,6 +386,12 @@ mod tests {
         assert!(release_checklist.contains("可移植自动回归"));
         assert!(release_checklist.contains("手工 smoke"));
         assert!(release_checklist.contains("非当前宿主的清理失败"));
+        assert!(release_checklist.contains("static-snapshot-sync/snapshot-unavailable"));
+        assert!(release_checklist.contains("static-snapshot-sync/apply-failed"));
+        assert!(static_snapshot_contract.contains("Generation and Registration"));
+        assert!(static_snapshot_contract.contains("Diagnostics and User-Visible Failure Semantics"));
+        assert!(static_snapshot_contract
+            .contains("Startup library loading must not batch-generate snapshots"));
     }
 
     #[test]
