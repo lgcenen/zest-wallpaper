@@ -4800,10 +4800,16 @@ fn resolve_scene_text_point_size(
     paragraph_style: &NSMutableParagraphStyle,
     options: NSStringDrawingOptions,
 ) -> Result<f64, String> {
-    if !matches!(
+    let authored_fit_behavior = matches!(
         item.behavior,
         crate::models::SceneTextBehavior::Static | crate::models::SceneTextBehavior::Clock
-    ) {
+    );
+    let needs_native_metric_fit = authored_fit_behavior
+        || item.text.contains('\n')
+        || item.limit_width
+        || item.limit_use_ellipsis
+        || item.max_rows.unwrap_or_default() > 1;
+    if !needs_native_metric_fit {
         return Ok(item.point_size.max(1.0));
     }
 
@@ -4812,7 +4818,11 @@ fn resolve_scene_text_point_size(
         let font = scene_text_font_with_point_size(item, point_size)?.font;
         let attributes = build_text_attributes(&font, color, paragraph_style);
         let measured = measure_scene_text_bounds(text, &attributes, item, options);
-        let scale = scene_text_fit_scale(item, measured.size.width, measured.size.height);
+        let scale = if authored_fit_behavior {
+            scene_text_fit_scale(item, measured.size.width, measured.size.height)
+        } else {
+            scene_text_height_fit_scale(item, measured.size.height).min(1.0)
+        };
         let next_point_size = (point_size * scale).clamp(1.0, 2048.0);
         if (next_point_size - point_size).abs() < 0.5 {
             point_size = next_point_size;
@@ -4830,16 +4840,14 @@ fn measure_scene_text_bounds(
     item: &SceneRenderTextItem,
     options: NSStringDrawingOptions,
 ) -> CGRect {
-    let measure_width = if item.limit_width || item.max_rows.unwrap_or_default() > 1 {
+    let constrain_width =
+        item.limit_width || item.max_rows.unwrap_or_default() > 1 || item.text.contains('\n');
+    let measure_width = if constrain_width {
         item.content_width.max(1.0)
     } else {
         100_000.0
     };
-    let measure_height = if item.limit_width || item.max_rows.unwrap_or_default() > 1 {
-        item.content_height.max(1.0)
-    } else {
-        100_000.0
-    };
+    let measure_height = 100_000.0;
     unsafe {
         text.boundingRectWithSize_options_attributes_context(
             CGSize::new(measure_width, measure_height),
@@ -4848,6 +4856,12 @@ fn measure_scene_text_bounds(
             Some(&NSStringDrawingContext::new()),
         )
     }
+}
+
+#[cfg(target_os = "macos")]
+fn scene_text_height_fit_scale(item: &SceneRenderTextItem, measured_height: f64) -> f64 {
+    let container_height = item.content_height.max(1.0);
+    (container_height / measured_height.max(1.0)).clamp(0.05, 16.0)
 }
 
 #[cfg(target_os = "macos")]
@@ -6338,6 +6352,70 @@ mod tests {
 
         assert!(first.fallback_detail.is_some());
         assert_eq!(first.fallback_detail, second.fallback_detail);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vertical_calendar_text_uses_native_font_metrics_before_rasterizing() {
+        let mut item = sample_text_item();
+        item.behavior = SceneTextBehavior::Date;
+        item.text = "2\n9\n\nA\nP\nR\n\n2\n0\n2\n6".to_string();
+        item.point_size = 140.0;
+        item.content_width = 120.0;
+        item.content_height = 120.0;
+        item.quad.width = 140.0;
+        item.quad.height = 140.0;
+        item.font.authored_reference = Some("Helvetica".to_string());
+        item.font.reference_kind =
+            Some(crate::services::scene_resource_service::SceneTextFontReferenceKind::FamilyLike);
+        item.font.file_candidates.clear();
+        item.font.family_candidates = vec!["Helvetica".to_string()];
+        item.font.cache_key = "font:phase-09a-vertical-calendar".to_string();
+
+        let string = super::NSString::from_str(item.text.as_str());
+        let color = super::nscolor_from_scene_color(item.color);
+        let paragraph_style = super::paragraph_style_for_text(&item);
+        let options = super::text_drawing_options(&item);
+        let resolved_point_size =
+            super::resolve_scene_text_point_size(&item, &string, &color, &paragraph_style, options)
+                .expect("resolved point size");
+        let resolved_font = super::scene_text_font_with_point_size(&item, resolved_point_size)
+            .expect("resolved font")
+            .font;
+        let attributes = super::build_text_attributes(&resolved_font, &color, &paragraph_style);
+        let measured = super::measure_scene_text_bounds(&string, &attributes, &item, options);
+
+        assert!(resolved_point_size < item.point_size);
+        assert!(measured.size.height <= item.content_height + 1.0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vertical_calendar_text_does_not_shrink_against_single_line_width() {
+        let mut item = sample_text_item();
+        item.behavior = SceneTextBehavior::Date;
+        item.text = "2\n9\n\nA\nP\nR\n\n2\n0\n2\n6".to_string();
+        item.point_size = 140.0;
+        item.content_width = 72.0;
+        item.content_height = 3000.0;
+        item.quad.width = 48.0;
+        item.quad.height = 3020.0;
+        item.font.authored_reference = Some("Helvetica".to_string());
+        item.font.reference_kind =
+            Some(crate::services::scene_resource_service::SceneTextFontReferenceKind::FamilyLike);
+        item.font.file_candidates.clear();
+        item.font.family_candidates = vec!["Helvetica".to_string()];
+        item.font.cache_key = "font:phase-09a-vertical-calendar-narrow".to_string();
+
+        let string = super::NSString::from_str(item.text.as_str());
+        let color = super::nscolor_from_scene_color(item.color);
+        let paragraph_style = super::paragraph_style_for_text(&item);
+        let options = super::text_drawing_options(&item);
+        let resolved_point_size =
+            super::resolve_scene_text_point_size(&item, &string, &color, &paragraph_style, options)
+                .expect("resolved point size");
+
+        assert!(resolved_point_size > item.point_size * 0.5);
     }
 
     #[cfg(target_os = "macos")]
