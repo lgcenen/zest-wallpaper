@@ -33,11 +33,11 @@ use crate::{
             ScenePhase10InputSource, ScenePhase10VisualPlan,
         },
         scene_render_planner_service::{
-            build_scene_render_plan_with_resolver, SceneClearColor, SceneRenderAudioItem,
-            SceneRenderBlendMode, SceneRenderColor, SceneRenderDrawKind, SceneRenderIssue,
-            SceneRenderParticleItem, SceneRenderPlan, SceneRenderQuad, SceneRenderSoundItem,
-            SceneRenderSourceKind, SceneRenderTextItem, SceneRenderVisualItem,
-            SceneTextHorizontalAlign,
+            build_scene_render_plan_with_resolver, build_scene_render_text_update_with_resolver,
+            SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderColor,
+            SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem, SceneRenderPlan,
+            SceneRenderQuad, SceneRenderSoundItem, SceneRenderSourceKind, SceneRenderTextItem,
+            SceneRenderVisualItem, SceneTextHorizontalAlign,
         },
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
         scene_runtime_settings_service,
@@ -304,6 +304,94 @@ pub fn sync_native_scene_runtime(
                 DIAGNOSTIC_SUBSYSTEM,
                 SYNC_FAILED_CODE,
                 "Native Scene runtime failed to sync.",
+                Some(error.clone()),
+            );
+        }
+    }
+
+    result.map(|_| ())
+}
+
+pub fn update_native_scene_dynamic_text(
+    app: &AppHandle,
+    runtime_record: &WallpaperRuntimeRecord,
+) -> Result<(), String> {
+    let result = (|| -> Result<Vec<NativeSceneWarning>, String> {
+        let Some(state) = app.try_state::<NativeSceneRendererServiceState>() else {
+            return Ok(Vec::new());
+        };
+        let scene = match &runtime_record.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => return Ok(Vec::new()),
+        };
+
+        let resolver = SceneResourceResolver::for_managed_root_with_asset_roots(
+            &runtime_record.managed_path,
+            builtin_scene_assets_root_for_app(app),
+            scene_runtime_settings_service::external_assets_root_for_app(app),
+        );
+        let report = build_scene_render_text_update_with_resolver(scene, Some(&resolver));
+        let mut warnings = report
+            .issues
+            .into_iter()
+            .map(NativeSceneWarning::from_render_issue)
+            .collect::<Vec<_>>();
+        warnings.extend(text_script_runtime_warnings_for_scene(scene));
+        warnings.extend(now_playing_runtime_warnings_for_scene(scene));
+
+        let (views, paused) = {
+            let runtime = state.runtime.lock().map_err(|error| error.to_string())?;
+            let Some(spec) = runtime.spec.as_ref() else {
+                return Err(
+                    "native Scene dynamic text update skipped because no Scene is active"
+                        .to_string(),
+                );
+            };
+            if spec.wallpaper_id != runtime_record.id {
+                return Err(format!(
+                    "native Scene dynamic text update targeted {}, but active native Scene is {}",
+                    runtime_record.id, spec.wallpaper_id
+                ));
+            }
+            (
+                runtime
+                    .views
+                    .iter()
+                    .map(|(label, view)| (label.clone(), Arc::clone(view)))
+                    .collect::<Vec<_>>(),
+                spec.paused,
+            )
+        };
+
+        for (label, view) in views {
+            warnings.extend(view.update_dynamic_text(app, &label, &report.texts, paused)?);
+        }
+
+        {
+            let mut runtime = state.runtime.lock().map_err(|error| error.to_string())?;
+            if let Some(spec) = runtime.spec.as_mut() {
+                if spec.wallpaper_id == runtime_record.id {
+                    spec.render_plan.texts = report.texts.clone();
+                }
+            }
+        }
+
+        dedup_native_warnings(&mut warnings);
+        Ok(warnings)
+    })();
+
+    match &result {
+        Ok(warnings) => {
+            let _ =
+                diagnostic_service::clear_diagnostic(app, DIAGNOSTIC_SUBSYSTEM, SYNC_FAILED_CODE);
+            record_dynamic_text_warnings(app, warnings);
+        }
+        Err(error) => {
+            let _ = diagnostic_service::record_warning(
+                app,
+                DIAGNOSTIC_SUBSYSTEM,
+                "dynamic-text-update-failed",
+                "Native Scene dynamic text update failed; the caller may fall back to a full sync.",
                 Some(error.clone()),
             );
         }
@@ -825,6 +913,67 @@ fn record_render_warnings(app: &AppHandle, warnings: &[NativeSceneWarning]) {
     }
 }
 
+fn record_dynamic_text_warnings(app: &AppHandle, warnings: &[NativeSceneWarning]) {
+    let existing_codes = diagnostic_service::current_runtime_diagnostics(app)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic.subsystem == DIAGNOSTIC_SUBSYSTEM
+                && is_dynamic_text_warning_code(&diagnostic.code)
+        })
+        .map(|diagnostic| diagnostic.code)
+        .collect::<BTreeSet<_>>();
+
+    let mut grouped = BTreeMap::<String, Vec<&NativeSceneWarning>>::new();
+    for warning in warnings
+        .iter()
+        .filter(|warning| is_dynamic_text_warning_code(&warning.code))
+    {
+        grouped
+            .entry(warning.code.clone())
+            .or_default()
+            .push(warning);
+    }
+
+    let next_codes = grouped.keys().cloned().collect::<BTreeSet<_>>();
+    for stale in existing_codes.difference(&next_codes) {
+        let _ = diagnostic_service::clear_diagnostic(app, DIAGNOSTIC_SUBSYSTEM, stale);
+    }
+
+    for (code, entries) in grouped {
+        let preview = entries
+            .iter()
+            .take(3)
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let remaining = entries.len().saturating_sub(3);
+        let summary = if remaining == 0 {
+            preview
+        } else {
+            format!("{preview}; and {remaining} more warning(s)")
+        };
+        let detail = serde_json::to_string_pretty(
+            &entries
+                .into_iter()
+                .cloned()
+                .collect::<Vec<NativeSceneWarning>>(),
+        )
+        .ok();
+        let _ =
+            diagnostic_service::record_warning(app, DIAGNOSTIC_SUBSYSTEM, &code, summary, detail);
+    }
+}
+
+fn is_dynamic_text_warning_code(code: &str) -> bool {
+    code == "missing-render-bounds"
+        || code == "text-raster-failed"
+        || code == "text-font-fallback"
+        || code == "text-effect-unsupported"
+        || code == "dynamic-text-update-failed"
+        || code.starts_with("now-playing-")
+}
+
 fn dedup_native_warnings(warnings: &mut Vec<NativeSceneWarning>) {
     let mut ordered = Vec::new();
     for warning in warnings.drain(..) {
@@ -868,7 +1017,12 @@ fn now_playing_runtime_warnings_for_scene(scene: &SceneRuntimeDocument) -> Vec<N
 
 #[cfg(target_os = "macos")]
 fn text_font_runtime_warnings_for_plan(plan: &SceneRenderPlan) -> Vec<NativeSceneWarning> {
-    plan.texts
+    text_font_runtime_warnings_for_texts(&plan.texts)
+}
+
+#[cfg(target_os = "macos")]
+fn text_font_runtime_warnings_for_texts(texts: &[SceneRenderTextItem]) -> Vec<NativeSceneWarning> {
+    texts
         .iter()
         .filter_map(|item| {
             scene_text_font_uncached(item, item.point_size.max(1.0))
@@ -881,6 +1035,11 @@ fn text_font_runtime_warnings_for_plan(plan: &SceneRenderPlan) -> Vec<NativeScen
 
 #[cfg(not(target_os = "macos"))]
 fn text_font_runtime_warnings_for_plan(_plan: &SceneRenderPlan) -> Vec<NativeSceneWarning> {
+    Vec::new()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn text_font_runtime_warnings_for_texts(_texts: &[SceneRenderTextItem]) -> Vec<NativeSceneWarning> {
     Vec::new()
 }
 
@@ -1071,6 +1230,34 @@ impl NativeSceneViewHandle {
         }
     }
 
+    fn update_dynamic_text(
+        &self,
+        app: &AppHandle,
+        label: &str,
+        texts: &[SceneRenderTextItem],
+        paused: bool,
+    ) -> Result<Vec<NativeSceneWarning>, String> {
+        #[cfg(target_os = "macos")]
+        {
+            let app = app.clone();
+            let label = label.to_string();
+            let texts = texts.to_vec();
+            return run_on_main(move |mtm| {
+                let window = app
+                    .get_webview_window(&label)
+                    .ok_or_else(|| format!("player window {label} was not found"))?;
+                let host = self.host.get(mtm);
+                host.update_dynamic_text(&window, texts, paused)
+            });
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (app, label, texts, paused);
+            Ok(Vec::new())
+        }
+    }
+
     fn teardown(&self) {
         #[cfg(target_os = "macos")]
         run_on_main(|mtm| {
@@ -1143,6 +1330,16 @@ impl NativeSceneRenderDelegate {
             .apply_scene(scene_key, plan, phase10_graph, paused)
     }
 
+    fn apply_dynamic_text_update(
+        &self,
+        texts: Vec<SceneRenderTextItem>,
+    ) -> Result<Vec<NativeSceneWarning>, String> {
+        self.ivars()
+            .renderer
+            .borrow_mut()
+            .apply_dynamic_text_update(texts)
+    }
+
     fn clear_scene(&self) {
         self.ivars().renderer.borrow_mut().clear_scene();
     }
@@ -1197,6 +1394,26 @@ impl NativeSceneViewHost {
             self.view.draw();
         }
 
+        Ok(warnings)
+    }
+
+    fn update_dynamic_text(
+        &self,
+        window: &tauri::WebviewWindow,
+        texts: Vec<SceneRenderTextItem>,
+        paused: bool,
+    ) -> Result<Vec<NativeSceneWarning>, String> {
+        let warnings = self.delegate.apply_dynamic_text_update(texts)?;
+        let container_ptr = window.ns_view().map_err(|error| error.to_string())?;
+        let container = unsafe { &*(container_ptr.cast::<NSView>()) };
+        if !self.view.isDescendantOf(container) {
+            return Err(
+                "native Scene view is not attached to the target player window".to_string(),
+            );
+        }
+        if paused {
+            self.view.draw();
+        }
         Ok(warnings)
     }
 
@@ -1702,6 +1919,50 @@ impl NativeSceneMetalRenderer {
         self.scene_key = Some(scene_key.to_string());
         self.particle_signature = next_particle_signature;
         self.plan = Some(plan);
+        Ok(warnings)
+    }
+
+    fn apply_dynamic_text_update(
+        &mut self,
+        texts: Vec<SceneRenderTextItem>,
+    ) -> Result<Vec<NativeSceneWarning>, String> {
+        let mut retained_texts = Vec::new();
+        let mut required_text_keys = BTreeSet::new();
+        let mut warnings = Vec::new();
+
+        if self.plan.is_none() {
+            return Err("native Scene renderer has no active plan for dynamic text update".into());
+        }
+
+        for item in texts {
+            let key = text_texture_cache_key(&item);
+            match self.ensure_text_texture_loaded(&item, &key) {
+                Ok(text_warnings) => {
+                    required_text_keys.insert(key);
+                    retained_texts.push(item);
+                    warnings.extend(text_warnings);
+                }
+                Err(error) => warnings.push(NativeSceneWarning {
+                    code: "text-raster-failed".to_string(),
+                    message: format!(
+                        "Scene text {} could not be rasterized for Metal.",
+                        item.object_name
+                    ),
+                    detail: Some(SceneDiagnosticDetail::runtime(
+                        SceneDiagnosticDomain::Text,
+                        "text-raster",
+                        error,
+                    )),
+                }),
+            }
+        }
+
+        self.text_texture_cache
+            .retain(|key, _| required_text_keys.contains(key));
+        if let Some(plan) = self.plan.as_mut() {
+            plan.texts = retained_texts;
+        }
+
         Ok(warnings)
     }
 

@@ -252,6 +252,12 @@ pub struct SceneRenderPlanReport {
     pub issues: Vec<SceneRenderIssue>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneRenderTextUpdateReport {
+    pub texts: Vec<SceneRenderTextItem>,
+    pub issues: Vec<SceneRenderIssue>,
+}
+
 impl SceneRenderPlanReport {
     pub fn is_blocked(&self) -> bool {
         self.issues
@@ -543,6 +549,50 @@ pub fn build_scene_render_plan_with_resolver(
     }
 
     SceneRenderPlanReport { plan, issues }
+}
+
+pub fn build_scene_render_text_update_with_resolver(
+    scene: &SceneRuntimeDocument,
+    resolver: Option<&SceneResourceResolver>,
+) -> SceneRenderTextUpdateReport {
+    let mut texts = Vec::new();
+    let mut issues = Vec::new();
+    let source_text_layers = scene
+        .source
+        .text_layers
+        .iter()
+        .map(|layer| (layer.id, layer))
+        .collect::<BTreeMap<_, _>>();
+
+    for object_id in &scene.evaluated.render_list {
+        let Some(EvaluatedSceneObject::Text {
+            base,
+            behavior,
+            text,
+        }) = scene.evaluated.objects.get(object_id)
+        else {
+            continue;
+        };
+
+        if !base.visible || base.opacity <= 0.001 {
+            continue;
+        }
+
+        if let Some(text_item) = plan_text_item(
+            base.id,
+            &base.name,
+            base,
+            behavior,
+            text,
+            source_text_layers.get(&base.id).copied(),
+            resolver,
+            &mut issues,
+        ) {
+            texts.push(text_item);
+        }
+    }
+
+    SceneRenderTextUpdateReport { texts, issues }
 }
 
 impl SceneRenderIssue {
