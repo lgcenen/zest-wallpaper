@@ -10,14 +10,14 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     models::{
         EvaluatedSceneCamera, EvaluatedSceneObject, PlayerRuntimeState, SceneParallax,
-        SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer, WallpaperRecord, WallpaperRuntime,
-        WallpaperRuntimeRecord, WallpaperType,
+        SceneRuntimeDocument, WallpaperRecord, WallpaperRuntime, WallpaperRuntimeRecord,
+        WallpaperType,
     },
     services::{
         audio_input_service, lifecycle_service, native_video_service, native_web_service,
         scene_manifest_service, scene_native_renderer_service, scene_now_playing_provider_service,
-        scene_support_service, static_snapshot_generation_service, static_snapshot_service,
-        window_service,
+        scene_support_service, scene_text_behavior_service, static_snapshot_generation_service,
+        static_snapshot_service, window_service,
     },
     store::{find_record, save_library, save_player_state, AppState, DynamicPlayerState},
 };
@@ -51,6 +51,25 @@ enum SceneUpdateCadence {
     Minute,
     TwoSeconds,
     Second,
+}
+
+impl From<scene_text_behavior_service::SceneTextRefreshCadence> for SceneUpdateCadence {
+    fn from(cadence: scene_text_behavior_service::SceneTextRefreshCadence) -> Self {
+        match cadence {
+            scene_text_behavior_service::SceneTextRefreshCadence::CustomMillis(interval_millis) => {
+                SceneUpdateCadence::CustomMillis(interval_millis)
+            }
+            scene_text_behavior_service::SceneTextRefreshCadence::Minute => {
+                SceneUpdateCadence::Minute
+            }
+            scene_text_behavior_service::SceneTextRefreshCadence::TwoSeconds => {
+                SceneUpdateCadence::TwoSeconds
+            }
+            scene_text_behavior_service::SceneTextRefreshCadence::Second => {
+                SceneUpdateCadence::Second
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -814,8 +833,9 @@ fn scene_update_cadence(scene: &SceneRuntimeDocument) -> Option<SceneUpdateCaden
         .source
         .text_layers
         .iter()
-        .filter_map(text_layer_update_cadence)
-        .min_by_key(|cadence| cadence.interval_millis());
+        .filter_map(scene_text_behavior_service::text_layer_update_cadence)
+        .min_by_key(|cadence| cadence.interval_millis())
+        .map(SceneUpdateCadence::from);
     let now_playing_cadence =
         scene_now_playing_provider_service::uses_now_playing_provider(&scene.source).then(|| {
             SceneUpdateCadence::CustomMillis(
@@ -882,51 +902,6 @@ impl SceneUpdateCadence {
             SceneUpdateCadence::TwoSeconds => 2_000,
             SceneUpdateCadence::Second => 1_000,
         }
-    }
-}
-
-fn text_layer_update_cadence(layer: &SceneTextLayer) -> Option<SceneUpdateCadence> {
-    if let Some(interval_millis) = layer
-        .script_refresh_interval_millis
-        .filter(|interval_millis| *interval_millis > 0)
-    {
-        return Some(match interval_millis {
-            1..=999 => SceneUpdateCadence::CustomMillis(interval_millis),
-            1_000 => SceneUpdateCadence::Second,
-            2_000 => SceneUpdateCadence::TwoSeconds,
-            60_000 => SceneUpdateCadence::Minute,
-            _ => SceneUpdateCadence::CustomMillis(interval_millis),
-        });
-    }
-
-    match layer.behavior {
-        SceneTextBehavior::Clock if layer.show_seconds == Some(true) => {
-            Some(SceneUpdateCadence::Second)
-        }
-        SceneTextBehavior::Script => scripted_text_update_cadence(layer.script_text.as_deref()),
-        SceneTextBehavior::Clock
-        | SceneTextBehavior::Date
-        | SceneTextBehavior::Weekday
-        | SceneTextBehavior::DayPeriod => Some(SceneUpdateCadence::Minute),
-        SceneTextBehavior::MediaTitle | SceneTextBehavior::Fps | SceneTextBehavior::Static => None,
-    }
-}
-
-fn scripted_text_update_cadence(script_text: Option<&str>) -> Option<SceneUpdateCadence> {
-    let lower_script = script_text?.to_ascii_lowercase();
-
-    if lower_script.contains("getseconds") || lower_script.contains("date.now") {
-        Some(SceneUpdateCadence::Second)
-    } else if lower_script.contains("new date")
-        || lower_script.contains("getminutes")
-        || lower_script.contains("gethours")
-        || lower_script.contains("getday")
-        || lower_script.contains("getmonth")
-        || lower_script.contains("getfullyear")
-    {
-        Some(SceneUpdateCadence::Minute)
-    } else {
-        None
     }
 }
 

@@ -1,17 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
 use crate::models::{
     EvaluatedAudioState, EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
     EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
     SceneAxisBindings, SceneBinding, SceneCamera, SceneManifest, SceneNowPlayingSnapshot,
-    SceneNowPlayingState, SceneRenderNodeKind, SceneTextBehavior, SceneTextLayer, SceneVisualLayer,
-    WallpaperProperty,
+    SceneRenderNodeKind, SceneTextBehavior, SceneTextLayer, SceneVisualLayer, WallpaperProperty,
 };
 
-use super::scene_text_script_runtime_service;
+use super::{scene_text_behavior_service, scene_text_script_runtime_service};
 
 pub fn evaluate_scene_runtime_document_with_runtime_key(
     runtime_owner_key: Option<&str>,
@@ -276,7 +275,11 @@ fn evaluate_scene_with_runtime_key(
                         block_align: layer.block_align,
                     },
                     layout: text_layout,
-                    dynamic_input_generation: text_dynamic_input_generation(layer, now_playing),
+                    dynamic_input_generation:
+                        scene_text_behavior_service::text_dynamic_input_generation(
+                            layer,
+                            now_playing,
+                        ),
                 },
             },
         );
@@ -865,60 +868,19 @@ fn resolve_text(
         }
     }
 
-    match layer.behavior {
-        SceneTextBehavior::Script => {
-            scene_text_script_runtime_service::evaluate_scripted_text_layer(
-                runtime_owner_key,
-                layer,
-                properties,
-                now,
-            )
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                if layer.content.trim().is_empty() {
-                    layer.name.clone()
-                } else {
-                    layer.content.clone()
-                }
-            })
-        }
-        SceneTextBehavior::Clock => format_clock_for_layer(layer, now),
-        SceneTextBehavior::Date => format_calendar_text(layer, now, false),
-        SceneTextBehavior::Weekday => format_calendar_text(layer, now, true),
-        SceneTextBehavior::DayPeriod => format_day_period(layer, now),
-        SceneTextBehavior::MediaTitle => now_playing
-            .filter(|snapshot| snapshot.state == SceneNowPlayingState::Ready)
-            .and_then(|snapshot| snapshot.title.as_ref())
-            .map(|title| title.trim().to_string())
-            .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| {
-                if layer.content.trim().is_empty() {
-                    layer.name.clone()
-                } else {
-                    layer.content.clone()
-                }
-            }),
-        SceneTextBehavior::Fps => "60 FPS".to_string(),
-        SceneTextBehavior::Static => {
-            if layer.content.trim().is_empty() {
-                layer.name.clone()
-            } else {
-                layer.content.clone()
-            }
-        }
+    if layer.behavior == SceneTextBehavior::Script {
+        return scene_text_script_runtime_service::evaluate_scripted_text_layer(
+            runtime_owner_key,
+            layer,
+            properties,
+            now,
+        )
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| scene_text_behavior_service::fallback_text(layer));
     }
-}
 
-fn text_dynamic_input_generation(
-    layer: &SceneTextLayer,
-    now_playing: Option<&SceneNowPlayingSnapshot>,
-) -> Option<u64> {
-    if layer.behavior == SceneTextBehavior::MediaTitle {
-        now_playing.map(|snapshot| snapshot.generation)
-    } else {
-        None
-    }
+    scene_text_behavior_service::evaluate_text_behavior(layer, now, now_playing).value
 }
 
 fn evaluate_text_layout(
@@ -1093,431 +1055,6 @@ fn alignment_offset(container: f64, content: f64, alignment: &str) -> f64 {
     }
 }
 
-fn format_clock_for_layer(layer: &SceneTextLayer, now: &DateTime<Local>) -> String {
-    let mut hours = now.hour() as i32;
-    if layer.use_24h_format == Some(false) {
-        hours %= 12;
-        if hours == 0 {
-            hours = 12;
-        }
-    }
-    let delimiter = layer
-        .delimiter
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(":");
-    let hour_text = format!("{hours:02}");
-    let minute_text = format!("{:02}", now.minute());
-    let second_text = format!("{:02}", now.second());
-    if layer.show_seconds == Some(true) {
-        format!("{hour_text}{delimiter}{minute_text}{delimiter}{second_text}")
-    } else {
-        format!("{hour_text}{delimiter}{minute_text}")
-    }
-}
-
-fn format_day_period(layer: &SceneTextLayer, now: &DateTime<Local>) -> String {
-    authored_day_period_label(layer, now.hour())
-        .unwrap_or_else(|| default_day_period_label(&layer.content, now.hour()).to_string())
-}
-
-fn authored_day_period_label(layer: &SceneTextLayer, hour: u32) -> Option<String> {
-    let script = layer.script_text.as_deref()?.trim();
-    if script.is_empty() {
-        return None;
-    }
-
-    let rules = parse_day_period_hour_rules(script)?;
-    let assignments = parse_day_period_switch_assignments(script);
-    let label_sets = parse_day_period_label_sets(script);
-    let selector = select_day_period_selector(&rules, hour)?;
-    let assignment = assignments.get(selector.as_str())?;
-    resolve_day_period_assignment(assignment, &label_sets)
-}
-
-fn default_day_period_label<'a>(content: &str, hour: u32) -> &'a str
-where
-    'static: 'a,
-{
-    let zh = if hour < 2 {
-        "凌晨"
-    } else if hour < 6 {
-        "夜间"
-    } else if hour < 8 {
-        "早晨"
-    } else if hour < 11 {
-        "上午"
-    } else if hour < 13 {
-        "中午"
-    } else if hour < 17 {
-        "下午"
-    } else if hour < 20 {
-        "傍晚"
-    } else {
-        "晚上"
-    };
-    let en = if hour < 2 {
-        "Before dawn"
-    } else if hour < 6 {
-        "At night"
-    } else if hour < 11 {
-        "Morning"
-    } else if hour < 13 {
-        "Noon"
-    } else if hour < 17 {
-        "Afternoon"
-    } else if hour < 20 {
-        "Evening"
-    } else {
-        "Night"
-    };
-    let has_ascii = content.chars().any(|ch| ch.is_ascii_alphabetic());
-    let has_chinese = content
-        .chars()
-        .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch));
-    if has_ascii && !has_chinese {
-        en
-    } else if has_ascii && has_chinese {
-        if hour < 2 {
-            "凌晨 / Before dawn"
-        } else if hour < 6 {
-            "夜间 / At night"
-        } else if hour < 11 {
-            "上午 / Morning"
-        } else if hour < 13 {
-            "中午 / Noon"
-        } else if hour < 17 {
-            "下午 / Afternoon"
-        } else if hour < 20 {
-            "傍晚 / Evening"
-        } else {
-            "晚上 / Night"
-        }
-    } else {
-        zh
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DayPeriodRule {
-    upper_hour_exclusive: Option<u32>,
-    selector: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum DayPeriodAssignment {
-    Direct(String),
-    Indexed { set_name: String, index: i64 },
-}
-
-fn parse_day_period_hour_rules(script: &str) -> Option<Vec<DayPeriodRule>> {
-    let time_tag_pos = script.find("timeTag")?;
-    let assignment = &script[time_tag_pos..];
-    let equals = assignment.find('=')?;
-    let expression = assignment[equals + 1..].split(';').next()?.trim();
-    let mut remaining = expression;
-    let mut rules = Vec::new();
-
-    loop {
-        let trimmed = remaining.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        let Some(question) = trimmed.find('?') else {
-            let (selector, _) = parse_quoted_literal(trimmed)?;
-            rules.push(DayPeriodRule {
-                upper_hour_exclusive: None,
-                selector,
-            });
-            break;
-        };
-
-        let upper_hour_exclusive = parse_hour_upper_bound(&trimmed[..question])?;
-        let after_question = &trimmed[question + 1..];
-        let (selector, remainder) = parse_quoted_literal(after_question)?;
-        rules.push(DayPeriodRule {
-            upper_hour_exclusive: Some(upper_hour_exclusive),
-            selector,
-        });
-        let colon = remainder.find(':')?;
-        remaining = &remainder[colon + 1..];
-    }
-
-    (!rules.is_empty()).then_some(rules)
-}
-
-fn parse_hour_upper_bound(condition: &str) -> Option<u32> {
-    let compact: String = condition.chars().filter(|ch| !ch.is_whitespace()).collect();
-    if let Some(index) = compact.find("<=") {
-        return compact[index + 2..]
-            .chars()
-            .take_while(|ch| ch.is_ascii_digit())
-            .collect::<String>()
-            .parse::<u32>()
-            .ok()
-            .map(|value| value.saturating_add(1));
-    }
-
-    let index = compact.find('<')?;
-    compact[index + 1..]
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>()
-        .parse::<u32>()
-        .ok()
-}
-
-fn select_day_period_selector(rules: &[DayPeriodRule], hour: u32) -> Option<String> {
-    for rule in rules {
-        match rule.upper_hour_exclusive {
-            Some(upper) if hour < upper => return Some(rule.selector.clone()),
-            None => return Some(rule.selector.clone()),
-            _ => {}
-        }
-    }
-    rules.last().map(|rule| rule.selector.clone())
-}
-
-fn parse_day_period_switch_assignments(script: &str) -> BTreeMap<String, DayPeriodAssignment> {
-    let mut assignments = BTreeMap::new();
-    let mut remaining = script;
-
-    while let Some(case_pos) = remaining.find("case") {
-        remaining = &remaining[case_pos + 4..];
-        let Some((selector, after_selector)) = parse_quoted_literal(remaining) else {
-            continue;
-        };
-        let Some(body_start) = after_selector.find(':') else {
-            continue;
-        };
-        let body = &after_selector[body_start + 1..];
-        let body_end = body
-            .find("break")
-            .or_else(|| body.find("case"))
-            .unwrap_or(body.len());
-        if let Some(assignment) = parse_day_period_assignment(&body[..body_end]) {
-            assignments.insert(selector, assignment);
-        }
-        remaining = &body[body_end..];
-    }
-
-    assignments
-}
-
-fn parse_day_period_assignment(body: &str) -> Option<DayPeriodAssignment> {
-    let equals = body.find('=')?;
-    let expression = body[equals + 1..].split(';').next()?.trim();
-    if let Some((direct, _)) = parse_quoted_literal(expression) {
-        return Some(DayPeriodAssignment::Direct(direct));
-    }
-
-    let bracket = expression.find('[')?;
-    let close = expression[bracket + 1..].find(']')? + bracket + 1;
-    let set_name = expression[..bracket]
-        .trim()
-        .trim_end_matches('.')
-        .to_string();
-    let index = expression[bracket + 1..close].trim().parse::<i64>().ok()?;
-    Some(DayPeriodAssignment::Indexed { set_name, index })
-}
-
-fn parse_day_period_label_sets(script: &str) -> BTreeMap<String, BTreeMap<i64, String>> {
-    let mut label_sets = BTreeMap::new();
-    let mut remaining = script;
-
-    while let Some((keyword_index, keyword_len)) = ["let ", "const ", "var "]
-        .into_iter()
-        .filter_map(|keyword| remaining.find(keyword).map(|index| (index, keyword.len())))
-        .min_by_key(|(index, _)| *index)
-    {
-        remaining = &remaining[keyword_index + keyword_len..];
-        let identifier_end = remaining
-            .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-            .unwrap_or(remaining.len());
-        let identifier = remaining[..identifier_end].trim();
-        let after_identifier = remaining[identifier_end..].trim_start();
-        if !after_identifier.starts_with('=') {
-            continue;
-        }
-        let after_equals = after_identifier[1..].trim_start();
-        if !after_equals.starts_with('{') {
-            continue;
-        }
-        let Some(close_index) = after_equals.find('}') else {
-            continue;
-        };
-        let object_body = &after_equals[1..close_index];
-        let entries = parse_string_object_entries(object_body);
-        if !entries.is_empty() {
-            label_sets.insert(identifier.to_string(), entries);
-        }
-        remaining = &after_equals[close_index + 1..];
-    }
-
-    label_sets
-}
-
-fn parse_string_object_entries(body: &str) -> BTreeMap<i64, String> {
-    body.split(',')
-        .filter_map(|entry| {
-            let mut parts = entry.splitn(2, ':');
-            let key = parts.next()?.trim().trim_matches('\'').trim_matches('"');
-            let value = parts.next()?.trim();
-            let index = key.parse::<i64>().ok()?;
-            let (label, _) = parse_quoted_literal(value)?;
-            Some((index, label))
-        })
-        .collect()
-}
-
-fn resolve_day_period_assignment(
-    assignment: &DayPeriodAssignment,
-    label_sets: &BTreeMap<String, BTreeMap<i64, String>>,
-) -> Option<String> {
-    match assignment {
-        DayPeriodAssignment::Direct(value) => Some(value.clone()),
-        DayPeriodAssignment::Indexed { set_name, index } => label_sets
-            .get(set_name)
-            .and_then(|set| set.get(index))
-            .cloned(),
-    }
-}
-
-fn parse_quoted_literal(input: &str) -> Option<(String, &str)> {
-    let start = input.find(['\'', '"'])?;
-    let quote = input[start..].chars().next()?;
-    let mut escaped = false;
-    let mut value = String::new();
-
-    for (offset, ch) in input[start + quote.len_utf8()..].char_indices() {
-        if escaped {
-            value.push(ch);
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == quote {
-            let end = start + quote.len_utf8() + offset + ch.len_utf8();
-            return Some((value, &input[end..]));
-        }
-        value.push(ch);
-    }
-
-    None
-}
-
-fn format_calendar_text(
-    layer: &SceneTextLayer,
-    now: &DateTime<Local>,
-    weekday_only: bool,
-) -> String {
-    let short = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
-    let full = [
-        "SUNDAY",
-        "MONDAY",
-        "TUESDAY",
-        "WEDNESDAY",
-        "THURSDAY",
-        "FRIDAY",
-        "SATURDAY",
-    ];
-    let months_numeric = [
-        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
-    ];
-    let months_abbr = [
-        "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
-    ];
-    let months_full = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    let align_vertical = layer.align_vertical.unwrap_or(weekday_only);
-    let use_delimiter = layer.use_delimiter.unwrap_or(!align_vertical);
-    let show_day = layer.show_day.unwrap_or(weekday_only);
-    let month_format = layer.month_format.as_deref().unwrap_or("2");
-    let day_format = layer.day_format.as_deref().unwrap_or("1");
-    let wants_vertical_tokens = align_vertical
-        && (layer.content.contains('\n')
-            || !use_delimiter
-            || script_wants_vertical_calendar_tokens(layer.script_text.as_deref()));
-    let wants_spaced_weekday = script_wants_spaced_weekday(layer.script_text.as_deref());
-    let weekday_base = if day_format == "2" {
-        full[now.weekday().num_days_from_sunday() as usize]
-    } else {
-        short[now.weekday().num_days_from_sunday() as usize]
-    };
-    let weekday = if align_vertical {
-        join_glyphs(&weekday_base.replace(char::is_whitespace, ""), "\n")
-    } else if wants_spaced_weekday {
-        join_glyphs(&weekday_base.replace(char::is_whitespace, ""), " ")
-    } else {
-        weekday_base.to_string()
-    };
-
-    if weekday_only && show_day {
-        return weekday;
-    }
-
-    let day_value = now.day();
-    let day_text = if wants_vertical_tokens {
-        join_glyphs(&format!("{day_value:02}"), "\n")
-    } else {
-        day_value.to_string()
-    };
-    let month_source = if month_format == "3" {
-        months_full[now.month0() as usize]
-    } else if month_format == "2" {
-        months_abbr[now.month0() as usize]
-    } else {
-        months_numeric[now.month0() as usize]
-    };
-    let month_text = if wants_vertical_tokens && month_format != "3" {
-        join_glyphs(&month_source.replace(char::is_whitespace, ""), "\n")
-    } else {
-        month_source.to_string()
-    };
-    let year_text = if wants_vertical_tokens {
-        join_glyphs(&now.year().to_string(), "\n")
-    } else {
-        now.year().to_string()
-    };
-    let delimiter = if use_delimiter {
-        layer
-            .delimiter
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("/")
-            .to_string()
-    } else if wants_vertical_tokens {
-        "\n\n".to_string()
-    } else {
-        " ".to_string()
-    };
-    let date_text = format!("{day_text}{delimiter}{month_text}{delimiter}{year_text}");
-    if show_day {
-        if align_vertical {
-            format!("{weekday}\n\n{date_text}")
-        } else {
-            format!("{weekday} {date_text}")
-        }
-    } else {
-        date_text
-    }
-}
-
 fn estimate_text_size(
     text: &str,
     point_size: f64,
@@ -1563,28 +1100,6 @@ fn glyph_width_units(character: char) -> f64 {
         _ if character.is_ascii_lowercase() => 0.62,
         _ => 1.0,
     }
-}
-
-fn script_wants_spaced_weekday(script_text: Option<&str>) -> bool {
-    let script = script_text.unwrap_or_default().to_ascii_lowercase();
-    script.contains("'s u n'")
-        || script.contains("'m o n'")
-        || script.contains("'s u n d a y'")
-        || script.contains("'m o n d a y'")
-}
-
-fn script_wants_vertical_calendar_tokens(script_text: Option<&str>) -> bool {
-    let script = script_text.unwrap_or_default().to_ascii_lowercase();
-    script.contains("+ newline +")
-        || script.contains("+ nl +")
-        || (script.contains("delimitervalue = [") && script.contains("\\n\\n"))
-}
-
-fn join_glyphs(text: &str, separator: &str) -> String {
-    text.chars()
-        .map(|ch| ch.to_string())
-        .collect::<Vec<_>>()
-        .join(separator)
 }
 
 fn resolve_bound_number(
