@@ -1,5 +1,9 @@
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::{Mutex, MutexGuard},
+};
 
+use anyhow::anyhow;
 use tauri::{
     AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, Runtime, WebviewUrl,
     WebviewWindowBuilder,
@@ -16,6 +20,8 @@ use objc2_core_graphics::kCGDesktopWindowLevel;
 
 const PRIMARY_PLAYER_LABEL: &str = "player";
 const SECONDARY_PLAYER_PREFIX: &str = "player-screen-";
+
+static PLAYER_WINDOW_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DisplayTopology {
@@ -79,7 +85,7 @@ pub fn configure_workbench_window<R: Runtime>(window: &tauri::WebviewWindow<R>) 
 #[cfg(not(target_os = "macos"))]
 pub fn configure_workbench_window<R: Runtime>(_window: &tauri::WebviewWindow<R>) {}
 
-pub fn ensure_player_windows<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Vec<String>> {
+fn ensure_player_windows_locked<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Vec<String>> {
     let plan = current_player_window_plan(app)?;
     let expected_labels = plan
         .iter()
@@ -94,19 +100,29 @@ pub fn ensure_player_windows<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Ve
         if expected_labels.contains(&label) {
             continue;
         }
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.destroy();
-        }
+        destroy_player_window_for_label(app, &label).map_err(tauri_anyhow)?;
     }
 
     Ok(plan.into_iter().map(|entry| entry.label).collect())
 }
 
 pub fn show_player_windows<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<usize> {
-    let labels = ensure_player_windows(app)?;
+    let _transaction = lock_player_window_transaction()?;
+    let labels = ensure_player_windows_locked(app)?;
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
             let _ = window.show();
+        }
+    }
+    Ok(labels.len())
+}
+
+pub fn hide_player_windows_from_desktop<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<usize> {
+    let _transaction = lock_player_window_transaction()?;
+    let labels = player_window_labels(app);
+    for label in &labels {
+        if let Some(window) = app.get_webview_window(label) {
+            remove_player_window_from_desktop(&window);
         }
     }
     Ok(labels.len())
@@ -149,10 +165,9 @@ pub fn set_player_windows_snapshot_background_color<R: Runtime>(
 }
 
 pub fn close_player_windows<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let _transaction = lock_player_window_transaction()?;
     for label in player_window_labels(app) {
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.destroy();
-        }
+        destroy_player_window_for_label(app, &label).map_err(tauri_anyhow)?;
     }
     Ok(())
 }
@@ -221,6 +236,46 @@ fn create_or_update_player_window<R: Runtime>(
     let _ = window.set_ignore_cursor_events(true);
     let _ = window.set_visible_on_all_workspaces(true);
     Ok(())
+}
+
+fn destroy_player_window_for_label<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(label) {
+        remove_player_window_from_desktop(&window);
+        window.destroy().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn remove_player_window_from_desktop<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let _ = window.hide();
+    let _ = window.set_visible_on_all_workspaces(false);
+    let _ = window.with_webview(|webview| unsafe {
+        let _marker =
+            MainThreadMarker::new().expect("player window removal must run on the main thread");
+        let ns_window: &NSWindow = &*webview.ns_window().cast();
+        ns_window.orderOut(None);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn remove_player_window_from_desktop<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let _ = window.hide();
+}
+
+fn lock_player_window_transaction() -> tauri::Result<MutexGuard<'static, ()>> {
+    PLAYER_WINDOW_TRANSACTION_LOCK.lock().map_err(|error| {
+        tauri_anyhow(format!(
+            "player window transaction lock is poisoned: {error}"
+        ))
+    })
+}
+
+fn tauri_anyhow(error: String) -> tauri::Error {
+    tauri::Error::Anyhow(anyhow!(error))
 }
 
 fn display_topology(monitor: &Monitor) -> DisplayTopology {

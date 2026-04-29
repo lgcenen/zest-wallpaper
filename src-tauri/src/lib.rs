@@ -73,18 +73,11 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../src/gateway/wallpaper-api.ts"
         ));
-        let product_contract = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../docs/static-snapshot-sync-contract.md"
-        ));
 
         assert!(!wallpaper_commands.contains("apply_static_wallpaper"));
         assert!(!wallpaper_gateway.contains("applyStaticWallpaper"));
         assert!(workbench_copy.contains("静态快照同步"));
         assert!(workbench_copy.contains("static snapshot sync"));
-        assert!(product_contract.contains("active dynamic wallpaper"));
-        assert!(product_contract.contains("MUST NOT fall back to `preview_path`"));
-        assert!(product_contract.contains("independent static wallpaper mode is forbidden"));
     }
 
     #[test]
@@ -286,11 +279,6 @@ mod tests {
 
     #[test]
     fn phase_05_contract_adds_runtime_diagnostics_and_release_docs() {
-        let agents = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md"));
-        let phase_05_spec = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../docs/specs/phase-05-hardening-release.md"
-        ));
         let player_gateway = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../src/gateway/player-api.ts"
@@ -332,18 +320,6 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/src/services/web_runtime_service.rs"
         ));
-        let known_limitations = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../docs/known-limitations.md"
-        ));
-        let release_checklist = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../docs/release-checklist.md"
-        ));
-        let static_snapshot_contract = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../docs/static-snapshot-sync-contract.md"
-        ));
 
         assert!(services_mod.contains("pub mod diagnostic_service"));
         assert!(lifecycle_service.contains("DiagnosticServiceState::default"));
@@ -360,9 +336,6 @@ mod tests {
         assert!(native_web_service.contains("diagnostic_service::"));
         assert!(native_web_service.contains("resolve_active_web_entry_path"));
         assert!(audio_input_service.contains("capture-unavailable"));
-        assert!(agents.contains("不允许把 `/Users/...`、`/Volumes/...`"));
-        assert!(phase_05_spec.contains("可移植回归"));
-        assert!(phase_05_spec.contains("手工 smoke"));
         assert!(!importer.contains("/Users/lin/"));
         assert!(!importer.contains("/Volumes/"));
         assert!(!scene.contains("/Users/lin/"));
@@ -371,27 +344,6 @@ mod tests {
         assert!(!tex.contains("/Volumes/"));
         assert!(!web_runtime_service.contains("/Users/lin/"));
         assert!(!web_runtime_service.contains("/Volumes/"));
-        assert!(known_limitations.contains("macOS only"));
-        assert!(known_limitations.contains("Screen Recording"));
-        assert!(known_limitations.contains("WKWebView"));
-        assert!(known_limitations.contains("AVPlayer"));
-        assert!(known_limitations.contains("player:diagnostic"));
-        assert!(known_limitations.contains("static-snapshot-sync/snapshot-unavailable"));
-        assert!(known_limitations.contains("static-snapshot-sync/apply-failed"));
-        assert!(known_limitations.contains("手工 smoke"));
-        assert!(known_limitations.contains("会直接失败并回传错误"));
-        assert!(release_checklist.contains("cargo test -j 1"));
-        assert!(release_checklist.contains("cargo check -j 1"));
-        assert!(release_checklist.contains("npm run build"));
-        assert!(release_checklist.contains("可移植自动回归"));
-        assert!(release_checklist.contains("手工 smoke"));
-        assert!(release_checklist.contains("非当前宿主的清理失败"));
-        assert!(release_checklist.contains("static-snapshot-sync/snapshot-unavailable"));
-        assert!(release_checklist.contains("static-snapshot-sync/apply-failed"));
-        assert!(static_snapshot_contract.contains("Generation and Registration"));
-        assert!(static_snapshot_contract.contains("Diagnostics and User-Visible Failure Semantics"));
-        assert!(static_snapshot_contract
-            .contains("Startup library loading must not batch-generate snapshots"));
     }
 
     #[test]

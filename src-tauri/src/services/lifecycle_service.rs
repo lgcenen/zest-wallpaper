@@ -244,6 +244,12 @@ pub fn close_player_windows(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+pub fn hide_player_windows_for_snapshot_sync(app: &AppHandle) -> tauri::Result<()> {
+    window_service::hide_player_windows_from_desktop(app)?;
+    record_player_visible(app, false);
+    Ok(())
+}
+
 pub fn sync_pause_menu_state(app: &AppHandle, paused: bool) {
     if let Some(menu_state) = app.try_state::<TrayMenuState>() {
         let _ = menu_state.pause_item.set_checked(paused);

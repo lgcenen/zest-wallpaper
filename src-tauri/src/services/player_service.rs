@@ -53,8 +53,6 @@ enum SceneUpdateCadence {
     Second,
 }
 
-const DESKTOP_WINDOW_REBUILD_SETTLE_DELAY: Duration = Duration::from_millis(180);
-
 #[derive(Debug, Clone)]
 struct ApplyWallpaperCandidate {
     player_state: DynamicPlayerState,
@@ -144,10 +142,10 @@ fn prepare_static_snapshot_sync_before_runtime(
     }
 
     if had_player_windows {
-        let _ = lifecycle_service::close_player_windows(app);
-        thread::sleep(DESKTOP_WINDOW_REBUILD_SETTLE_DELAY);
+        lifecycle_service::hide_player_windows_for_snapshot_sync(app)
+            .map_err(|error| error.to_string())?;
     }
-    let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, record);
+    static_snapshot_service::sync_after_active_wallpaper_change(app, state, record)?;
     Ok(())
 }
 
@@ -159,7 +157,18 @@ pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), S
     let runtime_record = runtime_document_service::runtime_record(&record);
     preflight_scene_apply(app, &record, &runtime_record)?;
 
-    let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
+    let has_static_snapshot = static_snapshot_service::snapshot_for_record(&record).is_ok();
+    let had_player_windows = !window_service::player_window_labels(app).is_empty();
+    prepare_static_snapshot_sync_before_runtime(
+        app,
+        state,
+        &record,
+        has_static_snapshot,
+        had_player_windows,
+    )?;
+    if !has_static_snapshot {
+        let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
+    }
     lifecycle_service::show_player_windows(app).map_err(|error| error.to_string())?;
     sync_native_runtime_with_transaction_lock(app, state, Some(&runtime_record), effective_paused)?;
     if should_start_scene_update_loop(&runtime_record) {
@@ -1802,6 +1811,121 @@ mod tests {
         let player = state.player.lock().expect("player lock").clone();
         assert_eq!(player.active_id.as_deref(), Some("new-wallpaper"));
         assert_eq!(player.scene_update_generation, 12);
+    }
+
+    #[test]
+    fn static_sync_prepare_hides_existing_window_before_single_reuse() {
+        let previous_player = DynamicPlayerState {
+            active_id: Some("old-wallpaper".to_string()),
+            manually_paused: false,
+            auto_pause_screen_labels: BTreeSet::new(),
+            scene_update_generation: 2,
+            last_scene_signature: None,
+        };
+        let state = app_state(previous_player.clone());
+        let mut candidate_runtime = runtime_record(
+            WallpaperRuntime::Scene {
+                scene: Default::default(),
+            },
+            WallpaperType::Scene,
+        );
+        candidate_runtime.id = "new-wallpaper".to_string();
+        let live_window_labels = RefCell::new(vec!["player".to_string()]);
+        let events = RefCell::new(Vec::new());
+
+        let result = apply_runtime_record_transaction(
+            &candidate_runtime,
+            &previous_player,
+            None,
+            &state,
+            true,
+            || {
+                events.borrow_mut().push("hide-old-windows");
+                events.borrow_mut().push("static-sync");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("ensure-player-windows");
+                assert_eq!(
+                    live_window_labels.borrow().as_slice(),
+                    ["player".to_string()]
+                );
+                Ok(())
+            },
+            |_runtime_record, _paused| {
+                events.borrow_mut().push("native-sync");
+                Ok(())
+            },
+            || Ok(()),
+            |_| Ok(()),
+        );
+
+        assert_eq!(result, Ok(false));
+        assert_eq!(live_window_labels.into_inner(), vec!["player"]);
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                "hide-old-windows",
+                "static-sync",
+                "ensure-player-windows",
+                "native-sync",
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_apply_transactions_keep_one_player_window_label() {
+        let initial_player = DynamicPlayerState {
+            active_id: Some("first-wallpaper".to_string()),
+            manually_paused: false,
+            auto_pause_screen_labels: BTreeSet::new(),
+            scene_update_generation: 4,
+            last_scene_signature: None,
+        };
+        let state = app_state(initial_player.clone());
+        let live_window_labels = RefCell::new(vec!["player".to_string()]);
+        let ensure_count = RefCell::new(0usize);
+
+        for wallpaper_id in ["second-wallpaper", "third-wallpaper"] {
+            let previous_player = state.player.lock().expect("player lock").clone();
+            let mut runtime = runtime_record(
+                WallpaperRuntime::Video {
+                    video: Default::default(),
+                },
+                WallpaperType::Video,
+            );
+            runtime.id = wallpaper_id.to_string();
+
+            let result = apply_runtime_record_transaction(
+                &runtime,
+                &previous_player,
+                None,
+                &state,
+                true,
+                || Ok(()),
+                || {
+                    *ensure_count.borrow_mut() += 1;
+                    assert_eq!(
+                        live_window_labels.borrow().as_slice(),
+                        ["player".to_string()]
+                    );
+                    Ok(())
+                },
+                |_runtime_record, _paused| Ok(()),
+                || Ok(()),
+                |_| Ok(()),
+            );
+
+            assert_eq!(result, Ok(false));
+            assert_eq!(
+                live_window_labels.borrow().as_slice(),
+                ["player".to_string()]
+            );
+        }
+
+        assert_eq!(*ensure_count.borrow(), 2);
+        let player = state.player.lock().expect("player lock").clone();
+        assert_eq!(player.active_id.as_deref(), Some("third-wallpaper"));
     }
 
     #[test]
