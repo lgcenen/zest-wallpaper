@@ -15,6 +15,7 @@ use crate::{
             SceneDiagnosticDetail, SceneDiagnosticDomain, SceneDiagnosticEntry,
             SceneDiagnosticResourceDetail, SceneDiagnosticSeverity,
         },
+        scene_particle_runtime_service::build_authored_particle_runtime_for_resource,
         scene_render_graph_service::{
             build_scene_phase10_graph, SceneGraphIssue, SceneGraphIssueCode,
             SceneGraphIssueSeverity,
@@ -356,6 +357,10 @@ fn support_error_from_render_issue(
         SceneRenderIssueCode::UnsupportedVisualAsset => {
             (SceneDiagnosticDomain::Visual, "visual-asset-unsupported")
         }
+        SceneRenderIssueCode::UnsupportedParticleRuntime => (
+            SceneDiagnosticDomain::Particle,
+            "particle-resource-unsupported",
+        ),
         SceneRenderIssueCode::MissingAssetPath | SceneRenderIssueCode::MissingAssetFile => {
             match object_kind {
                 "sound" => (
@@ -1200,36 +1205,72 @@ fn analyze_particle_resource(
     let object_label = object_name
         .map(quoted)
         .unwrap_or_else(|| "Scene".to_string());
+    if let Some(matched_path) = lookup.matched_path.as_ref() {
+        let runtime = fs::read_to_string(matched_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .map(|particle_json| {
+                build_authored_particle_runtime_for_resource(
+                    particle_path.to_string(),
+                    &particle_json,
+                )
+            });
+        if runtime
+            .as_ref()
+            .map(|runtime| runtime.adapter.supported)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let reason = runtime
+            .as_ref()
+            .and_then(|runtime| runtime.adapter.reason.clone())
+            .or_else(|| {
+                runtime.as_ref().and_then(|runtime| {
+                    runtime
+                        .diagnostics
+                        .first()
+                        .map(|diagnostic| diagnostic.message.clone())
+                })
+            })
+            .unwrap_or_else(|| {
+                "Particle resource is present, but it could not be parsed into the phase-09e authored runtime contract."
+                    .to_string()
+            });
+        let detail = SceneDiagnosticDetail::resource(
+            SceneDiagnosticDomain::Particle,
+            SceneDiagnosticResourceDetail::from_lookup(&lookup).mark_present_but_unsupported(),
+        )
+        .with_note(reason.clone());
+        push_unique_issue(
+            warnings,
+            SceneDiagnosticEntry::warning(
+                "particle-resource-unsupported",
+                format!("{object_label} resolves particle resource {particle_path}, but {reason}"),
+            )
+            .with_object(object_id, object_name, Some("particle"))
+            .with_resource_path(Some(particle_path))
+            .with_detail(detail),
+        );
+        return;
+    }
+
     let detail = SceneDiagnosticDetail::resource(
         SceneDiagnosticDomain::Particle,
-        if lookup.matched_path.is_some() {
-            SceneDiagnosticResourceDetail::from_lookup(&lookup).mark_present_but_unsupported()
-        } else {
-            SceneDiagnosticResourceDetail::from_lookup(&lookup)
-        },
+        SceneDiagnosticResourceDetail::from_lookup(&lookup),
     )
     .with_note(
-        "Phase-09 particle rendering consumes evaluated kind/size/emission data, but does not execute authored particle JSON semantics as a first-class runtime module yet.",
+        "Phase-09e distinguishes unresolved particle resources from present resources that are outside the authored runtime adapter whitelist.",
     );
-    let warning = if lookup.matched_path.is_some() {
-        SceneDiagnosticEntry::warning(
-            "particle-resource-unsupported",
-            format!(
-                "{object_label} resolves particle resource {particle_path}, but the current native particle path does not execute authored particle system JSON semantics."
-            ),
-        )
-    } else {
+    push_unique_issue(
+        warnings,
         SceneDiagnosticEntry::warning(
             "particle-resource-reference-unresolved",
             format!("{object_label} could not resolve particle resource {particle_path}."),
         )
-    };
-    push_unique_issue(
-        warnings,
-        warning
-            .with_object(object_id, object_name, Some("particle"))
-            .with_resource_path(Some(particle_path))
-            .with_detail(detail),
+        .with_object(object_id, object_name, Some("particle"))
+        .with_resource_path(Some(particle_path))
+        .with_detail(detail),
     );
 }
 
@@ -2302,6 +2343,53 @@ mod tests {
             .expect("particle resource detail");
         assert!(particle_detail.reference_resolved);
         assert!(particle_detail.present_but_unsupported);
+    }
+
+    #[test]
+    fn phase_09e_support_report_allows_supported_particle_runtime_resources() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let extracted_root = managed_root.join("extracted");
+
+        fs::create_dir_all(extracted_root.join("particles")).expect("particles dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        fs::write(
+            extracted_root.join("scene.json"),
+            r#"{
+              "objects": [
+                {
+                  "id": 8,
+                  "name": "Trail",
+                  "particle": "particles/supported.json"
+                }
+              ]
+            }"#,
+        )
+        .expect("scene json");
+        fs::write(
+            extracted_root.join("particles").join("supported.json"),
+            r#"{
+              "emitter": [{"name": "root", "rate": 24}],
+              "renderer": [{"name": "rope", "length": 8}]
+            }"#,
+        )
+        .expect("particle json");
+
+        let report = analyze_scene_support_with_builtin_root(
+            &scene_record(&managed_root),
+            &builtin_root,
+            None,
+        );
+
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "particle-resource-unsupported"));
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "particle-resource-reference-unresolved"));
     }
 
     #[test]

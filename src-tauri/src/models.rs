@@ -237,6 +237,247 @@ pub enum SceneParticleKind {
     PetalTrail,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum SceneParticleScheduleMode {
+    Autonomous,
+    #[default]
+    InputDriven,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SceneParticleRendererFamily {
+    Sprite,
+    SpriteTrail,
+    Rope,
+    RopeTrail,
+    #[default]
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SceneParticleChildKind {
+    Static,
+    EventFollow,
+    EventDeath,
+    EventSpawn,
+    #[default]
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleRuntimeDiagnostic {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleEmitterRuntime {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub rate: Option<f64>,
+    #[serde(default)]
+    pub origin: Option<[f64; 3]>,
+    #[serde(default)]
+    pub distance_min: Option<f64>,
+    #[serde(default)]
+    pub distance_max: Option<f64>,
+    #[serde(default)]
+    pub directions: Vec<[f64; 3]>,
+    #[serde(default)]
+    pub sign: Option<f64>,
+    #[serde(default)]
+    pub speed_min: Option<f64>,
+    #[serde(default)]
+    pub speed_max: Option<f64>,
+    #[serde(default)]
+    pub control_point: Option<u32>,
+    #[serde(default)]
+    pub instantaneous: bool,
+    #[serde(default)]
+    pub schedule_mode: SceneParticleScheduleMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleRendererRuntime {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub family: SceneParticleRendererFamily,
+    #[serde(default)]
+    pub length: Option<f64>,
+    #[serde(default)]
+    pub max_length: Option<f64>,
+    #[serde(default)]
+    pub min_length: Option<f64>,
+    #[serde(default)]
+    pub subdivision: Option<u32>,
+    #[serde(default)]
+    pub segments: Option<u32>,
+    #[serde(default)]
+    pub axis: Option<String>,
+    #[serde(default)]
+    pub orientation: Option<String>,
+    #[serde(default)]
+    pub uv_scale: Option<[f64; 2]>,
+    #[serde(default)]
+    pub uv_scrolling: Option<[f64; 2]>,
+    #[serde(default)]
+    pub uv_smoothing: Option<f64>,
+    #[serde(default)]
+    pub fade_alpha: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleControlPointRuntime {
+    #[serde(default)]
+    pub id: Option<u32>,
+    #[serde(default)]
+    pub flags: Vec<String>,
+    #[serde(default)]
+    pub offset: Option<[f64; 3]>,
+    #[serde(default)]
+    pub parent_control_point: Option<u32>,
+    #[serde(default)]
+    pub lock_to_pointer: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleChildRuntime {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub child_type: SceneParticleChildKind,
+    #[serde(default)]
+    pub origin: Option<[f64; 3]>,
+    #[serde(default)]
+    pub scale: Option<[f64; 3]>,
+    #[serde(default)]
+    pub angles: Option<[f64; 3]>,
+    #[serde(default)]
+    pub probability: Option<f64>,
+    #[serde(default)]
+    pub max_count: Option<u32>,
+    #[serde(default)]
+    pub control_point_start_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleControlPointOverride {
+    pub key: String,
+    #[serde(default)]
+    pub value: Option<[f64; 3]>,
+    #[serde(default)]
+    pub binding: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleInstanceOverride {
+    #[serde(default)]
+    pub rate: Option<f64>,
+    #[serde(default)]
+    pub rate_binding: Option<String>,
+    #[serde(default)]
+    pub size: Option<f64>,
+    #[serde(default)]
+    pub size_binding: Option<String>,
+    #[serde(default)]
+    pub speed: Option<f64>,
+    #[serde(default)]
+    pub speed_binding: Option<String>,
+    #[serde(default)]
+    pub alpha: Option<f64>,
+    #[serde(default)]
+    pub alpha_binding: Option<String>,
+    #[serde(default)]
+    pub lifetime: Option<f64>,
+    #[serde(default)]
+    pub lifetime_binding: Option<String>,
+    #[serde(default)]
+    pub count: Option<u32>,
+    #[serde(default)]
+    pub count_binding: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub color_binding: Option<String>,
+    #[serde(default)]
+    pub control_points: Vec<SceneParticleControlPointOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleSystemRuntime {
+    #[serde(default)]
+    pub max_count: Option<u32>,
+    #[serde(default)]
+    pub start_time: Option<f64>,
+    #[serde(default)]
+    pub flags: Vec<String>,
+    #[serde(default)]
+    pub material: Option<String>,
+    #[serde(default)]
+    pub emitters: Vec<SceneParticleEmitterRuntime>,
+    #[serde(default)]
+    pub renderers: Vec<SceneParticleRendererRuntime>,
+    #[serde(default)]
+    pub control_points: Vec<SceneParticleControlPointRuntime>,
+    #[serde(default)]
+    pub children: Vec<SceneParticleChildRuntime>,
+    #[serde(default)]
+    pub initializer_names: Vec<String>,
+    #[serde(default)]
+    pub operator_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleRuntimeAdapter {
+    pub supported: bool,
+    #[serde(default)]
+    pub draw_kind: Option<SceneParticleKind>,
+    #[serde(default)]
+    pub schedule_mode: SceneParticleScheduleMode,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneParticleRuntime {
+    pub object_id: u32,
+    pub object_name: String,
+    pub particle_path: String,
+    #[serde(default)]
+    pub object_origin: [f64; 3],
+    #[serde(default = "default_scene_particle_scale")]
+    pub object_scale: [f64; 3],
+    #[serde(default)]
+    pub object_angles: Option<[f64; 3]>,
+    #[serde(default)]
+    pub system: SceneParticleSystemRuntime,
+    #[serde(default)]
+    pub instance_override: SceneParticleInstanceOverride,
+    #[serde(default)]
+    pub adapter: SceneParticleRuntimeAdapter,
+    #[serde(default)]
+    pub diagnostics: Vec<SceneParticleRuntimeDiagnostic>,
+}
+
+fn default_scene_particle_scale() -> [f64; 3] {
+    [1.0, 1.0, 1.0]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneParallax {
@@ -523,6 +764,18 @@ pub struct SceneParticleLayer {
     pub visible: bool,
     #[serde(default)]
     pub visibility_binding: Option<SceneBinding>,
+    #[serde(default)]
+    pub position: [f64; 3],
+    #[serde(default)]
+    pub position_bindings: Option<SceneAxisBindings>,
+    #[serde(default = "default_scene_particle_scale")]
+    pub scale: [f64; 3],
+    #[serde(default)]
+    pub scale_binding: Option<String>,
+    #[serde(default)]
+    pub angles: Option<[f64; 3]>,
+    #[serde(default)]
+    pub rotation: Option<f64>,
     pub kind: SceneParticleKind,
     pub particle_path: String,
     #[serde(default)]
@@ -677,6 +930,8 @@ pub struct SceneManifest {
     pub sound_tracks: Vec<SceneSoundTrack>,
     #[serde(default)]
     pub particle_layers: Vec<SceneParticleLayer>,
+    #[serde(default)]
+    pub particle_runtimes: Vec<SceneParticleRuntime>,
     #[serde(default)]
     pub logic_graph: Vec<SceneLogicNode>,
     #[serde(default)]

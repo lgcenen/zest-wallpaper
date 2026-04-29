@@ -12,11 +12,17 @@ use crate::{
     models::{
         SceneAnimationLayer, SceneAssetKind, SceneAudioLayer, SceneAudioSource, SceneAxisBindings,
         SceneBinding, SceneCamera, SceneLogicNode, SceneLogicNodeKind, SceneManifest,
-        SceneMaterialPass, SceneNodeState, SceneParallax, SceneParticleKind, SceneParticleLayer,
-        SceneRenderNode, SceneRenderNodeKind, SceneSoundTrack, SceneTextBehavior, SceneTextLayer,
-        SceneVisualEffect, SceneVisualEffectPass, SceneVisualLayer,
+        SceneMaterialPass, SceneNodeState, SceneParallax, SceneParticleInstanceOverride,
+        SceneParticleKind, SceneParticleLayer, SceneParticleRuntime, SceneRenderNode,
+        SceneRenderNodeKind, SceneSoundTrack, SceneTextBehavior, SceneTextLayer, SceneVisualEffect,
+        SceneVisualEffectPass, SceneVisualLayer,
     },
-    services::asset_resolver::AssetResolver,
+    services::{
+        asset_resolver::AssetResolver,
+        scene_particle_runtime_service::{
+            build_scene_particle_runtime, scene_particle_control_point_override,
+        },
+    },
     system_texture::resolve_system_texture,
     tex::{extract_tex_asset, ExtractedTextureAsset},
 };
@@ -70,6 +76,7 @@ pub fn parse_scene_manifest(
     let mut audio_layers = Vec::new();
     let mut sound_tracks = Vec::new();
     let mut particle_layers = Vec::new();
+    let mut particle_runtimes = Vec::new();
 
     for object in &objects {
         if let Some(node) = parse_scene_node(object, scene_size, property_values) {
@@ -90,9 +97,13 @@ pub fn parse_scene_manifest(
             sound_tracks.push(sound_track);
         }
 
-        if let Some(particle_layer) = parse_particle_layer(object, extracted_root, property_values)
+        if let Some(particle_source) =
+            parse_particle_source(object, extracted_root, scene_size, property_values)
         {
-            particle_layers.push(particle_layer);
+            if let Some(particle_layer) = particle_source.layer {
+                particle_layers.push(particle_layer);
+            }
+            particle_runtimes.push(particle_source.runtime);
         }
 
         if let Some(visual_layer) = parse_visual_layer(
@@ -157,6 +168,7 @@ pub fn parse_scene_manifest(
         audio_layers,
         sound_tracks,
         particle_layers,
+        particle_runtimes,
         logic_graph,
         render_graph,
         material_passes,
@@ -1049,92 +1061,184 @@ fn parse_sound_track(
     })
 }
 
-fn parse_particle_layer(
+struct ParsedParticleSource {
+    layer: Option<SceneParticleLayer>,
+    runtime: SceneParticleRuntime,
+}
+
+fn parse_particle_source(
     object: &Value,
     extracted_root: &Path,
+    scene_size: [f64; 2],
     property_values: &BTreeMap<String, Value>,
-) -> Option<SceneParticleLayer> {
+) -> Option<ParsedParticleSource> {
     let particle_path = object.get("particle").and_then(Value::as_str)?;
     let particle_json_path = extracted_root.join(particle_path);
     let particle_json = read_json(&particle_json_path);
-    let kind = detect_particle_kind(particle_path, particle_json.as_ref())?;
+    let object_id = object.get("id").and_then(Value::as_u64)? as u32;
+    let object_name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Particle Layer")
+        .to_string();
+    let parent_id = object
+        .get("parent")
+        .and_then(Value::as_u64)
+        .map(|id| id as u32);
+    let position = resolve_origin_value(object.get("origin"), property_values, scene_size)
+        .unwrap_or([0.0, 0.0, 0.0]);
+    let position_bindings = parse_position_bindings(object.get("origin"));
+    let (scale, scale_binding) = resolve_vector3_with_binding(object.get("scale"), property_values);
+    let scale = scale.unwrap_or([1.0, 1.0, 1.0]);
+    let angles = parse_vector3(object.get("angles"));
+    let rotation = angles.map(|resolved| resolved[2]);
     let instance_override = object.get("instanceoverride");
-    let (color, color_binding) = resolve_string_with_binding(
-        instance_override.and_then(|value| value.get("colorn")),
+    let runtime_instance_override =
+        parse_particle_instance_override(instance_override, property_values);
+    let runtime = build_scene_particle_runtime(
+        object_id,
+        object_name.clone(),
+        particle_path.to_string(),
+        particle_json.as_ref(),
+        position,
+        scale,
+        angles,
+        runtime_instance_override.clone(),
+    );
+
+    let layer = runtime
+        .adapter
+        .supported
+        .then(|| runtime.adapter.draw_kind.clone())
+        .flatten()
+        .map(|kind| {
+            let fallback_size = scale[2].abs().max(match &kind {
+                SceneParticleKind::LineTrail => 5.0,
+                SceneParticleKind::PetalTrail => 1.5,
+            });
+            SceneParticleLayer {
+                id: object_id,
+                name: object_name,
+                dependencies: parse_dependencies(object.get("dependencies")),
+                parent_id,
+                visible: object.get("visible").and_then(as_bool).unwrap_or(true),
+                visibility_binding: parse_binding(object.get("visible")),
+                position,
+                position_bindings,
+                scale,
+                scale_binding,
+                angles,
+                rotation,
+                kind: kind.clone(),
+                particle_path: particle_path.to_string(),
+                color: runtime_instance_override.color.clone(),
+                color_binding: runtime_instance_override.color_binding.clone(),
+                size: runtime_instance_override
+                    .size
+                    .unwrap_or(fallback_size)
+                    .max(0.1),
+                size_binding: runtime_instance_override.size_binding.clone(),
+                emission_rate: particle_emission_rate(&runtime, &kind),
+            }
+        });
+
+    Some(ParsedParticleSource { layer, runtime })
+}
+
+fn parse_particle_instance_override(
+    instance_override: Option<&Value>,
+    property_values: &BTreeMap<String, Value>,
+) -> SceneParticleInstanceOverride {
+    let (rate, rate_binding) = resolve_f64_with_binding(
+        instance_override.and_then(|value| value.get("rate")),
         property_values,
     );
-    let (resolved_size, size_binding) = resolve_f64_with_binding(
+    let (size, size_binding) = resolve_f64_with_binding(
         instance_override.and_then(|value| value.get("size")),
         property_values,
     );
-    let fallback_size = parse_vector3(object.get("scale"))
-        .map(|scale| scale[2].abs().max(1.0))
-        .unwrap_or_else(|| match kind {
-            SceneParticleKind::LineTrail => 5.0,
-            SceneParticleKind::PetalTrail => 1.5,
-        });
-    let emission_rate = particle_json
-        .as_ref()
-        .and_then(|value| value.get("emitter"))
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("rate"))
-        .and_then(as_f64)
+    let (speed, speed_binding) = resolve_f64_with_binding(
+        instance_override.and_then(|value| value.get("speed")),
+        property_values,
+    );
+    let (alpha, alpha_binding) = resolve_f64_with_binding(
+        instance_override.and_then(|value| value.get("alpha")),
+        property_values,
+    );
+    let (lifetime, lifetime_binding) = resolve_f64_with_binding(
+        instance_override.and_then(|value| value.get("lifetime")),
+        property_values,
+    );
+    let (count, count_binding) = resolve_f64_with_binding(
+        instance_override.and_then(|value| value.get("count")),
+        property_values,
+    );
+    let (color, color_binding) = resolve_string_with_binding(
+        instance_override
+            .and_then(|value| value.get("colorn"))
+            .or_else(|| instance_override.and_then(|value| value.get("color"))),
+        property_values,
+    );
+    let control_points = instance_override
+        .and_then(Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .filter(|(key, _)| key.to_ascii_lowercase().starts_with("controlpoint"))
+                .map(|(key, value)| {
+                    let binding = direct_user_property_key(Some(value));
+                    let resolved = binding
+                        .as_deref()
+                        .and_then(|key| property_values.get(key))
+                        .and_then(|value| {
+                            parse_vector3(Some(value))
+                                .or_else(|| as_f64(value).map(|scalar| [scalar, 0.0, 0.0]))
+                        })
+                        .or_else(|| {
+                            parse_vector3(Some(value))
+                                .or_else(|| as_f64(value).map(|scalar| [scalar, 0.0, 0.0]))
+                        });
+                    scene_particle_control_point_override(key.clone(), resolved, binding)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    SceneParticleInstanceOverride {
+        rate,
+        rate_binding,
+        size,
+        size_binding,
+        speed,
+        speed_binding,
+        alpha,
+        alpha_binding,
+        lifetime,
+        lifetime_binding,
+        count: count.map(|value| value.max(0.0).round() as u32),
+        count_binding,
+        color,
+        color_binding,
+        control_points,
+    }
+}
+
+fn particle_emission_rate(runtime: &SceneParticleRuntime, kind: &SceneParticleKind) -> f64 {
+    runtime
+        .instance_override
+        .rate
+        .or_else(|| {
+            runtime
+                .system
+                .emitters
+                .first()
+                .and_then(|emitter| emitter.rate)
+        })
         .unwrap_or(match kind {
             SceneParticleKind::LineTrail => 32.0,
             SceneParticleKind::PetalTrail => 100.0,
-        });
-
-    Some(SceneParticleLayer {
-        id: object.get("id").and_then(Value::as_u64)? as u32,
-        name: object
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("Particle Layer")
-            .to_string(),
-        dependencies: parse_dependencies(object.get("dependencies")),
-        parent_id: object
-            .get("parent")
-            .and_then(Value::as_u64)
-            .map(|id| id as u32),
-        visible: object.get("visible").and_then(as_bool).unwrap_or(true),
-        visibility_binding: parse_binding(object.get("visible")),
-        kind,
-        particle_path: particle_path.to_string(),
-        color,
-        color_binding,
-        size: resolved_size.unwrap_or(fallback_size).max(0.1),
-        size_binding,
-        emission_rate,
-    })
-}
-
-fn detect_particle_kind(
-    particle_path: &str,
-    particle_json: Option<&Value>,
-) -> Option<SceneParticleKind> {
-    let renderer_name = particle_json
-        .and_then(|value| value.get("renderer"))
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("name"))
-        .and_then(Value::as_str)
-        .map(|value| value.to_ascii_lowercase());
-    match renderer_name.as_deref() {
-        Some("rope") => return Some(SceneParticleKind::LineTrail),
-        Some("spritetrail") => return Some(SceneParticleKind::PetalTrail),
-        _ => {}
-    }
-
-    let lower = particle_path.to_ascii_lowercase();
-    if lower.contains("cherry") || lower.contains("blossom") {
-        Some(SceneParticleKind::PetalTrail)
-    } else if lower.contains("trail") {
-        Some(SceneParticleKind::LineTrail)
-    } else {
-        None
-    }
+        })
 }
 
 fn parse_animation_layers(
@@ -2003,6 +2107,15 @@ fn build_logic_graph(
                     .visibility_binding
                     .as_ref()
                     .map(|binding| binding.property_key.clone()),
+                layer
+                    .position_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.x.clone()),
+                layer
+                    .position_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.y.clone()),
+                layer.scale_binding.clone(),
                 layer.color_binding.clone(),
                 layer.size_binding.clone(),
             ]
@@ -2226,6 +2339,126 @@ mod tests {
         assert_eq!(manifest.camera.center, [-120.0, -45.0]);
         assert_eq!(visual.position, [640.0, 360.0, 0.0]);
         assert_eq!(visual.render_bounds, Some([540.0, 310.0, 200.0, 100.0]));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_particle_runtime_and_adapter_from_authored_renderer_family() {
+        let root = std::env::temp_dir().join(format!("scene-particle-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("particles")).expect("particle dir");
+        fs::write(
+            root.join("particles").join("source.json"),
+            r#"{
+              "maxcount": 64,
+              "emitter": [{
+                "name": "root",
+                "rate": 36,
+                "origin": "10 20 0",
+                "speedmin": 2,
+                "speedmax": 8
+              }],
+              "renderer": [{
+                "name": "rope",
+                "length": 12,
+                "maxlength": 48,
+                "subdivision": 3
+              }],
+              "controlpoint": [{"id": 0, "offset": "1 2 0"}]
+            }"#,
+        )
+        .expect("particle json");
+        fs::write(
+            root.join("scene.json"),
+            r#"{
+              "general": { "orthogonalprojection": { "width": 1280, "height": 720 } },
+              "objects": [{
+                "id": 9,
+                "name": "Authored Particle",
+                "particle": "particles/source.json",
+                "origin": "320 240 0",
+                "scale": "1 1 2",
+                "instanceoverride": {
+                  "rate": 42,
+                  "size": 3,
+                  "lifetime": 1.4,
+                  "count": 24,
+                  "colorn": "0.1 0.2 0.8"
+                }
+              }]
+            }"#,
+        )
+        .expect("scene json");
+
+        let manifest = parse_scene_manifest(&root.join("scene.json"), &root, &BTreeMap::new())
+            .expect("manifest");
+
+        assert_eq!(manifest.particle_layers.len(), 1);
+        assert_eq!(
+            manifest.particle_layers[0].kind,
+            crate::models::SceneParticleKind::LineTrail
+        );
+        assert_eq!(manifest.particle_layers[0].position, [320.0, 240.0, 0.0]);
+        assert_eq!(manifest.particle_layers[0].emission_rate, 42.0);
+        assert_eq!(manifest.particle_runtimes.len(), 1);
+        let runtime = &manifest.particle_runtimes[0];
+        assert!(runtime.adapter.supported);
+        assert_eq!(
+            runtime.adapter.schedule_mode,
+            crate::models::SceneParticleScheduleMode::Autonomous
+        );
+        assert_eq!(runtime.system.max_count, Some(64));
+        assert_eq!(runtime.system.renderers[0].length, Some(12.0));
+        assert_eq!(
+            runtime.system.control_points[0].offset,
+            Some([1.0, 2.0, 0.0])
+        );
+        assert_eq!(runtime.instance_override.count, Some(24));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preserves_particle_child_hierarchy_without_polluting_legacy_layers() {
+        let root = std::env::temp_dir().join(format!("scene-particle-child-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("particles")).expect("particle dir");
+        fs::write(
+            root.join("particles").join("source.json"),
+            r#"{
+              "emitter": [{"name": "root", "rate": 12}],
+              "renderer": [{"name": "spritetrail"}],
+              "children": [
+                {"name": "attached", "type": "static", "origin": "2 0 0"},
+                {"name": "follow", "type": "eventfollow", "scale": "0.5 0.5 1"},
+                {"name": "death", "type": "eventdeath", "probability": 0.5}
+              ]
+            }"#,
+        )
+        .expect("particle json");
+        fs::write(
+            root.join("scene.json"),
+            r#"{
+              "objects": [{
+                "id": 10,
+                "name": "Child Particle",
+                "particle": "particles/source.json"
+              }]
+            }"#,
+        )
+        .expect("scene json");
+
+        let manifest = parse_scene_manifest(&root.join("scene.json"), &root, &BTreeMap::new())
+            .expect("manifest");
+
+        assert!(manifest.particle_layers.is_empty());
+        assert_eq!(manifest.particle_runtimes.len(), 1);
+        assert_eq!(manifest.particle_runtimes[0].system.children.len(), 3);
+        assert!(!manifest.particle_runtimes[0].adapter.supported);
+        assert!(manifest.particle_runtimes[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "particle-child-hierarchy-deferred"));
+        assert!(manifest.render_graph.is_empty());
 
         let _ = fs::remove_dir_all(root);
     }

@@ -3430,9 +3430,9 @@ impl NativeSceneMetalRenderer {
                 let Some(petal_texture) = petal_texture else {
                     return;
                 };
-                for petal in self
-                    .particle_scheduler
-                    .petal_primitives(plan.canvas_height, now_ms)
+                for petal in
+                    self.particle_scheduler
+                        .petal_primitives(item, plan.canvas_height, now_ms)
                 {
                     self.draw_quad(
                         encoder,
@@ -4134,6 +4134,14 @@ fn particle_plan_signature(items: &[SceneRenderParticleItem]) -> Option<u64> {
         item.color.alpha.hash(&mut hasher);
         item.size.to_bits().hash(&mut hasher);
         item.emission_rate.to_bits().hash(&mut hasher);
+        item.schedule_mode.hash(&mut hasher);
+        item.spawn_origin[0].to_bits().hash(&mut hasher);
+        item.spawn_origin[1].to_bits().hash(&mut hasher);
+        item.max_count.hash(&mut hasher);
+        item.lifetime_ms.to_bits().hash(&mut hasher);
+        item.speed_range[0].to_bits().hash(&mut hasher);
+        item.speed_range[1].to_bits().hash(&mut hasher);
+        item.instantaneous.hash(&mut hasher);
     }
     Some(hasher.finish())
 }
@@ -5619,9 +5627,15 @@ mod tests {
                 object_id: 8,
                 object_name: "Trail".to_string(),
                 particle_kind: crate::models::SceneParticleKind::LineTrail,
+                schedule_mode: crate::models::SceneParticleScheduleMode::InputDriven,
+                spawn_origin: [0.0, 0.0],
                 color: SceneRenderColor::default(),
                 size: 3.0,
                 emission_rate: 64.0,
+                max_count: 32,
+                lifetime_ms: 520.0,
+                speed_range: [24.0, 48.0],
+                instantaneous: false,
             }],
             sounds: Vec::new(),
         }
@@ -6255,6 +6269,8 @@ mod tests {
                 object_id: 9,
                 object_name: "trail".to_string(),
                 particle_kind: crate::models::SceneParticleKind::LineTrail,
+                schedule_mode: crate::models::SceneParticleScheduleMode::InputDriven,
+                spawn_origin: [0.0, 0.0],
                 color: super::SceneRenderColor {
                     red: 255,
                     green: 255,
@@ -6263,6 +6279,10 @@ mod tests {
                 },
                 size: 12.0,
                 emission_rate: 48.0,
+                max_count: 32,
+                lifetime_ms: 520.0,
+                speed_range: [24.0, 48.0],
+                instantaneous: false,
             },
         ]);
 
@@ -6273,6 +6293,8 @@ mod tests {
                     object_id: 9,
                     object_name: "trail".to_string(),
                     particle_kind: crate::models::SceneParticleKind::LineTrail,
+                    schedule_mode: crate::models::SceneParticleScheduleMode::InputDriven,
+                    spawn_origin: [0.0, 0.0],
                     color: super::SceneRenderColor {
                         red: 255,
                         green: 255,
@@ -6281,6 +6303,10 @@ mod tests {
                     },
                     size: 12.0,
                     emission_rate: 48.0,
+                    max_count: 32,
+                    lifetime_ms: 520.0,
+                    speed_range: [24.0, 48.0],
+                    instantaneous: false,
                 },
             ])
         );

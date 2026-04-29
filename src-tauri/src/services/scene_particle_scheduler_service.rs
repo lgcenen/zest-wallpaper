@@ -1,11 +1,11 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::{
-    models::SceneParticleKind,
+    models::{SceneParticleKind, SceneParticleScheduleMode},
     services::scene_render_planner_service::{SceneRenderColor, SceneRenderParticleItem},
 };
 
-const MAX_TRAIL_POINTS: usize = 32;
-const MAX_PETALS: usize = 96;
-const TRAIL_LIFETIME_MS: f64 = 520.0;
+const MAX_FRAME_EMITS: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneParticleCursor {
@@ -30,11 +30,24 @@ pub struct SceneParticlePrimitive {
 pub struct SceneParticleScheduler {
     last_cursor: Option<SceneParticleCursor>,
     last_update_ms: Option<f64>,
+    input_states: BTreeMap<u32, SceneInputParticleState>,
+    autonomous_states: BTreeMap<u32, SceneAutonomousParticleState>,
+    random: SceneRandom,
+}
+
+#[derive(Debug, Default)]
+struct SceneInputParticleState {
     line_emission_credit: f64,
     petal_emission_credit: f64,
     line_points: Vec<SceneTrailPoint>,
-    petals: Vec<ScenePetalParticle>,
-    random: SceneRandom,
+    petals: Vec<SceneParticle>,
+}
+
+#[derive(Debug, Default)]
+struct SceneAutonomousParticleState {
+    emission_credit: f64,
+    instantaneous_emitted: bool,
+    particles: Vec<SceneParticle>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,7 +58,7 @@ struct SceneTrailPoint {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ScenePetalParticle {
+struct SceneParticle {
     x: f64,
     y: f64,
     vx: f64,
@@ -83,6 +96,10 @@ impl SceneRandom {
     fn centered(&mut self) -> f64 {
         self.next_f64() - 0.5
     }
+
+    fn range(&mut self, min: f64, max: f64) -> f64 {
+        min + (max - min).max(0.0) * self.next_f64()
+    }
 }
 
 impl SceneParticleScheduler {
@@ -98,37 +115,30 @@ impl SceneParticleScheduler {
             .unwrap_or(16.0);
         self.last_update_ms = Some(now_ms);
 
-        let line_item = items
+        let active_ids = items
             .iter()
-            .find(|item| item.particle_kind == SceneParticleKind::LineTrail);
-        let petal_item = items
-            .iter()
-            .find(|item| item.particle_kind == SceneParticleKind::PetalTrail);
+            .map(|item| item.object_id)
+            .collect::<BTreeSet<_>>();
+        self.input_states
+            .retain(|object_id, _| active_ids.contains(object_id));
+        self.autonomous_states
+            .retain(|object_id, _| active_ids.contains(object_id));
+
         let previous = self.last_cursor;
         self.last_cursor = cursor;
 
-        if let Some(cursor) = cursor {
-            if let Some(line_item) = line_item {
-                self.emit_line_points(previous, cursor, line_item, now_ms);
-            } else {
-                self.line_points.clear();
-                self.line_emission_credit = 0.0;
+        for item in items {
+            match item.schedule_mode {
+                SceneParticleScheduleMode::InputDriven => {
+                    let state = self.input_states.entry(item.object_id).or_default();
+                    advance_input_item(state, previous, cursor, item, delta_ms, now_ms);
+                }
+                SceneParticleScheduleMode::Autonomous => {
+                    let state = self.autonomous_states.entry(item.object_id).or_default();
+                    advance_autonomous_item(&mut self.random, state, item, delta_ms, now_ms);
+                }
             }
-
-            if let Some(petal_item) = petal_item {
-                self.emit_petals(previous, cursor, petal_item, now_ms);
-            } else {
-                self.petals.clear();
-                self.petal_emission_credit = 0.0;
-            }
-        } else {
-            self.line_emission_credit = 0.0;
-            self.petal_emission_credit = 0.0;
         }
-
-        self.line_points
-            .retain(|point| now_ms - point.created_at_ms < TRAIL_LIFETIME_MS);
-        self.advance_petals(delta_ms, now_ms);
     }
 
     pub fn pause_cursor(&mut self, cursor: Option<SceneParticleCursor>) {
@@ -147,168 +157,315 @@ impl SceneParticleScheduler {
         now_ms: f64,
     ) -> Vec<SceneParticlePrimitive> {
         let mut segments = Vec::new();
-        for points in self.line_points.windows(2) {
-            let start = points[0];
-            let end = points[1];
-            let dx = end.x - start.x;
-            let dy = end.y - start.y;
-            let length = (dx * dx + dy * dy).sqrt().max(1.0);
-            let center_x = (start.x + end.x) / 2.0;
-            let center_y_bottom = (start.y + end.y) / 2.0;
-            let age = clamp_f64((now_ms - end.created_at_ms) / TRAIL_LIFETIME_MS, 0.0, 1.0);
-            let alpha = 1.0 - age;
-            for width_factor in [3.4, 1.6] {
-                let thickness = (item.size * width_factor).max(1.0);
-                let color = SceneRenderColor {
-                    alpha: normalize_alpha(
-                        item.color,
-                        if width_factor > 2.0 {
-                            0.28 * alpha
-                        } else {
-                            alpha
-                        },
-                    ),
-                    ..item.color
-                };
-                let top = canvas_height - center_y_bottom - thickness / 2.0;
-                segments.push(SceneParticlePrimitive {
-                    left: center_x - length / 2.0,
-                    top,
-                    width: length,
-                    height: thickness,
-                    rotation: -(dy).atan2(dx),
-                    opacity: 1.0,
-                    color,
-                    transform_origin_x: center_x,
-                    transform_origin_y: top + thickness / 2.0,
-                });
+        if let Some(state) = self.input_states.get(&item.object_id) {
+            for points in state.line_points.windows(2) {
+                let start = points[0];
+                let end = points[1];
+                let dx = end.x - start.x;
+                let dy = end.y - start.y;
+                let length = (dx * dx + dy * dy).sqrt().max(1.0);
+                let center_x = (start.x + end.x) / 2.0;
+                let center_y_bottom = (start.y + end.y) / 2.0;
+                let age = clamp_f64((now_ms - end.created_at_ms) / item.lifetime_ms, 0.0, 1.0);
+                let alpha = 1.0 - age;
+                for width_factor in [3.4, 1.6] {
+                    let thickness = (item.size * width_factor).max(1.0);
+                    let color = SceneRenderColor {
+                        alpha: normalize_alpha(
+                            item.color,
+                            if width_factor > 2.0 {
+                                0.28 * alpha
+                            } else {
+                                alpha
+                            },
+                        ),
+                        ..item.color
+                    };
+                    let top = canvas_height - center_y_bottom - thickness / 2.0;
+                    segments.push(SceneParticlePrimitive {
+                        left: center_x - length / 2.0,
+                        top,
+                        width: length,
+                        height: thickness,
+                        rotation: -(dy).atan2(dx),
+                        opacity: 1.0,
+                        color,
+                        transform_origin_x: center_x,
+                        transform_origin_y: top + thickness / 2.0,
+                    });
+                }
             }
+        }
+
+        if let Some(state) = self.autonomous_states.get(&item.object_id) {
+            segments.extend(state.particles.iter().filter_map(|particle| {
+                primitive_from_particle(particle, item, canvas_height, now_ms, true)
+            }));
         }
         segments
     }
 
-    pub fn petal_primitives(&self, canvas_height: f64, now_ms: f64) -> Vec<SceneParticlePrimitive> {
-        self.petals
-            .iter()
-            .filter(|particle| now_ms - particle.born_at_ms < particle.life_ms)
-            .map(|particle| {
-                let age = clamp_f64((now_ms - particle.born_at_ms) / particle.life_ms, 0.0, 1.0);
-                let top = canvas_height - particle.y - particle.size * 0.34;
-                SceneParticlePrimitive {
-                    left: particle.x - particle.size / 2.0,
-                    top,
-                    width: particle.size,
-                    height: particle.size * 0.68,
-                    rotation: particle.rotation.to_radians(),
-                    opacity: 1.0 - age,
-                    color: particle.color,
-                    transform_origin_x: particle.x,
-                    transform_origin_y: top + particle.size * 0.34,
-                }
+    pub fn petal_primitives(
+        &self,
+        item: &SceneRenderParticleItem,
+        canvas_height: f64,
+        now_ms: f64,
+    ) -> Vec<SceneParticlePrimitive> {
+        let mut primitives = self
+            .input_states
+            .get(&item.object_id)
+            .map(|state| {
+                state
+                    .petals
+                    .iter()
+                    .filter_map(|particle| {
+                        primitive_from_particle(particle, item, canvas_height, now_ms, false)
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect()
+            .unwrap_or_default();
+
+        if let Some(state) = self.autonomous_states.get(&item.object_id) {
+            primitives.extend(state.particles.iter().filter_map(|particle| {
+                primitive_from_particle(particle, item, canvas_height, now_ms, false)
+            }));
+        }
+        primitives
+    }
+}
+
+fn advance_input_item(
+    state: &mut SceneInputParticleState,
+    previous: Option<SceneParticleCursor>,
+    cursor: Option<SceneParticleCursor>,
+    item: &SceneRenderParticleItem,
+    delta_ms: f64,
+    now_ms: f64,
+) {
+    if let Some(cursor) = cursor {
+        match item.particle_kind {
+            SceneParticleKind::LineTrail => {
+                emit_line_points(state, previous, cursor, item, now_ms);
+                state.petal_emission_credit = 0.0;
+            }
+            SceneParticleKind::PetalTrail => {
+                emit_petals(state, previous, cursor, item, now_ms);
+                state.line_emission_credit = 0.0;
+            }
+        }
+    } else {
+        state.line_emission_credit = 0.0;
+        state.petal_emission_credit = 0.0;
     }
 
-    fn emit_line_points(
-        &mut self,
-        previous: Option<SceneParticleCursor>,
-        cursor: SceneParticleCursor,
-        item: &SceneRenderParticleItem,
-        now_ms: f64,
-    ) {
-        let Some(previous) = previous else {
-            self.line_points.push(SceneTrailPoint {
-                x: cursor.x,
-                y: cursor.y,
-                created_at_ms: now_ms,
-            });
-            return;
-        };
+    state
+        .line_points
+        .retain(|point| now_ms - point.created_at_ms < item.lifetime_ms);
+    advance_particles(&mut state.petals, delta_ms, now_ms);
+}
 
-        let distance = cursor_distance(previous, cursor);
-        let spacing = clamp_f64(item.size * 1.1, 6.0, 24.0);
-        self.line_emission_credit += distance / spacing;
-        let emit_count = self.line_emission_credit.floor().clamp(0.0, 8.0) as usize;
-        if emit_count == 0 {
-            return;
-        }
-        self.line_emission_credit -= emit_count as f64;
-
-        for index in 0..emit_count {
-            let t = (index + 1) as f64 / emit_count as f64;
-            self.line_points.push(SceneTrailPoint {
-                x: previous.x + (cursor.x - previous.x) * t,
-                y: previous.y + (cursor.y - previous.y) * t,
-                created_at_ms: now_ms,
-            });
-        }
-        if self.line_points.len() > MAX_TRAIL_POINTS {
-            self.line_points
-                .drain(0..self.line_points.len().saturating_sub(MAX_TRAIL_POINTS));
-        }
-    }
-
-    fn emit_petals(
-        &mut self,
-        previous: Option<SceneParticleCursor>,
-        cursor: SceneParticleCursor,
-        item: &SceneRenderParticleItem,
-        now_ms: f64,
-    ) {
-        let distance = previous
-            .map(|previous| cursor_distance(previous, cursor))
-            .unwrap_or(item.size * 5.5);
-        let spacing = clamp_f64(item.size * 5.2, 12.0, 28.0);
-        let density = clamp_f64(item.emission_rate / 42.0, 0.35, 5.0);
-        self.petal_emission_credit += (distance / spacing) * density;
-        let emit_count = self.petal_emission_credit.floor().clamp(0.0, 6.0) as usize;
-        if emit_count == 0 {
-            return;
-        }
-        self.petal_emission_credit -= emit_count as f64;
-
-        let previous = previous.unwrap_or(cursor);
-        for index in 0..emit_count {
-            let t = (index + 1) as f64 / emit_count as f64;
-            let base_x = previous.x + (cursor.x - previous.x) * t;
-            let base_y = previous.y + (cursor.y - previous.y) * t;
-            let spread =
-                (index as f64 - (emit_count.saturating_sub(1) as f64) / 2.0) * item.size * 4.2;
-            self.petals.push(ScenePetalParticle {
-                x: base_x + spread,
-                y: base_y + self.random.centered() * 8.0,
-                vx: self.random.centered() * 0.9,
-                vy: -0.4 - self.random.next_f64() * 0.7,
-                rotation: self.random.next_f64() * 360.0,
-                spin: self.random.centered() * 1.8,
-                size: 9.0 + item.size * (10.0 + self.random.next_f64() * 8.0),
-                born_at_ms: now_ms,
-                life_ms: 1100.0 + self.random.next_f64() * 600.0,
-                color: item.color,
-            });
-        }
-        if self.petals.len() > MAX_PETALS {
-            self.petals
-                .drain(0..self.petals.len().saturating_sub(MAX_PETALS));
+fn advance_autonomous_item(
+    random: &mut SceneRandom,
+    state: &mut SceneAutonomousParticleState,
+    item: &SceneRenderParticleItem,
+    delta_ms: f64,
+    now_ms: f64,
+) {
+    if item.instantaneous && !state.instantaneous_emitted {
+        let emit_count = item.max_count.min(64);
+        emit_autonomous_particles(random, state, item, emit_count, now_ms);
+        state.instantaneous_emitted = true;
+    } else if !item.instantaneous {
+        state.emission_credit += item.emission_rate.max(0.0) * delta_ms / 1000.0;
+        let emit_count = state
+            .emission_credit
+            .floor()
+            .clamp(0.0, MAX_FRAME_EMITS as f64) as usize;
+        if emit_count > 0 {
+            state.emission_credit -= emit_count as f64;
+            emit_autonomous_particles(random, state, item, emit_count, now_ms);
         }
     }
 
-    fn advance_petals(&mut self, delta_ms: f64, now_ms: f64) {
-        let delta_scale = (delta_ms / (1000.0 / 60.0)).clamp(0.25, 4.0);
-        self.petals = self
+    advance_particles(&mut state.particles, delta_ms, now_ms);
+    if state.particles.len() > item.max_count {
+        state
+            .particles
+            .drain(0..state.particles.len().saturating_sub(item.max_count));
+    }
+}
+
+fn emit_line_points(
+    state: &mut SceneInputParticleState,
+    previous: Option<SceneParticleCursor>,
+    cursor: SceneParticleCursor,
+    item: &SceneRenderParticleItem,
+    now_ms: f64,
+) {
+    let Some(previous) = previous else {
+        state.line_points.push(SceneTrailPoint {
+            x: cursor.x,
+            y: cursor.y,
+            created_at_ms: now_ms,
+        });
+        return;
+    };
+
+    let distance = cursor_distance(previous, cursor);
+    let spacing = clamp_f64(item.size * 1.1, 6.0, 24.0);
+    state.line_emission_credit += distance / spacing;
+    let emit_count = state.line_emission_credit.floor().clamp(0.0, 8.0) as usize;
+    if emit_count == 0 {
+        return;
+    }
+    state.line_emission_credit -= emit_count as f64;
+
+    for index in 0..emit_count {
+        let t = (index + 1) as f64 / emit_count as f64;
+        state.line_points.push(SceneTrailPoint {
+            x: previous.x + (cursor.x - previous.x) * t,
+            y: previous.y + (cursor.y - previous.y) * t,
+            created_at_ms: now_ms,
+        });
+    }
+    if state.line_points.len() > item.max_count {
+        state
+            .line_points
+            .drain(0..state.line_points.len().saturating_sub(item.max_count));
+    }
+}
+
+fn emit_petals(
+    state: &mut SceneInputParticleState,
+    previous: Option<SceneParticleCursor>,
+    cursor: SceneParticleCursor,
+    item: &SceneRenderParticleItem,
+    now_ms: f64,
+) {
+    let distance = previous
+        .map(|previous| cursor_distance(previous, cursor))
+        .unwrap_or(item.size * 5.5);
+    let spacing = clamp_f64(item.size * 5.2, 12.0, 28.0);
+    let density = clamp_f64(item.emission_rate / 42.0, 0.35, 5.0);
+    state.petal_emission_credit += (distance / spacing) * density;
+    let emit_count = state.petal_emission_credit.floor().clamp(0.0, 6.0) as usize;
+    if emit_count == 0 {
+        return;
+    }
+    state.petal_emission_credit -= emit_count as f64;
+
+    let previous = previous.unwrap_or(cursor);
+    for index in 0..emit_count {
+        let t = (index + 1) as f64 / emit_count as f64;
+        let base_x = previous.x + (cursor.x - previous.x) * t;
+        let base_y = previous.y + (cursor.y - previous.y) * t;
+        let spread = (index as f64 - (emit_count.saturating_sub(1) as f64) / 2.0) * item.size * 4.2;
+        state.petals.push(SceneParticle {
+            x: base_x + spread,
+            y: base_y,
+            vx: 0.0,
+            vy: -28.0,
+            rotation: (index as f64 * 37.0) % 360.0,
+            spin: 54.0,
+            size: 9.0 + item.size * 14.0,
+            born_at_ms: now_ms,
+            life_ms: item.lifetime_ms,
+            color: item.color,
+        });
+    }
+    if state.petals.len() > item.max_count {
+        state
             .petals
-            .iter()
-            .copied()
-            .map(|mut particle| {
-                particle.x += particle.vx * delta_scale;
-                particle.y += particle.vy * delta_scale;
-                particle.rotation += particle.spin * delta_scale;
-                particle.vy -= 0.015 * delta_scale;
-                particle
-            })
-            .filter(|particle| now_ms - particle.born_at_ms < particle.life_ms)
-            .collect();
+            .drain(0..state.petals.len().saturating_sub(item.max_count));
     }
+}
+
+fn emit_autonomous_particles(
+    random: &mut SceneRandom,
+    state: &mut SceneAutonomousParticleState,
+    item: &SceneRenderParticleItem,
+    emit_count: usize,
+    now_ms: f64,
+) {
+    for _ in 0..emit_count {
+        let angle = random.range(0.0, std::f64::consts::TAU);
+        let speed = random.range(item.speed_range[0], item.speed_range[1]);
+        let spread = item.size.max(1.0) * 2.0;
+        let size = match item.particle_kind {
+            SceneParticleKind::LineTrail => item.size.max(1.0) * random.range(1.0, 2.4),
+            SceneParticleKind::PetalTrail => 9.0 + item.size.max(0.5) * random.range(8.0, 18.0),
+        };
+        state.particles.push(SceneParticle {
+            x: item.spawn_origin[0] + random.centered() * spread,
+            y: item.spawn_origin[1] + random.centered() * spread,
+            vx: angle.cos() * speed,
+            vy: angle.sin() * speed,
+            rotation: random.range(0.0, 360.0),
+            spin: random.range(-90.0, 90.0),
+            size,
+            born_at_ms: now_ms,
+            life_ms: item.lifetime_ms * random.range(0.82, 1.18),
+            color: item.color,
+        });
+    }
+    if state.particles.len() > item.max_count {
+        state
+            .particles
+            .drain(0..state.particles.len().saturating_sub(item.max_count));
+    }
+}
+
+fn advance_particles(particles: &mut Vec<SceneParticle>, delta_ms: f64, now_ms: f64) {
+    let delta_seconds = (delta_ms / 1000.0).clamp(0.0, 0.1);
+    let delta_scale = (delta_ms / (1000.0 / 60.0)).clamp(0.25, 4.0);
+    particles.retain_mut(|particle| {
+        particle.x += particle.vx * delta_seconds;
+        particle.y += particle.vy * delta_seconds;
+        particle.rotation += particle.spin * delta_seconds;
+        if particle.vy < 0.0 {
+            particle.vy -= 0.9 * delta_scale;
+        }
+        now_ms - particle.born_at_ms < particle.life_ms
+    });
+}
+
+fn primitive_from_particle(
+    particle: &SceneParticle,
+    item: &SceneRenderParticleItem,
+    canvas_height: f64,
+    now_ms: f64,
+    streak: bool,
+) -> Option<SceneParticlePrimitive> {
+    if now_ms - particle.born_at_ms >= particle.life_ms {
+        return None;
+    }
+    let age = clamp_f64((now_ms - particle.born_at_ms) / particle.life_ms, 0.0, 1.0);
+    let opacity = 1.0 - age;
+    let width = if streak {
+        (particle.size * 3.0).max(2.0)
+    } else {
+        particle.size
+    };
+    let height = if streak {
+        (item.size * 0.85).max(1.0)
+    } else {
+        particle.size * 0.68
+    };
+    let top = canvas_height - particle.y - height / 2.0;
+    Some(SceneParticlePrimitive {
+        left: particle.x - width / 2.0,
+        top,
+        width,
+        height,
+        rotation: particle.rotation.to_radians(),
+        opacity,
+        color: SceneRenderColor {
+            alpha: normalize_alpha(particle.color, opacity),
+            ..particle.color
+        },
+        transform_origin_x: particle.x,
+        transform_origin_y: top + height / 2.0,
+    })
 }
 
 fn normalize_alpha(color: SceneRenderColor, alpha: f64) -> u8 {
@@ -325,7 +482,7 @@ fn clamp_f64(value: f64, min: f64, max: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::SceneParticleKind;
+    use crate::models::{SceneParticleKind, SceneParticleScheduleMode};
     use crate::services::scene_render_planner_service::{
         SceneRenderColor, SceneRenderParticleItem,
     };
@@ -337,6 +494,8 @@ mod tests {
             object_id: 1,
             object_name: "Trail".to_string(),
             particle_kind: SceneParticleKind::LineTrail,
+            schedule_mode: SceneParticleScheduleMode::InputDriven,
+            spawn_origin: [20.0, 20.0],
             color: SceneRenderColor {
                 red: 255,
                 green: 255,
@@ -345,6 +504,10 @@ mod tests {
             },
             size: 12.0,
             emission_rate: 48.0,
+            max_count: 32,
+            lifetime_ms: 520.0,
+            speed_range: [24.0, 48.0],
+            instantaneous: false,
         }
     }
 
@@ -353,6 +516,8 @@ mod tests {
             object_id: 2,
             object_name: "Petal".to_string(),
             particle_kind: SceneParticleKind::PetalTrail,
+            schedule_mode: SceneParticleScheduleMode::InputDriven,
+            spawn_origin: [200.0, 160.0],
             color: SceneRenderColor {
                 red: 255,
                 green: 192,
@@ -361,6 +526,32 @@ mod tests {
             },
             size: 1.8,
             emission_rate: 96.0,
+            max_count: 96,
+            lifetime_ms: 1500.0,
+            speed_range: [20.0, 64.0],
+            instantaneous: false,
+        }
+    }
+
+    fn autonomous_item() -> SceneRenderParticleItem {
+        SceneRenderParticleItem {
+            object_id: 3,
+            object_name: "Autonomous".to_string(),
+            particle_kind: SceneParticleKind::PetalTrail,
+            schedule_mode: SceneParticleScheduleMode::Autonomous,
+            spawn_origin: [320.0, 240.0],
+            color: SceneRenderColor {
+                red: 160,
+                green: 220,
+                blue: 255,
+                alpha: 220,
+            },
+            size: 2.0,
+            emission_rate: 60.0,
+            max_count: 24,
+            lifetime_ms: 1200.0,
+            speed_range: [12.0, 24.0],
+            instantaneous: false,
         }
     }
 
@@ -398,11 +589,22 @@ mod tests {
             1060.0,
         );
 
-        let alive = scheduler.petal_primitives(1080.0, 1060.0);
-        let expired = scheduler.petal_primitives(1080.0, 3200.0);
+        let alive = scheduler.petal_primitives(&petal_item(), 1080.0, 1060.0);
+        let expired = scheduler.petal_primitives(&petal_item(), 1080.0, 3200.0);
 
         assert!(!alive.is_empty());
         assert!(expired.is_empty());
+    }
+
+    #[test]
+    fn autonomous_scheduler_emits_without_cursor_input() {
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[autonomous_item()], 1000.0);
+        scheduler.advance(None, &[autonomous_item()], 1100.0);
+
+        let primitives = scheduler.petal_primitives(&autonomous_item(), 1080.0, 1100.0);
+        assert!(!primitives.is_empty());
+        assert!(primitives.len() <= autonomous_item().max_count);
     }
 
     #[test]
@@ -410,7 +612,7 @@ mod tests {
         let mut scheduler = SceneParticleScheduler::default();
         scheduler.advance(
             Some(SceneParticleCursor { x: 20.0, y: 20.0 }),
-            &[line_item(), petal_item()],
+            &[line_item(), petal_item(), autonomous_item()],
             1000.0,
         );
 
@@ -419,6 +621,11 @@ mod tests {
         assert!(scheduler
             .line_primitives(&line_item(), 1080.0, 1000.0)
             .is_empty());
-        assert!(scheduler.petal_primitives(1080.0, 1000.0).is_empty());
+        assert!(scheduler
+            .petal_primitives(&petal_item(), 1080.0, 1000.0)
+            .is_empty());
+        assert!(scheduler
+            .petal_primitives(&autonomous_item(), 1080.0, 1000.0)
+            .is_empty());
     }
 }

@@ -1,0 +1,646 @@
+use serde_json::Value;
+
+use crate::models::{
+    SceneParticleChildKind, SceneParticleChildRuntime, SceneParticleControlPointOverride,
+    SceneParticleControlPointRuntime, SceneParticleEmitterRuntime, SceneParticleInstanceOverride,
+    SceneParticleKind, SceneParticleRendererFamily, SceneParticleRendererRuntime,
+    SceneParticleRuntime, SceneParticleRuntimeAdapter, SceneParticleRuntimeDiagnostic,
+    SceneParticleScheduleMode, SceneParticleSystemRuntime,
+};
+
+pub fn build_scene_particle_runtime(
+    object_id: u32,
+    object_name: String,
+    particle_path: String,
+    particle_json: Option<&Value>,
+    object_origin: [f64; 3],
+    object_scale: [f64; 3],
+    object_angles: Option<[f64; 3]>,
+    instance_override: SceneParticleInstanceOverride,
+) -> SceneParticleRuntime {
+    let system = particle_json.map(parse_particle_system).unwrap_or_default();
+    let (mut adapter, diagnostics) = classify_particle_runtime(particle_json.is_some(), &system);
+    if adapter.supported && !instance_override.control_points.is_empty() {
+        adapter.schedule_mode = SceneParticleScheduleMode::InputDriven;
+    }
+
+    SceneParticleRuntime {
+        object_id,
+        object_name,
+        particle_path,
+        object_origin,
+        object_scale,
+        object_angles,
+        system,
+        instance_override,
+        adapter,
+        diagnostics,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn build_authored_particle_runtime_for_resource(
+    particle_path: String,
+    particle_json: &Value,
+) -> SceneParticleRuntime {
+    build_scene_particle_runtime(
+        0,
+        "Particle Resource".to_string(),
+        particle_path,
+        Some(particle_json),
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        None,
+        SceneParticleInstanceOverride::default(),
+    )
+}
+
+pub fn scene_particle_control_point_override(
+    key: String,
+    value: Option<[f64; 3]>,
+    binding: Option<String>,
+) -> SceneParticleControlPointOverride {
+    SceneParticleControlPointOverride {
+        key,
+        value,
+        binding,
+    }
+}
+
+fn parse_particle_system(root: &Value) -> SceneParticleSystemRuntime {
+    SceneParticleSystemRuntime {
+        max_count: u32_field(root, "maxcount").or_else(|| u32_field(root, "maxCount")),
+        start_time: f64_field(root, "starttime").or_else(|| f64_field(root, "startTime")),
+        flags: string_list_field(root, "flags"),
+        material: string_field(root, "material"),
+        emitters: particle_entries(root, &["emitter", "emitters"])
+            .into_iter()
+            .map(parse_emitter)
+            .collect(),
+        renderers: particle_entries(root, &["renderer", "renderers"])
+            .into_iter()
+            .map(parse_renderer)
+            .collect(),
+        control_points: particle_entries(root, &["controlpoint", "controlpoints"])
+            .into_iter()
+            .map(parse_control_point)
+            .collect(),
+        children: particle_entries(root, &["children", "child"])
+            .into_iter()
+            .map(parse_child)
+            .collect(),
+        initializer_names: stage_names(root, &["initializer", "initializers"]),
+        operator_names: stage_names(root, &["operator", "operators"]),
+    }
+}
+
+fn parse_emitter(value: &Value) -> SceneParticleEmitterRuntime {
+    let control_point =
+        u32_field(value, "controlpoint").or_else(|| u32_field(value, "controlPoint"));
+    let lock_to_pointer = bool_field(value, "locktopointer").unwrap_or(false)
+        || bool_field(value, "lockToPointer").unwrap_or(false);
+    let schedule_mode = if control_point.is_some() || lock_to_pointer {
+        SceneParticleScheduleMode::InputDriven
+    } else {
+        SceneParticleScheduleMode::Autonomous
+    };
+
+    SceneParticleEmitterRuntime {
+        name: string_field(value, "name"),
+        rate: f64_field(value, "rate"),
+        origin: vector3_field(value, "origin"),
+        distance_min: f64_field(value, "distancemin").or_else(|| f64_field(value, "distanceMin")),
+        distance_max: f64_field(value, "distancemax").or_else(|| f64_field(value, "distanceMax")),
+        directions: vector3_list_field(value, "directions")
+            .or_else(|| vector3_field(value, "direction").map(|direction| vec![direction]))
+            .unwrap_or_default(),
+        sign: f64_field(value, "sign"),
+        speed_min: f64_field(value, "speedmin").or_else(|| f64_field(value, "speedMin")),
+        speed_max: f64_field(value, "speedmax").or_else(|| f64_field(value, "speedMax")),
+        control_point,
+        instantaneous: bool_field(value, "instantaneous").unwrap_or(false),
+        schedule_mode,
+    }
+}
+
+fn parse_renderer(value: &Value) -> SceneParticleRendererRuntime {
+    let name = string_field(value, "name");
+    let family = particle_renderer_family(name.as_deref());
+    SceneParticleRendererRuntime {
+        name,
+        family,
+        length: f64_field(value, "length"),
+        max_length: f64_field(value, "maxlength").or_else(|| f64_field(value, "maxLength")),
+        min_length: f64_field(value, "minlength").or_else(|| f64_field(value, "minLength")),
+        subdivision: u32_field(value, "subdivision"),
+        segments: u32_field(value, "segments"),
+        axis: string_field(value, "axis"),
+        orientation: string_field(value, "orientation"),
+        uv_scale: vector2_field(value, "uvscale").or_else(|| vector2_field(value, "uvScale")),
+        uv_scrolling: vector2_field(value, "uvscrolling")
+            .or_else(|| vector2_field(value, "uvScrolling")),
+        uv_smoothing: f64_field(value, "uvsmoothing").or_else(|| f64_field(value, "uvSmoothing")),
+        fade_alpha: f64_field(value, "fadealpha").or_else(|| f64_field(value, "fadeAlpha")),
+    }
+}
+
+fn parse_control_point(value: &Value) -> SceneParticleControlPointRuntime {
+    SceneParticleControlPointRuntime {
+        id: u32_field(value, "id"),
+        flags: string_list_field(value, "flags"),
+        offset: vector3_field(value, "offset"),
+        parent_control_point: u32_field(value, "parentcontrolpoint")
+            .or_else(|| u32_field(value, "parentControlPoint")),
+        lock_to_pointer: bool_field(value, "locktopointer")
+            .or_else(|| bool_field(value, "lockToPointer"))
+            .unwrap_or(false),
+    }
+}
+
+fn parse_child(value: &Value) -> SceneParticleChildRuntime {
+    SceneParticleChildRuntime {
+        name: string_field(value, "name"),
+        child_type: particle_child_kind(string_field(value, "type").as_deref()),
+        origin: vector3_field(value, "origin"),
+        scale: vector3_field(value, "scale"),
+        angles: vector3_field(value, "angles"),
+        probability: f64_field(value, "probability"),
+        max_count: u32_field(value, "maxcount").or_else(|| u32_field(value, "maxCount")),
+        control_point_start_index: u32_field(value, "controlpointstartindex")
+            .or_else(|| u32_field(value, "controlPointStartIndex")),
+    }
+}
+
+fn classify_particle_runtime(
+    has_particle_json: bool,
+    system: &SceneParticleSystemRuntime,
+) -> (
+    SceneParticleRuntimeAdapter,
+    Vec<SceneParticleRuntimeDiagnostic>,
+) {
+    let mut diagnostics = Vec::new();
+    if !has_particle_json {
+        diagnostics.push(runtime_diagnostic(
+            "particle-runtime-json-missing",
+            "Particle object references a resource that was not available to the parser.",
+        ));
+        return (
+            unsupported_adapter("particle resource is unresolved"),
+            diagnostics,
+        );
+    }
+
+    if system.emitters.len() != 1 {
+        diagnostics.push(runtime_diagnostic(
+            "particle-emitter-count-unsupported",
+            "Phase-09e supports exactly one emitter in the narrow adapter.",
+        ));
+    }
+    if system.renderers.len() != 1 {
+        diagnostics.push(runtime_diagnostic(
+            "particle-renderer-count-unsupported",
+            "Phase-09e supports exactly one renderer in the narrow adapter.",
+        ));
+    }
+
+    let renderer = system.renderers.first();
+    let draw_kind = renderer.and_then(|renderer| particle_draw_kind(renderer.family));
+    match renderer.map(|renderer| renderer.family) {
+        Some(SceneParticleRendererFamily::Sprite) => diagnostics.push(runtime_diagnostic(
+            "particle-renderer-sprite-unsupported",
+            "Sprite particle systems need the first-class renderer path and are not mapped to the trail adapter.",
+        )),
+        Some(SceneParticleRendererFamily::Unsupported) | None => diagnostics.push(runtime_diagnostic(
+            "particle-renderer-family-unsupported",
+            "Renderer family is outside the phase-09e trail adapter whitelist.",
+        )),
+        Some(SceneParticleRendererFamily::SpriteTrail)
+        | Some(SceneParticleRendererFamily::Rope)
+        | Some(SceneParticleRendererFamily::RopeTrail) => {}
+    }
+
+    if !system.children.is_empty() {
+        let unsupported_child = system
+            .children
+            .iter()
+            .find(|child| {
+                matches!(
+                    child.child_type,
+                    SceneParticleChildKind::EventSpawn | SceneParticleChildKind::Unsupported
+                )
+            })
+            .map(|child| match child.child_type {
+                SceneParticleChildKind::EventSpawn => "eventspawn",
+                SceneParticleChildKind::Unsupported => "unsupported child",
+                SceneParticleChildKind::Static => "static",
+                SceneParticleChildKind::EventFollow => "eventfollow",
+                SceneParticleChildKind::EventDeath => "eventdeath",
+            });
+        diagnostics.push(runtime_diagnostic(
+            "particle-child-hierarchy-deferred",
+            match unsupported_child {
+                Some(kind) => {
+                    format!("Particle child hierarchy includes {kind}; phase-09e preserves it but does not map it to the narrow adapter.")
+                }
+                None => "Particle child hierarchy is preserved for the first-class runtime and kept out of the narrow adapter.".to_string(),
+            },
+        ));
+    }
+
+    for stage_name in system
+        .initializer_names
+        .iter()
+        .chain(system.operator_names.iter())
+    {
+        if !particle_stage_name_is_adapter_safe(stage_name) {
+            diagnostics.push(runtime_diagnostic(
+                "particle-stage-unsupported",
+                format!(
+                    "Particle initializer/operator {stage_name:?} is outside the phase-09e adapter whitelist."
+                ),
+            ));
+        }
+    }
+
+    if diagnostics.is_empty() {
+        let emitter = system.emitters.first();
+        let schedule_mode = emitter
+            .map(|emitter| emitter.schedule_mode)
+            .unwrap_or(SceneParticleScheduleMode::InputDriven);
+        (
+            SceneParticleRuntimeAdapter {
+                supported: true,
+                draw_kind,
+                schedule_mode,
+                reason: None,
+            },
+            diagnostics,
+        )
+    } else {
+        (
+            unsupported_adapter(
+                diagnostics
+                    .first()
+                    .map(|diagnostic| diagnostic.message.as_str())
+                    .unwrap_or("particle runtime is outside the phase-09e adapter whitelist"),
+            ),
+            diagnostics,
+        )
+    }
+}
+
+fn unsupported_adapter(reason: impl Into<String>) -> SceneParticleRuntimeAdapter {
+    SceneParticleRuntimeAdapter {
+        supported: false,
+        draw_kind: None,
+        schedule_mode: SceneParticleScheduleMode::InputDriven,
+        reason: Some(reason.into()),
+    }
+}
+
+fn particle_draw_kind(family: SceneParticleRendererFamily) -> Option<SceneParticleKind> {
+    match family {
+        SceneParticleRendererFamily::Rope | SceneParticleRendererFamily::RopeTrail => {
+            Some(SceneParticleKind::LineTrail)
+        }
+        SceneParticleRendererFamily::SpriteTrail => Some(SceneParticleKind::PetalTrail),
+        SceneParticleRendererFamily::Sprite | SceneParticleRendererFamily::Unsupported => None,
+    }
+}
+
+fn particle_renderer_family(name: Option<&str>) -> SceneParticleRendererFamily {
+    match name
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("sprite") => SceneParticleRendererFamily::Sprite,
+        Some("spritetrail") => SceneParticleRendererFamily::SpriteTrail,
+        Some("rope") => SceneParticleRendererFamily::Rope,
+        Some("ropetrail") => SceneParticleRendererFamily::RopeTrail,
+        _ => SceneParticleRendererFamily::Unsupported,
+    }
+}
+
+fn particle_child_kind(value: Option<&str>) -> SceneParticleChildKind {
+    match value
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("static") => SceneParticleChildKind::Static,
+        Some("eventfollow") => SceneParticleChildKind::EventFollow,
+        Some("eventdeath") => SceneParticleChildKind::EventDeath,
+        Some("eventspawn") => SceneParticleChildKind::EventSpawn,
+        _ => SceneParticleChildKind::Unsupported,
+    }
+}
+
+fn particle_stage_name_is_adapter_safe(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let unsupported_tokens = [
+        "collision",
+        "collide",
+        "mask",
+        "remap",
+        "boid",
+        "flock",
+        "vortex",
+        "turbulence",
+        "sequence",
+        "event",
+        "inherit",
+        "model",
+        "bounds",
+    ];
+    if unsupported_tokens.iter().any(|token| lower.contains(token)) {
+        return false;
+    }
+
+    let adapter_safe_tokens = [
+        "lifetime", "life", "size", "color", "colour", "alpha", "fade", "velocity", "speed",
+        "movement", "move", "position", "rotation", "spin", "random", "gravity",
+    ];
+    adapter_safe_tokens
+        .iter()
+        .any(|token| lower.contains(token))
+}
+
+fn runtime_diagnostic(
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> SceneParticleRuntimeDiagnostic {
+    SceneParticleRuntimeDiagnostic {
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn particle_entries<'a>(root: &'a Value, keys: &[&str]) -> Vec<&'a Value> {
+    for key in keys {
+        let Some(value) = root.get(*key) else {
+            continue;
+        };
+        if let Some(items) = value.as_array() {
+            return items.iter().collect();
+        }
+        if value.is_object() {
+            return vec![value];
+        }
+    }
+    Vec::new()
+}
+
+fn stage_names(root: &Value, keys: &[&str]) -> Vec<String> {
+    particle_entries(root, keys)
+        .into_iter()
+        .filter_map(|value| {
+            string_field(value, "name")
+                .or_else(|| string_field(value, "type"))
+                .or_else(|| value.as_str().map(ToString::to_string))
+        })
+        .filter(|value| !value.trim().is_empty())
+        .collect()
+}
+
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(as_string)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn f64_field(value: &Value, key: &str) -> Option<f64> {
+    value.get(key).and_then(as_f64)
+}
+
+fn u32_field(value: &Value, key: &str) -> Option<u32> {
+    value
+        .get(key)
+        .and_then(as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| value.round() as u32)
+}
+
+fn bool_field(value: &Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(as_bool)
+}
+
+fn string_list_field(value: &Value, key: &str) -> Vec<String> {
+    let Some(raw) = value.get(key) else {
+        return Vec::new();
+    };
+    if let Some(items) = raw.as_array() {
+        return items
+            .iter()
+            .filter_map(as_string)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+    }
+    as_string(raw)
+        .map(|value| {
+            value
+                .split(|character: char| character.is_whitespace() || character == ',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn vector3_list_field(value: &Value, key: &str) -> Option<Vec<[f64; 3]>> {
+    let raw = value.get(key)?;
+    let items = raw.as_array()?;
+    let vectors = items
+        .iter()
+        .filter_map(|item| parse_vector::<3>(item))
+        .collect::<Vec<_>>();
+    (!vectors.is_empty()).then_some(vectors)
+}
+
+fn vector2_field(value: &Value, key: &str) -> Option<[f64; 2]> {
+    value.get(key).and_then(parse_vector::<2>)
+}
+
+fn vector3_field(value: &Value, key: &str) -> Option<[f64; 3]> {
+    value.get(key).and_then(parse_vector::<3>)
+}
+
+fn parse_vector<const N: usize>(value: &Value) -> Option<[f64; N]> {
+    if let Some(values) = value.as_array() {
+        let mut result = [0.0; N];
+        for (index, slot) in result.iter_mut().enumerate() {
+            *slot = values.get(index).and_then(as_f64).unwrap_or(0.0);
+        }
+        return Some(result);
+    }
+
+    let text = as_string(value)?;
+    let values = text
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .filter_map(|part| {
+            let part = part.trim();
+            (!part.is_empty())
+                .then(|| part.parse::<f64>().ok())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    if values.len() < N.saturating_sub(1).max(1) {
+        return None;
+    }
+    let mut result = [0.0; N];
+    for (index, slot) in result.iter_mut().enumerate() {
+        *slot = values.get(index).copied().unwrap_or(0.0);
+    }
+    Some(result)
+}
+
+fn as_string(value: &Value) -> Option<String> {
+    if let Some(value) = value.as_str() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.as_f64() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.as_bool() {
+        return Some(value.to_string());
+    }
+    None
+}
+
+fn as_f64(value: &Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn as_bool(value: &Value) -> Option<bool> {
+    value.as_bool().or_else(|| {
+        let text = value.as_str()?.trim().to_ascii_lowercase();
+        match text.as_str() {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::models::{
+        SceneParticleChildKind, SceneParticleInstanceOverride, SceneParticleRendererFamily,
+        SceneParticleScheduleMode,
+    };
+
+    use super::{build_authored_particle_runtime_for_resource, build_scene_particle_runtime};
+
+    #[test]
+    fn parses_first_class_particle_hierarchy_and_adapter_family() {
+        let particle = json!({
+            "maxcount": 128,
+            "starttime": 0.25,
+            "material": "materials/particle.json",
+            "emitter": [{
+                "name": "root",
+                "rate": 48,
+                "origin": "10 20 0",
+                "speedmin": 2,
+                "speedmax": 5
+            }],
+            "renderer": [{
+                "name": "spritetrail",
+                "length": 8,
+                "maxlength": 32,
+                "subdivision": 4
+            }],
+            "controlpoint": [{
+                "id": 0,
+                "offset": "1 2 0"
+            }]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/simple.json".to_string(),
+            &particle,
+        );
+
+        assert!(runtime.adapter.supported);
+        assert_eq!(
+            runtime.system.renderers[0].family,
+            SceneParticleRendererFamily::SpriteTrail
+        );
+        assert_eq!(
+            runtime.system.emitters[0].schedule_mode,
+            SceneParticleScheduleMode::Autonomous
+        );
+        assert_eq!(runtime.system.max_count, Some(128));
+        assert_eq!(
+            runtime.system.control_points[0].offset,
+            Some([1.0, 2.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn preserves_static_follow_and_death_children_without_mapping_to_adapter() {
+        let particle = json!({
+            "emitter": [{"name": "root", "rate": 16}],
+            "renderer": [{"name": "rope"}],
+            "children": [
+                {"name": "attached", "type": "static", "origin": "1 0 0"},
+                {"name": "follow", "type": "eventfollow", "scale": "0.5 0.5 1"},
+                {"name": "death", "type": "eventdeath", "probability": 0.4}
+            ]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/children.json".to_string(),
+            &particle,
+        );
+
+        assert!(!runtime.adapter.supported);
+        assert_eq!(runtime.system.children.len(), 3);
+        assert_eq!(
+            runtime.system.children[0].child_type,
+            SceneParticleChildKind::Static
+        );
+        assert_eq!(
+            runtime.system.children[1].child_type,
+            SceneParticleChildKind::EventFollow
+        );
+        assert_eq!(
+            runtime.system.children[2].child_type,
+            SceneParticleChildKind::EventDeath
+        );
+        assert!(runtime
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "particle-child-hierarchy-deferred"));
+    }
+
+    #[test]
+    fn rejects_complex_operator_families_for_the_narrow_adapter() {
+        let particle = json!({
+            "emitter": [{"name": "root", "rate": 16}],
+            "renderer": [{"name": "ropetrail"}],
+            "operator": [{"name": "turbulence force"}]
+        });
+
+        let runtime = build_scene_particle_runtime(
+            9,
+            "Complex".to_string(),
+            "particles/complex.json".to_string(),
+            Some(&particle),
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            None,
+            SceneParticleInstanceOverride::default(),
+        );
+
+        assert!(!runtime.adapter.supported);
+        assert!(runtime
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"));
+    }
+}
