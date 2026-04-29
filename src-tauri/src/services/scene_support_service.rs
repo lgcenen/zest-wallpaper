@@ -24,8 +24,9 @@ use crate::{
             SceneRenderIssueSeverity,
         },
         scene_resource_service::{
-            builtin_scene_assets_root_for_app, font_reference_looks_like_path, SceneResourceLookup,
-            SceneResourceResolver, SceneResourceRoot, SceneResourceRootKind, SceneShaderSourceKind,
+            builtin_scene_assets_root_for_app, SceneResourceLookup, SceneResourceResolver,
+            SceneResourceRoot, SceneResourceRootKind, SceneShaderSourceKind,
+            SceneTextFontReferenceKind,
         },
         scene_runtime_settings_service,
         scene_shader_material_service::{
@@ -1097,31 +1098,45 @@ fn require_text_font_resource(
     font_reference: &str,
 ) {
     let resolved = resolver.inspect_text_font(font_reference);
-    if resolved.lookup.matched_path.is_some() || !font_reference_looks_like_path(font_reference) {
+    if resolved.lookup.matched_path.is_some() {
         return;
     }
 
-    push_unique_issue(
-        warnings,
-        SceneDiagnosticEntry::warning(
+    let object_label = object_name
+        .map(quoted)
+        .unwrap_or_else(|| "Scene".to_string());
+    let (code, message, note) = match resolved.reference_kind {
+        SceneTextFontReferenceKind::PathLike => (
             "text-font-reference-unresolved",
             format!(
-                "{} could not resolve text font {} for native Scene text rendering.",
-                object_name
-                    .map(quoted)
-                    .unwrap_or_else(|| "Scene".to_string()),
-                font_reference
+                "{object_label} could not resolve text font {font_reference} for native Scene text rendering."
             ),
-        )
-        .with_object(object_id, object_name, Some("text"))
-        .with_resource_path(Some(font_reference))
-        .with_detail(
-            SceneDiagnosticDetail::resource(
-                SceneDiagnosticDomain::Text,
-                SceneDiagnosticResourceDetail::from_text_font_lookup(&resolved),
-            )
-            .with_note("Text font could not be resolved from Scene font roots or builtin assets."),
+            Some("Text font could not be resolved from Scene font roots or builtin assets."),
         ),
+        SceneTextFontReferenceKind::FamilyLike => (
+            "text-font-family-unverified",
+            format!(
+                "{object_label} declares text font family {font_reference}, but no Scene, external, or builtin font file was resolved."
+            ),
+            Some(
+                "The native renderer will try authored family candidates at rasterization time before using the system font fallback.",
+            ),
+        ),
+        SceneTextFontReferenceKind::SystemFontAlias => return,
+    };
+    let mut detail = SceneDiagnosticDetail::resource(
+        SceneDiagnosticDomain::Text,
+        SceneDiagnosticResourceDetail::from_text_font_lookup(&resolved),
+    );
+    if let Some(note) = note {
+        detail = detail.with_note(note);
+    }
+    push_unique_issue(
+        warnings,
+        SceneDiagnosticEntry::warning(code, message)
+            .with_object(object_id, object_name, Some("text"))
+            .with_resource_path(Some(font_reference))
+            .with_detail(detail),
     );
 }
 
@@ -1327,7 +1342,9 @@ mod tests {
         models::{SceneManifest, WallpaperRecord, WallpaperType},
         services::{
             runtime_document_service,
-            scene_resource_service::{SceneResourceResolver, SceneResourceRootKind},
+            scene_resource_service::{
+                SceneResourceResolver, SceneResourceRootKind, SceneTextFontReferenceKind,
+            },
         },
     };
 
@@ -1479,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn support_report_accepts_font_family_without_missing_resource_warning() {
+    fn phase_09a_support_report_warns_for_unresolved_family_only_font() {
         let temp = tempdir().expect("temp dir");
         let managed_root = temp.path().join("managed");
         let builtin_root = temp.path().join("builtin");
@@ -1507,7 +1524,66 @@ mod tests {
 
         assert!(report.is_supported());
         assert!(report.errors.is_empty());
-        assert!(report.warnings.is_empty());
+        let font_warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "text-font-family-unverified")
+            .expect("family font warning");
+        assert_eq!(font_warning.object_id, Some(2));
+        let font_detail = font_warning
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.resource.as_ref())
+            .expect("font resource detail");
+        assert_eq!(font_detail.authored_reference, "DIN Alternate");
+        assert_eq!(
+            font_detail.font_reference_kind,
+            Some(SceneTextFontReferenceKind::FamilyLike)
+        );
+        assert!(font_detail
+            .family_candidates
+            .contains(&"DIN Alternate".to_string()));
+        assert!(!font_detail.reference_resolved);
+        assert!(!font_detail.attempted_candidates.is_empty());
+    }
+
+    #[test]
+    fn phase_09a_support_report_accepts_system_font_alias_without_resource_warning() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let extracted_root = managed_root.join("extracted");
+
+        fs::create_dir_all(&extracted_root).expect("extracted dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        fs::write(
+            extracted_root.join("scene.json"),
+            r#"{
+              "objects": [
+                {
+                  "id": 2,
+                  "name": "Clock",
+                  "text": "12:34",
+                  "font": "systemfont_arial"
+                }
+              ]
+            }"#,
+        )
+        .expect("scene json");
+
+        let record = scene_record(&managed_root);
+        let report = analyze_scene_support_with_builtin_root(&record, &builtin_root, None);
+
+        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "text-font-family-unverified"));
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "text-font-reference-unresolved"));
     }
 
     #[test]

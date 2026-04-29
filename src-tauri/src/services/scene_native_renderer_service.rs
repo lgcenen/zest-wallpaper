@@ -123,8 +123,15 @@ const PETAL_TEXTURE_KEY: &str = "procedural:petal";
 const INLINE_VERTEX_BYTES_LIMIT: usize = 4096;
 
 #[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct SceneCachedTextFont {
+    font: Retained<NSFont>,
+    fallback_detail: Option<SceneTextFontFallbackDetail>,
+}
+
+#[cfg(target_os = "macos")]
 thread_local! {
-    static SCENE_TEXT_FONT_CACHE: RefCell<BTreeMap<String, Retained<NSFont>>> = const {
+    static SCENE_TEXT_FONT_CACHE: RefCell<BTreeMap<String, SceneCachedTextFont>> = const {
         RefCell::new(BTreeMap::new())
     };
 }
@@ -4878,14 +4885,20 @@ fn scene_text_font_with_point_size(
         SCENE_TEXT_FONT_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned())
     {
         return Ok(SceneResolvedTextFont {
-            font: cached_font,
-            fallback_detail: None,
+            font: cached_font.font,
+            fallback_detail: cached_font.fallback_detail,
         });
     }
 
     let font = scene_text_font_uncached(item, point_size)?;
     SCENE_TEXT_FONT_CACHE.with(|cache| {
-        cache.borrow_mut().insert(cache_key, font.font.clone());
+        cache.borrow_mut().insert(
+            cache_key,
+            SceneCachedTextFont {
+                font: font.font.clone(),
+                fallback_detail: font.fallback_detail.clone(),
+            },
+        );
     });
     Ok(font)
 }
@@ -6305,6 +6318,26 @@ mod tests {
             text_texture_cache_key(&sample_text_item()),
             text_texture_cache_key(&item)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn text_font_cache_preserves_fallback_diagnostics_for_family_only_fonts() {
+        let mut item = sample_text_item();
+        item.font.authored_reference = Some("__WallpaperPhase09A_MissingFamily__".to_string());
+        item.font.reference_kind =
+            Some(crate::services::scene_resource_service::SceneTextFontReferenceKind::FamilyLike);
+        item.font.file_candidates.clear();
+        item.font.family_candidates = vec!["__WallpaperPhase09A_MissingFamily__".to_string()];
+        item.font.cache_key = "font:phase-09a-missing-family".to_string();
+
+        let first =
+            super::scene_text_font_with_point_size(&item, 17.0).expect("first font resolution");
+        let second =
+            super::scene_text_font_with_point_size(&item, 17.0).expect("cached font resolution");
+
+        assert!(first.fallback_detail.is_some());
+        assert_eq!(first.fallback_detail, second.fallback_detail);
     }
 
     #[cfg(target_os = "macos")]
