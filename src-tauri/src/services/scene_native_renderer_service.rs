@@ -19,7 +19,9 @@ use crate::{
         scene_audio_coordinator_service::SceneAudioCoordinator,
         scene_diagnostics::{SceneDiagnosticDetail, SceneDiagnosticDomain},
         scene_input_response_service::{
-            SceneInputResponse, SceneInputResponseState, SceneInputTarget,
+            project_shared_input_to_scene, SceneInputCoordinator, SceneInputCoordinatorFrame,
+            SceneInputCoordinatorUpdate, SceneInputResponse, SceneInputSceneBounds,
+            SceneInputViewport,
         },
         scene_mdl_service::{evaluate_scene_mdl_mesh, parse_scene_mdl_file, SceneMdlDocument},
         scene_now_playing_provider_service,
@@ -1406,7 +1408,7 @@ struct NativeSceneMetalRenderer {
     last_frame_at: Instant,
     animation_time_seconds: f64,
     audio_coordinator: SceneAudioCoordinator,
-    input_response: SceneInputResponseState,
+    input_coordinator: SceneInputCoordinator,
     particle_signature: Option<u64>,
     particle_scheduler: SceneParticleScheduler,
     paused: bool,
@@ -1500,7 +1502,7 @@ impl NativeSceneMetalRenderer {
             last_frame_at: Instant::now(),
             animation_time_seconds: 0.0,
             audio_coordinator: SceneAudioCoordinator::default(),
-            input_response: SceneInputResponseState::default(),
+            input_coordinator: SceneInputCoordinator::default(),
             particle_signature: None,
             particle_scheduler: SceneParticleScheduler::default(),
             paused: false,
@@ -1692,7 +1694,7 @@ impl NativeSceneMetalRenderer {
         }
         if self.scene_key.as_deref() != Some(scene_key) {
             self.audio_coordinator.reset();
-            self.input_response.reset();
+            self.input_coordinator.reset();
             self.animation_time_seconds = 0.0;
         }
 
@@ -1726,7 +1728,7 @@ impl NativeSceneMetalRenderer {
         self.compiled_shader_variants.clear();
         self.particle_signature = None;
         self.audio_coordinator.reset();
-        self.input_response.reset();
+        self.input_coordinator.reset();
         self.particle_scheduler.reset();
         self.last_frame_at = Instant::now();
         self.animation_time_seconds = 0.0;
@@ -1763,9 +1765,8 @@ impl NativeSceneMetalRenderer {
         if !self.paused {
             self.animation_time_seconds += delta_seconds;
         }
-        let input_response = self.update_input_response(view, plan, delta_seconds);
-        let camera_offset = self.camera_offset(plan, input_response);
-        let projection = scene_projection(view, plan, camera_offset);
+        let input_frame = self.update_input_frame(view, plan, delta_seconds);
+        let projection = scene_projection(view, plan, input_frame.camera_offset);
         let shared_audio_snapshot = audio_input_service::current_audio_snapshot(&self.app).ok();
         let now_ms = self.started_at.elapsed().as_millis() as u64;
         let phase10_graph = self.phase10_graph.clone();
@@ -1810,7 +1811,7 @@ impl NativeSceneMetalRenderer {
         let now_ms_f64 = now_ms as f64;
 
         if white_texture.is_some() && !plan.particles.is_empty() {
-            self.advance_particle_items(&plan.particles, input_response, now_ms_f64);
+            self.advance_particle_items(&plan.particles, input_frame.response, now_ms_f64);
         }
 
         for draw_item in &plan.draw_order {
@@ -3087,45 +3088,22 @@ impl NativeSceneMetalRenderer {
         delta_seconds.clamp(1.0 / 240.0, 0.25)
     }
 
-    fn update_input_response(
+    fn update_input_frame(
         &mut self,
         view: &MTKView,
         plan: &SceneRenderPlan,
         delta_seconds: f64,
-    ) -> SceneInputResponse {
-        let target = scene_input_target_for_view(&self.app, view, plan);
-        self.input_response.update(target, delta_seconds)
-    }
-
-    fn camera_offset(
-        &self,
-        plan: &SceneRenderPlan,
-        input_response: SceneInputResponse,
-    ) -> (f64, f64) {
-        let elapsed = self.started_at.elapsed().as_secs_f64();
-        let shake_x = if plan.camera.camera_shake {
-            (elapsed * (plan.camera.camera_shake_speed + 0.35)).sin()
-                * (plan.camera.camera_shake_amplitude * 3.2)
-        } else {
-            0.0
-        };
-        let shake_y = if plan.camera.camera_shake {
-            (elapsed * (plan.camera.camera_shake_speed + 0.18)).cos()
-                * (plan.camera.camera_shake_amplitude * 2.4)
-        } else {
-            0.0
-        };
-
-        (
-            input_response.motion_x
-                * plan.camera.parallax_mouse_influence
-                * (plan.canvas_width * 0.012)
-                + shake_x,
-            input_response.motion_y
-                * plan.camera.parallax_mouse_influence
-                * (plan.canvas_height * 0.012)
-                + shake_y,
-        )
+    ) -> SceneInputCoordinatorFrame {
+        let projection = scene_input_projection_for_view(&self.app, view, plan);
+        self.input_coordinator.update(SceneInputCoordinatorUpdate {
+            target: projection.target,
+            camera: plan.camera.clone(),
+            canvas_width: plan.canvas_width,
+            canvas_height: plan.canvas_height,
+            delta_seconds,
+            scene_time_seconds: self.animation_time_seconds,
+            projection_diagnostics: projection.diagnostics,
+        })
     }
 
     fn pipeline_for(
@@ -5389,28 +5367,36 @@ fn scene_soundscape_audio_levels(app: &AppHandle, count: usize) -> Option<Vec<f6
 }
 
 #[cfg(target_os = "macos")]
-fn scene_input_target_for_view(
+fn scene_input_projection_for_view(
     app: &AppHandle,
     view: &MTKView,
     plan: &SceneRenderPlan,
-) -> Option<SceneInputTarget> {
-    let window = view.window()?;
-    let snapshot = input_service::current_input_snapshot(app).ok()?;
-    if !snapshot.active {
-        return None;
-    }
+) -> crate::services::scene_input_response_service::SceneInputProjection {
+    let Some(window) = view.window() else {
+        return project_shared_input_to_scene(
+            None,
+            SceneInputViewport::default(),
+            SceneInputSceneBounds {
+                width: plan.canvas_width,
+                height: plan.canvas_height,
+            },
+        );
+    };
     let frame = window.frame();
-    let width = frame.size.width.max(1.0);
-    let height = frame.size.height.max(1.0);
-    let local_x = (snapshot.system_x - frame.origin.x).clamp(0.0, width);
-    let local_y = (snapshot.system_y - frame.origin.y).clamp(0.0, height);
-    Some(SceneInputTarget {
-        active: true,
-        motion_x: (local_x / width - 0.5) * 2.0,
-        motion_y: ((1.0 - local_y / height) - 0.5) * 2.0,
-        cursor_x: (local_x / width) * plan.canvas_width,
-        cursor_y: (local_y / height) * plan.canvas_height,
-    })
+    let snapshot = input_service::current_input_snapshot(app).ok();
+    project_shared_input_to_scene(
+        snapshot.as_ref(),
+        SceneInputViewport {
+            origin_x: frame.origin.x,
+            origin_y: frame.origin.y,
+            width: frame.size.width,
+            height: frame.size.height,
+        },
+        SceneInputSceneBounds {
+            width: plan.canvas_width,
+            height: plan.canvas_height,
+        },
+    )
 }
 
 #[cfg(target_os = "macos")]

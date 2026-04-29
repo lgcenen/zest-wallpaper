@@ -542,13 +542,14 @@ mod tests {
         ));
 
         assert!(scene_native_renderer_service.contains("SceneAudioCoordinator"));
-        assert!(scene_native_renderer_service.contains("SceneInputResponseState"));
+        assert!(scene_native_renderer_service.contains("SceneInputCoordinator"));
         assert!(scene_native_renderer_service.contains("SceneParticleScheduler"));
         assert!(scene_native_renderer_service.contains("text-font-fallback"));
         assert!(scene_native_renderer_service.contains("text-effect-unsupported"));
         assert!(scene_native_renderer_service.contains("native scene plan"));
         assert!(scene_audio_coordinator_service.contains("levels_for_count"));
         assert!(scene_audio_coordinator_service.contains("merge_scene_audio_levels"));
+        assert!(scene_input_response_service.contains("SceneInputCoordinatorFrame"));
         assert!(scene_input_response_service.contains("SceneInputTarget"));
         assert!(scene_particle_scheduler_service.contains("emit_petals"));
         assert!(scene_particle_scheduler_service.contains("line_primitives"));
