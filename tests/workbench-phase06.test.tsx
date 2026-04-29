@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const sceneRuntimeSettings = {
@@ -132,7 +132,7 @@ vi.mock("../src/state/player-controller", () => ({
   usePlayerController: mocks.usePlayerController,
 }));
 
-import WorkbenchApp from "../src/app-shell/WorkbenchApp";
+import WorkbenchApp, { APPLY_WALLPAPER_GUI_TIMEOUT_MS } from "../src/app-shell/WorkbenchApp";
 import { WorkbenchSelect } from "../src/app-shell/WorkbenchSelect";
 import { getWorkbenchCopy } from "../src/app-shell/workbench-copy";
 
@@ -158,10 +158,15 @@ describe("phase-06 workbench gui", () => {
       externalAssetsPath: null,
       externalAssetsExists: false,
     });
+    mocks.gateway.applyDynamicWallpaper.mockImplementation(async () => mocks.wallpaper);
     mocks.usePlayerController.mockReturnValue({
       active: mocks.restoredWallpaper,
       paused: false,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("prefers the restored active wallpaper in the detail pane on startup", async () => {
@@ -255,6 +260,29 @@ describe("phase-06 workbench gui", () => {
     );
     expect(card.querySelector(".library-card-fallback-mark")?.textContent).toBe("S");
     expect(container.querySelector(".library-card-copy")).toBeNull();
+  });
+
+  it("clears scene apply loading when the native apply chain does not return", async () => {
+    render(<WorkbenchApp />);
+
+    await screen.findByText("本地壁纸库");
+    vi.useFakeTimers();
+    mocks.gateway.applyDynamicWallpaper.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: mocks.fallbackWallpaper.title }));
+
+    expect(screen.getAllByText("应用中").length).toBeGreaterThan(0);
+
+    await vi.advanceTimersByTimeAsync(APPLY_WALLPAPER_GUI_TIMEOUT_MS);
+    vi.useRealTimers();
+
+    await waitFor(() => {
+      expect(screen.queryByText("应用中")).toBeNull();
+    });
+    expect(screen.getAllByText("应用失败").length).toBeGreaterThan(0);
+    expect(screen.getByText(/native apply chain is still pending/)).toBeTruthy();
   });
 
   it("closes the custom select menu when focus tabs away from the select root", async () => {

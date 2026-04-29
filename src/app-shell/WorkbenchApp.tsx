@@ -62,6 +62,29 @@ interface ScrollRevealOptions {
   behavior?: ScrollBehavior;
 }
 
+export const APPLY_WALLPAPER_GUI_TIMEOUT_MS = 45_000;
+
+function applyTimeoutMessage(timeoutMs: number) {
+  return `Wallpaper apply did not finish within ${Math.round(
+    timeoutMs / 1000,
+  )}s. The native apply chain is still pending; check [wallpaper-apply] stage logs for the last completed phase.`;
+}
+
+function applyDynamicWallpaperWithGuiTimeout(id: string, timeoutMs = APPLY_WALLPAPER_GUI_TIMEOUT_MS) {
+  let timeoutId: ReturnType<typeof window.setTimeout> | undefined;
+  const timeout = new Promise<WallpaperRuntimeRecord>((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      reject(new Error(applyTimeoutMessage(timeoutMs)));
+    }, timeoutMs);
+  });
+
+  return Promise.race([applyDynamicWallpaper(id), timeout]).finally(() => {
+    if (timeoutId !== undefined) {
+      window.clearTimeout(timeoutId);
+    }
+  });
+}
+
 function valueToColor(value: unknown) {
   if (typeof value !== "string") {
     return "#ffffff";
@@ -1248,9 +1271,10 @@ export default function WorkbenchApp() {
     applyRequestRef.current = requestId;
     setIsApplyingWallpaperId(record.id);
     setLastApplyError(null);
+    const applyStartedAt = window.performance.now();
 
     try {
-      const updated = await applyDynamicWallpaper(record.id);
+      const updated = await applyDynamicWallpaperWithGuiTimeout(record.id);
       if (applyRequestRef.current !== requestId) {
         return;
       }
@@ -1285,6 +1309,11 @@ export default function WorkbenchApp() {
     } finally {
       if (applyRequestRef.current === requestId) {
         setIsApplyingWallpaperId((current) => (current === record.id ? null : current));
+        window.console.info(
+          `[wallpaper-apply] stage=gui_loading_cleared status=done id=${record.id} elapsed_ms=${Math.round(
+            window.performance.now() - applyStartedAt,
+          )}`,
+        );
       }
     }
   }

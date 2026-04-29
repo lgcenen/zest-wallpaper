@@ -44,6 +44,12 @@ use crate::{
             SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
             SceneMaterialUniformValue, SceneShaderProgram, SceneShaderProgramKind,
         },
+        scene_sound_lifecycle_service::{
+            plan_scene_sound_clear, plan_scene_sound_lifecycle, scene_sound_meter_level,
+            scene_sound_playback_load_warning, scene_sound_reactive_levels,
+            SceneSoundLifecycleAction, SceneSoundMeterReading, SceneSoundPlaybackWarning,
+            SceneSoundRuntimeState,
+        },
         scene_text_script_runtime_service,
         scene_video_texture_service::{
             self, SceneVideoTextureLifecycleAction, SceneVideoTextureSourceSpec,
@@ -602,18 +608,22 @@ impl NativeSceneWarning {
     }
 
     #[cfg(target_os = "macos")]
-    fn sound_load(path: &Path, message: String) -> Self {
+    fn from_sound_playback_warning(warning: SceneSoundPlaybackWarning) -> Self {
         Self {
-            code: "sound-playback-load-failed".to_string(),
-            message: format!(
-                "Scene sound {} could not be prepared for native playback.",
-                path.display()
+            code: warning.code,
+            message: warning.message,
+            detail: Some(
+                SceneDiagnosticDetail::runtime(
+                    SceneDiagnosticDomain::Sound,
+                    warning.runtime_stage,
+                    warning.reason,
+                )
+                .with_note(format!(
+                    "object {}: {}",
+                    warning.object_id, warning.object_name
+                ))
+                .with_note(format!("asset path: {}", warning.asset_path.display())),
             ),
-            detail: Some(SceneDiagnosticDetail::runtime(
-                SceneDiagnosticDomain::Sound,
-                "soundscape-sync",
-                message,
-            )),
         }
     }
 
@@ -1242,7 +1252,7 @@ struct NativeSceneSoundscape {
 
 #[cfg(target_os = "macos")]
 struct NativeSceneSoundPlayer {
-    asset_path: PathBuf,
+    state: SceneSoundRuntimeState,
     player: Retained<AVAudioPlayer>,
 }
 
@@ -1253,67 +1263,80 @@ impl NativeSceneSoundscape {
         sounds: &[SceneRenderSoundItem],
         paused: bool,
     ) -> Result<Vec<NativeSceneWarning>, String> {
-        let mut current = self.players.borrow_mut();
-        let mut next = BTreeMap::new();
+        let current_states = self.playback_states();
+        let actions = plan_scene_sound_lifecycle(&current_states, sounds, paused);
+        let sounds_by_id = sounds
+            .iter()
+            .map(|sound| (sound.object_id, sound))
+            .collect::<BTreeMap<_, _>>();
+        let mut players = self.players.borrow_mut();
         let mut warnings = Vec::new();
 
-        for sound in sounds {
-            let mut entry = current.remove(&sound.object_id);
-            let needs_rebuild = entry
-                .as_ref()
-                .map(|player| player.asset_path != sound.asset_path)
-                .unwrap_or(true);
-
-            if needs_rebuild {
-                if let Some(existing) = entry.take() {
-                    unsafe {
-                        existing.player.stop();
+        for action in actions {
+            match action {
+                SceneSoundLifecycleAction::Start { state } => {
+                    if let Some(sound) = sounds_by_id.get(&state.object_id) {
+                        match create_sound_player(sound, state.paused) {
+                            Ok(player) => {
+                                players.insert(state.object_id, player);
+                            }
+                            Err(error) => {
+                                warnings.push(NativeSceneWarning::from_sound_playback_warning(
+                                    scene_sound_playback_load_warning(sound, error),
+                                ))
+                            }
+                        }
                     }
                 }
-                entry = match create_sound_player(sound) {
-                    Ok(player) => Some(player),
-                    Err(error) => {
-                        warnings.push(NativeSceneWarning::sound_load(&sound.asset_path, error));
-                        None
+                SceneSoundLifecycleAction::Replace { previous: _, state } => {
+                    if let Some(existing) = players.remove(&state.object_id) {
+                        stop_sound_player(&existing);
                     }
-                };
-            }
-
-            let Some(entry) = entry else {
-                continue;
-            };
-            unsafe {
-                entry.player.setVolume(sound.volume as f32);
-                entry
-                    .player
-                    .setNumberOfLoops(if sound.looped { -1 } else { 0 });
-                if paused {
-                    entry.player.pause();
-                } else if !entry.player.isPlaying() {
-                    let _ = entry.player.play();
+                    if let Some(sound) = sounds_by_id.get(&state.object_id) {
+                        match create_sound_player(sound, state.paused) {
+                            Ok(player) => {
+                                players.insert(state.object_id, player);
+                            }
+                            Err(error) => {
+                                warnings.push(NativeSceneWarning::from_sound_playback_warning(
+                                    scene_sound_playback_load_warning(sound, error),
+                                ))
+                            }
+                        }
+                    }
+                }
+                SceneSoundLifecycleAction::Update { state } => {
+                    if let Some(player) = players.get_mut(&state.object_id) {
+                        configure_sound_player(player, &state);
+                    }
+                }
+                SceneSoundLifecycleAction::SetPaused { object_id, paused } => {
+                    if let Some(player) = players.get_mut(&object_id) {
+                        player.state.paused = paused;
+                        set_sound_player_paused(player, paused);
+                    }
+                }
+                SceneSoundLifecycleAction::Stop { state } => {
+                    if let Some(player) = players.remove(&state.object_id) {
+                        stop_sound_player(&player);
+                    }
                 }
             }
-            next.insert(sound.object_id, entry);
         }
 
-        for (_, player) in current.iter() {
-            unsafe {
-                player.player.stop();
-            }
-        }
-
-        *current = next;
         Ok(warnings)
     }
 
     fn clear(&self) {
-        let mut current = self.players.borrow_mut();
-        for (_, player) in current.iter() {
-            unsafe {
-                player.player.stop();
+        let actions = plan_scene_sound_clear(&self.playback_states());
+        let mut players = self.players.borrow_mut();
+        for action in actions {
+            if let SceneSoundLifecycleAction::Stop { state } = action {
+                if let Some(player) = players.remove(&state.object_id) {
+                    stop_sound_player(&player);
+                }
             }
         }
-        current.clear();
     }
 
     fn reactive_levels(&self, count: usize) -> Option<Vec<f64>> {
@@ -1343,14 +1366,18 @@ impl NativeSceneSoundscape {
             }
 
             let phase = unsafe { player.player.currentTime() } as f64;
-            meters.push((level, phase));
+            meters.push(SceneSoundMeterReading { level, phase });
         }
 
-        if meters.is_empty() {
-            None
-        } else {
-            Some(scene_sound_level_bands(&meters, count))
-        }
+        scene_sound_reactive_levels(&meters, count)
+    }
+
+    fn playback_states(&self) -> BTreeMap<u32, SceneSoundRuntimeState> {
+        self.players
+            .borrow()
+            .iter()
+            .map(|(object_id, player)| (*object_id, player.state.clone()))
+            .collect()
     }
 }
 
@@ -4600,7 +4627,10 @@ fn load_texture(
 }
 
 #[cfg(target_os = "macos")]
-fn create_sound_player(sound: &SceneRenderSoundItem) -> Result<NativeSceneSoundPlayer, String> {
+fn create_sound_player(
+    sound: &SceneRenderSoundItem,
+    paused: bool,
+) -> Result<NativeSceneSoundPlayer, String> {
     let Some(path_string) = sound.asset_path.to_str() else {
         return Err(format!(
             "sound path {} is not valid UTF-8 for AVFoundation",
@@ -4618,10 +4648,43 @@ fn create_sound_player(sound: &SceneRenderSoundItem) -> Result<NativeSceneSoundP
         player.setMeteringEnabled(true);
         let _ = player.prepareToPlay();
     }
-    Ok(NativeSceneSoundPlayer {
-        asset_path: sound.asset_path.clone(),
+    let mut sound_player = NativeSceneSoundPlayer {
+        state: SceneSoundRuntimeState::from_sound_item(sound, paused),
         player,
-    })
+    };
+    set_sound_player_paused(&mut sound_player, paused);
+    Ok(sound_player)
+}
+
+#[cfg(target_os = "macos")]
+fn configure_sound_player(player: &mut NativeSceneSoundPlayer, state: &SceneSoundRuntimeState) {
+    unsafe {
+        player.player.setVolume(state.volume as f32);
+        player
+            .player
+            .setNumberOfLoops(if state.looped { -1 } else { 0 });
+    }
+    player.state.looped = state.looped;
+    player.state.volume = state.volume;
+}
+
+#[cfg(target_os = "macos")]
+fn set_sound_player_paused(player: &mut NativeSceneSoundPlayer, paused: bool) {
+    unsafe {
+        if paused {
+            player.player.pause();
+        } else if !player.player.isPlaying() {
+            let _ = player.player.play();
+        }
+    }
+    player.state.paused = paused;
+}
+
+#[cfg(target_os = "macos")]
+fn stop_sound_player(player: &NativeSceneSoundPlayer) {
+    unsafe {
+        player.player.stop();
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5323,48 +5386,6 @@ fn scene_soundscape_audio_levels(app: &AppHandle, count: usize) -> Option<Vec<f6
     let soundscape = state.soundscape.lock().ok()?;
     let soundscape = soundscape.as_ref()?;
     soundscape.get(mtm).reactive_levels(count)
-}
-
-#[cfg(target_os = "macos")]
-fn scene_sound_meter_level(average_db: f64, peak_db: f64) -> f64 {
-    let average = decibels_to_scene_level(average_db);
-    let peak = decibels_to_scene_level(peak_db);
-    clamp_f64((peak * 0.68 + average * 0.32).powf(0.7), 0.0, 1.0)
-}
-
-#[cfg(target_os = "macos")]
-fn decibels_to_scene_level(power_db: f64) -> f64 {
-    if !power_db.is_finite() || power_db <= -80.0 {
-        return 0.0;
-    }
-    clamp_f64(10_f64.powf(power_db / 20.0), 0.0, 1.0)
-}
-
-#[cfg(target_os = "macos")]
-fn scene_sound_level_bands(meters: &[(f64, f64)], count: usize) -> Vec<f64> {
-    if count == 0 || meters.is_empty() {
-        return vec![0.0; count];
-    }
-
-    (0..count)
-        .map(|index| {
-            let position = if count == 1 {
-                0.5
-            } else {
-                index as f64 / (count - 1) as f64
-            };
-            let edge_envelope = (1.0 - (position * 2.0 - 1.0).abs()).powf(0.32);
-            let mut level = 0.0_f64;
-            for &(meter, phase) in meters {
-                let ripple_a = ((phase * 3.1) + position * 8.0).sin().abs();
-                let ripple_b = ((phase * 5.7) + position * 17.0).cos().abs();
-                let ripple = ripple_a * 0.55 + ripple_b * 0.45;
-                let shaped = meter * (0.48 + edge_envelope * 0.52) * (0.42 + ripple * 0.58);
-                level = level.max(shaped);
-            }
-            clamp_f64(level, 0.0, 1.0)
-        })
-        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -6500,28 +6521,6 @@ mod tests {
         assert!((super::scene_audio_bar_rotation(0.35) + 0.35).abs() < 0.0001);
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn scene_sound_meter_level_maps_db_power_into_visible_range() {
-        let quiet = super::scene_sound_meter_level(-48.0, -42.0);
-        let loud = super::scene_sound_meter_level(-12.0, -6.0);
-
-        assert!(quiet > 0.0);
-        assert!(loud > quiet);
-        assert!(loud <= 1.0);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn scene_sound_level_bands_expand_local_sound_energy_across_visible_bars() {
-        let bands = super::scene_sound_level_bands(&[(0.62, 3.25)], 12);
-
-        assert_eq!(bands.len(), 12);
-        assert!(bands.iter().all(|value| *value > 0.05));
-        assert!(bands.iter().any(|value| *value > 0.3));
-        assert!(bands[5] > bands[0]);
-    }
-
     #[test]
     fn scene_video_texture_module_filters_and_syncs_scene_video_sources() {
         let current = BTreeMap::from([
@@ -6588,25 +6587,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn scene_sound_runtime_contract_owns_pause_resume_switch_and_clear_lifecycle() {
-        let source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/services/scene_native_renderer_service.rs"
-        ));
-
-        assert!(source.contains("fn sync_scene_soundscape("));
-        assert!(
-            source.contains("Some(spec) => soundscape.sync(&spec.render_plan.sounds, spec.paused)")
-        );
-        assert!(source.contains("soundscape.clear();"));
-        assert!(source.contains("player.setNumberOfLoops(if sound.looped { -1 } else { 0 })"));
-        assert!(source.contains("if paused {"));
-        assert!(source.contains("entry.player.pause();"));
-        assert!(source.contains("!entry.player.isPlaying()"));
-        assert!(source.contains("entry.player.play();"));
     }
 
     #[cfg(target_os = "macos")]
