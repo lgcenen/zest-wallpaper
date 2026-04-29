@@ -20,7 +20,8 @@ pub fn build_scene_particle_runtime(
 ) -> SceneParticleRuntime {
     let system = particle_json.map(parse_particle_system).unwrap_or_default();
     let (mut adapter, diagnostics) = classify_particle_runtime(particle_json.is_some(), &system);
-    if adapter.supported && !instance_override.control_points.is_empty() {
+    if adapter.supported && particle_runtime_uses_input_control_points(&system, &instance_override)
+    {
         adapter.schedule_mode = SceneParticleScheduleMode::InputDriven;
     }
 
@@ -36,6 +37,10 @@ pub fn build_scene_particle_runtime(
         adapter,
         diagnostics,
     }
+}
+
+pub fn scene_particle_runtime_uses_input_control_points(runtime: &SceneParticleRuntime) -> bool {
+    particle_runtime_uses_input_control_points(&runtime.system, &runtime.instance_override)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -145,15 +150,19 @@ fn parse_renderer(value: &Value) -> SceneParticleRendererRuntime {
 }
 
 fn parse_control_point(value: &Value) -> SceneParticleControlPointRuntime {
+    let flags = string_list_field(value, "flags");
+    let lock_to_pointer = bool_field(value, "locktopointer")
+        .or_else(|| bool_field(value, "lockToPointer"))
+        .unwrap_or(false)
+        || control_point_flags_lock_to_pointer(&flags);
+
     SceneParticleControlPointRuntime {
         id: u32_field(value, "id"),
-        flags: string_list_field(value, "flags"),
+        flags,
         offset: vector3_field(value, "offset"),
         parent_control_point: u32_field(value, "parentcontrolpoint")
             .or_else(|| u32_field(value, "parentControlPoint")),
-        lock_to_pointer: bool_field(value, "locktopointer")
-            .or_else(|| bool_field(value, "lockToPointer"))
-            .unwrap_or(false),
+        lock_to_pointer,
     }
 }
 
@@ -287,6 +296,34 @@ fn classify_particle_runtime(
             diagnostics,
         )
     }
+}
+
+fn particle_runtime_uses_input_control_points(
+    system: &SceneParticleSystemRuntime,
+    instance_override: &SceneParticleInstanceOverride,
+) -> bool {
+    !instance_override.control_points.is_empty()
+        || system
+            .emitters
+            .iter()
+            .any(|emitter| emitter.schedule_mode == SceneParticleScheduleMode::InputDriven)
+        || system.control_points.iter().any(|control_point| {
+            control_point.lock_to_pointer
+                || control_point_flags_lock_to_pointer(&control_point.flags)
+        })
+}
+
+fn control_point_flags_lock_to_pointer(flags: &[String]) -> bool {
+    flags.iter().any(|flag| {
+        let normalized = flag.trim().to_ascii_lowercase();
+        normalized == "locktopointer"
+            || normalized == "lock_to_pointer"
+            || normalized == "pointer"
+            || normalized
+                .parse::<u32>()
+                .map(|bits| (bits & 1) != 0)
+                .unwrap_or(false)
+    })
 }
 
 fn unsupported_adapter(reason: impl Into<String>) -> SceneParticleRuntimeAdapter {
@@ -533,7 +570,10 @@ mod tests {
         SceneParticleScheduleMode,
     };
 
-    use super::{build_authored_particle_runtime_for_resource, build_scene_particle_runtime};
+    use super::{
+        build_authored_particle_runtime_for_resource, build_scene_particle_runtime,
+        scene_particle_runtime_uses_input_control_points,
+    };
 
     #[test]
     fn parses_first_class_particle_hierarchy_and_adapter_family() {
@@ -642,5 +682,38 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"));
+    }
+
+    #[test]
+    fn numeric_control_point_flags_mark_supported_trails_as_input_driven() {
+        let particle = json!({
+            "emitter": [{"name": "root", "rate": 32}],
+            "renderer": [{"name": "rope"}],
+            "controlpoint": [
+                {"id": 0, "flags": 1},
+                {"id": 1, "flags": 0}
+            ],
+            "initializer": [{"name": "lifetimerandom"}],
+            "operator": [{"name": "movement"}]
+        });
+
+        let runtime = build_scene_particle_runtime(
+            12,
+            "Input Trail".to_string(),
+            "particles/input-trail.json".to_string(),
+            Some(&particle),
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            None,
+            SceneParticleInstanceOverride::default(),
+        );
+
+        assert!(runtime.adapter.supported);
+        assert!(scene_particle_runtime_uses_input_control_points(&runtime));
+        assert!(runtime.system.control_points[0].lock_to_pointer);
+        assert_eq!(
+            runtime.adapter.schedule_mode,
+            SceneParticleScheduleMode::InputDriven
+        );
     }
 }

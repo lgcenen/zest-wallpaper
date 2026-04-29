@@ -8,9 +8,12 @@ use crate::models::{
     SceneTextBehavior, SceneTextLayer,
 };
 
-use super::scene_resource_service::{
-    font_reference_looks_like_path, scene_text_font_reference_kind, SceneResourceResolver,
-    SceneTextFontCandidates, SceneTextFontReferenceKind,
+use super::{
+    scene_particle_runtime_service::scene_particle_runtime_uses_input_control_points,
+    scene_resource_service::{
+        font_reference_looks_like_path, scene_text_font_reference_kind, SceneResourceResolver,
+        SceneTextFontCandidates, SceneTextFontReferenceKind,
+    },
 };
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -954,10 +957,10 @@ fn plan_particle_item(
         base.transform.position[0] + emitter_origin[0] * base.transform.scale[0],
         base.transform.position[1] + emitter_origin[1] * base.transform.scale[1],
     ];
-    let schedule_mode = if runtime.instance_override.control_points.is_empty() {
-        runtime.adapter.schedule_mode
-    } else {
+    let schedule_mode = if scene_particle_runtime_uses_input_control_points(runtime) {
         SceneParticleScheduleMode::InputDriven
+    } else {
+        runtime.adapter.schedule_mode
     };
     let alpha = runtime
         .instance_override
@@ -1219,10 +1222,10 @@ mod tests {
     use crate::models::{
         EvaluatedAudioState, EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
         EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
-        SceneAssetKind, SceneEvaluatedDocument, SceneManifest, SceneParticleEmitterRuntime,
-        SceneParticleInstanceOverride, SceneParticleKind, SceneParticleRuntime,
-        SceneParticleRuntimeAdapter, SceneParticleScheduleMode, SceneParticleSystemRuntime,
-        SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer,
+        SceneAssetKind, SceneEvaluatedDocument, SceneManifest, SceneParticleControlPointRuntime,
+        SceneParticleEmitterRuntime, SceneParticleInstanceOverride, SceneParticleKind,
+        SceneParticleRuntime, SceneParticleRuntimeAdapter, SceneParticleScheduleMode,
+        SceneParticleSystemRuntime, SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer,
     };
 
     use super::{
@@ -1710,6 +1713,34 @@ mod tests {
         assert_eq!(item.lifetime_ms, 1200.0);
         assert_eq!(item.speed_range, [4.0, 8.0]);
         assert_eq!(item.size, 4.0);
+    }
+
+    #[test]
+    fn render_plan_keeps_pointer_control_point_trails_input_driven() {
+        let mut scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+        let mut runtime = supported_particle_runtime(
+            4,
+            SceneParticleKind::LineTrail,
+            SceneParticleScheduleMode::Autonomous,
+        );
+        runtime.system.control_points = vec![SceneParticleControlPointRuntime {
+            id: Some(0),
+            flags: vec!["1".to_string()],
+            ..SceneParticleControlPointRuntime::default()
+        }];
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(
+            report.plan.particles[0].schedule_mode,
+            SceneParticleScheduleMode::InputDriven
+        );
     }
 
     #[test]
