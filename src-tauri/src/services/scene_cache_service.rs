@@ -14,8 +14,8 @@ use crate::{
     services::asset_resolver::AssetResolver,
 };
 
-pub const SCENE_PARSER_REVISION: &str = "scene-parser:2026-04-26-2";
-pub const SCENE_EVALUATOR_REVISION: &str = "scene-evaluator:2026-04-26-2";
+pub const SCENE_PARSER_REVISION: &str = "scene-parser:2026-04-29-1";
+pub const SCENE_EVALUATOR_REVISION: &str = "scene-evaluator:2026-04-29-1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -211,6 +211,16 @@ fn phase_08_baseline_engine_fingerprint() -> String {
         "scene:baseline-audio-source-parser",
         scene_source,
         "fn build_audio_sources(",
+        "#[cfg(test)]",
+    );
+    hash_source_section(
+        &mut hasher,
+        "scene:phase-09e-particle-runtime-parser",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/services/scene_particle_runtime_service.rs"
+        )),
+        "pub fn build_scene_particle_runtime(",
         "#[cfg(test)]",
     );
     hash_source_section(
