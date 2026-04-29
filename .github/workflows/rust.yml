@@ -1,0 +1,36 @@
+name: Rust
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Rust tests
+        run: cargo test -j 1 --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust check
+        run: cargo check -j 1 --manifest-path src-tauri/Cargo.toml
+
+      - name: Frontend build
+        run: npm run build
