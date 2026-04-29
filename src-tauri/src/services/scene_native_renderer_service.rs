@@ -44,7 +44,12 @@ use crate::{
             SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
             SceneMaterialUniformValue, SceneShaderProgram, SceneShaderProgramKind,
         },
-        scene_text_script_runtime_service, window_service,
+        scene_text_script_runtime_service,
+        scene_video_texture_service::{
+            self, SceneVideoTextureLifecycleAction, SceneVideoTextureSourceSpec,
+            SceneVideoTextureSourceState, SceneVideoTextureWarning,
+        },
+        window_service,
     },
 };
 
@@ -732,6 +737,14 @@ impl NativeSceneWarning {
         }
     }
 
+    fn from_video_texture_warning(warning: SceneVideoTextureWarning) -> Self {
+        Self {
+            code: warning.code,
+            message: warning.message,
+            detail: warning.detail,
+        }
+    }
+
     fn detail_json(&self) -> Option<String> {
         serde_json::to_string_pretty(self).ok()
     }
@@ -913,18 +926,22 @@ fn runtime_dependency_warnings_for_plan(
 }
 
 fn video_texture_frame_warning(object_name: &str, error: String) -> NativeSceneWarning {
-    NativeSceneWarning {
-        code: "video-texture-frame-failed".to_string(),
-        message: format!(
-            "Scene video {} could not produce a native frame.",
-            object_name
-        ),
-        detail: Some(SceneDiagnosticDetail::runtime(
-            SceneDiagnosticDomain::VideoTexture,
-            "video-frame",
+    NativeSceneWarning::from_video_texture_warning(
+        scene_video_texture_service::video_texture_frame_warning(object_name, error),
+    )
+}
+
+fn video_texture_source_warning(
+    source: &SceneVideoTextureSourceSpec,
+    error: String,
+) -> NativeSceneWarning {
+    NativeSceneWarning::from_video_texture_warning(
+        scene_video_texture_service::video_texture_source_warning(
+            &source.object_name,
+            &source.asset_path,
             error,
-        )),
-    }
+        ),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1380,18 +1397,12 @@ struct NativeScenePipelineStates {
 struct NativeSceneVideoSource {
     object_id: u32,
     asset_path: PathBuf,
+    paused: bool,
     player: Retained<AVPlayer>,
     item: Retained<AVPlayerItem>,
     output: Retained<AVPlayerItemVideoOutput>,
     current_cv_texture: Option<CFRetained<CVMetalTexture>>,
     current_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SceneVideoSourceSyncPlan {
-    ensure: Vec<(u32, PathBuf)>,
-    remove: Vec<u32>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1491,7 +1502,7 @@ impl NativeSceneMetalRenderer {
         if self.scene_key.as_deref() != Some(scene_key) {
             self.clear_video_sources();
         }
-        self.sync_video_sources(&plan.visuals, paused)?;
+        warnings.extend(self.sync_video_sources(&plan.visuals, paused));
 
         for item in &plan.visuals {
             if should_retain_visual_in_draw_plan(item, &phase10_consumed_ids, false) {
@@ -3175,36 +3186,65 @@ impl NativeSceneMetalRenderer {
         &mut self,
         visuals: &[SceneRenderVisualItem],
         paused: bool,
-    ) -> Result<(), String> {
+    ) -> Vec<NativeSceneWarning> {
         let current_paths = self
             .video_sources
             .iter()
-            .map(|(object_id, source)| (*object_id, source.asset_path.clone()))
+            .map(|(object_id, source)| (*object_id, source.state()))
             .collect::<BTreeMap<_, _>>();
-        let plan = plan_scene_video_source_sync(&current_paths, visuals);
-        for object_id in plan.remove {
-            if let Some(mut source) = self.video_sources.remove(&object_id) {
-                source.stop();
-            }
-        }
+        let desired = scene_video_texture_service::desired_video_texture_sources(visuals);
+        let plan = scene_video_texture_service::plan_video_texture_source_sync(
+            &current_paths,
+            &desired,
+            paused,
+        );
+        let mut warnings = Vec::new();
 
-        for (object_id, asset_path) in plan.ensure {
-            match self.video_sources.entry(object_id) {
-                Entry::Occupied(mut entry) => {
-                    if entry.get().asset_path != asset_path {
-                        entry.get_mut().stop();
-                        let source = NativeSceneVideoSource::new(object_id, asset_path, paused)?;
-                        entry.insert(source);
-                    } else {
-                        entry.get_mut().set_paused(paused);
+        for action in plan.actions {
+            match action {
+                SceneVideoTextureLifecycleAction::Remove { object_id, .. } => {
+                    if let Some(mut source) = self.video_sources.remove(&object_id) {
+                        source.stop();
                     }
                 }
-                Entry::Vacant(entry) => {
-                    entry.insert(NativeSceneVideoSource::new(object_id, asset_path, paused)?);
+                SceneVideoTextureLifecycleAction::SetPaused { object_id, paused } => {
+                    if let Some(source) = self.video_sources.get_mut(&object_id) {
+                        source.set_paused(paused);
+                    }
+                }
+                SceneVideoTextureLifecycleAction::Replace { source, paused, .. } => {
+                    if let Some(existing) = self.video_sources.get_mut(&source.object_id) {
+                        existing.stop();
+                    }
+                    match NativeSceneVideoSource::new(
+                        source.object_id,
+                        source.asset_path.clone(),
+                        paused,
+                    ) {
+                        Ok(next_source) => {
+                            self.video_sources.insert(source.object_id, next_source);
+                        }
+                        Err(error) => {
+                            self.video_sources.remove(&source.object_id);
+                            warnings.push(video_texture_source_warning(&source, error));
+                        }
+                    }
+                }
+                SceneVideoTextureLifecycleAction::Create { source, paused } => {
+                    match NativeSceneVideoSource::new(
+                        source.object_id,
+                        source.asset_path.clone(),
+                        paused,
+                    ) {
+                        Ok(next_source) => {
+                            self.video_sources.insert(source.object_id, next_source);
+                        }
+                        Err(error) => warnings.push(video_texture_source_warning(&source, error)),
+                    }
                 }
             }
         }
-        Ok(())
+        warnings
     }
 
     fn clear_video_sources(&mut self) {
@@ -4210,32 +4250,6 @@ fn create_scene_video_texture_cache(
 }
 
 #[cfg(target_os = "macos")]
-fn plan_scene_video_source_sync(
-    current: &BTreeMap<u32, PathBuf>,
-    visuals: &[SceneRenderVisualItem],
-) -> SceneVideoSourceSyncPlan {
-    let mut desired = BTreeMap::new();
-    for item in visuals {
-        if item.source_kind == SceneRenderSourceKind::Video {
-            desired.insert(item.object_id, item.texture_path.clone());
-        }
-    }
-
-    SceneVideoSourceSyncPlan {
-        ensure: desired.into_iter().collect(),
-        remove: current
-            .keys()
-            .copied()
-            .filter(|object_id| {
-                !visuals.iter().any(|item| {
-                    item.source_kind == SceneRenderSourceKind::Video && item.object_id == *object_id
-                })
-            })
-            .collect(),
-    }
-}
-
-#[cfg(target_os = "macos")]
 impl NativeSceneVideoSource {
     fn new(object_id: u32, asset_path: PathBuf, paused: bool) -> Result<Self, String> {
         let mtm = MainThreadMarker::new()
@@ -4268,6 +4282,7 @@ impl NativeSceneVideoSource {
         Ok(Self {
             object_id,
             asset_path,
+            paused,
             player,
             item,
             output,
@@ -4285,7 +4300,15 @@ impl NativeSceneVideoSource {
         self.current_cv_texture = None;
     }
 
+    fn state(&self) -> SceneVideoTextureSourceState {
+        SceneVideoTextureSourceState {
+            asset_path: self.asset_path.clone(),
+            paused: self.paused,
+        }
+    }
+
     fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
         unsafe {
             if paused {
                 self.player.pause();
@@ -4301,7 +4324,7 @@ impl NativeSceneVideoSource {
         paused: bool,
     ) -> Result<Option<Retained<ProtocolObject<dyn MTLTexture>>>, String> {
         self.set_paused(paused);
-        self.ensure_looping();
+        self.ensure_looping(paused);
 
         match unsafe { self.item.status() } {
             AVPlayerItemStatus::Failed => {
@@ -4339,7 +4362,7 @@ impl NativeSceneVideoSource {
         Ok(self.current_texture.clone())
     }
 
-    fn ensure_looping(&self) {
+    fn ensure_looping(&self, paused: bool) {
         let duration_seconds = unsafe { self.item.duration().seconds() };
         let current_seconds = unsafe { self.player.currentTime().seconds() };
         if !duration_seconds.is_finite()
@@ -4353,7 +4376,11 @@ impl NativeSceneVideoSource {
         let zero = unsafe { CMTime::with_seconds(0.0, 600) };
         unsafe {
             self.player.seekToTime(zero);
-            self.player.play();
+            if paused {
+                self.player.pause();
+            } else {
+                self.player.play();
+            }
         }
     }
 
@@ -5388,8 +5415,9 @@ mod tests {
     use super::{
         now_playing_runtime_warnings_for_scene, plan_native_scene_renderer_runtime,
         runtime_dependency_warnings_for_plan, video_texture_frame_warning,
-        NativeSceneRendererSnapshot, SceneDiagnosticDomain, SceneRenderColor, SceneRendererSpec,
-        SceneSessionPlan, AUDIO_INPUT_UNAVAILABLE_CODE, INPUT_SNAPSHOT_UNAVAILABLE_CODE,
+        video_texture_source_warning, NativeSceneRendererSnapshot, SceneDiagnosticDomain,
+        SceneRenderColor, SceneRendererSpec, SceneSessionPlan, AUDIO_INPUT_UNAVAILABLE_CODE,
+        INPUT_SNAPSHOT_UNAVAILABLE_CODE,
     };
     use crate::models::{
         SceneEvaluatedDocument, SceneManifest, SceneNowPlayingAvailability,
@@ -5403,6 +5431,11 @@ mod tests {
     use crate::services::scene_shader_material_service::{
         SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
         SceneResolvedMaterialPlan, SceneShaderProgram, SceneShaderProgramKind,
+    };
+    use crate::services::scene_video_texture_service::{
+        self, SceneVideoTextureLifecycleAction, SceneVideoTextureSourceSpec,
+        SceneVideoTextureSourceState, VIDEO_TEXTURE_FRAME_FAILED_CODE,
+        VIDEO_TEXTURE_SOURCE_FAILED_CODE,
     };
     #[cfg(target_os = "macos")]
     use image::GenericImageView;
@@ -6044,10 +6077,36 @@ mod tests {
         let warning =
             video_texture_frame_warning("Loop", "pixel buffer conversion failed".to_string());
 
-        assert_eq!(warning.code, "video-texture-frame-failed");
+        assert_eq!(warning.code, VIDEO_TEXTURE_FRAME_FAILED_CODE);
         assert!(warning.message.contains("Loop"));
         let detail = warning.detail.as_ref().expect("video texture detail");
         assert_eq!(detail.runtime_stage.as_deref(), Some("video-frame"));
+        assert_eq!(
+            detail.underlying_diagnostic.as_deref(),
+            Some("scene-video-texture/frame")
+        );
+    }
+
+    #[test]
+    fn phase_09h_video_texture_source_warning_stays_in_video_texture_domain() {
+        let warning = video_texture_source_warning(
+            &SceneVideoTextureSourceSpec {
+                object_id: 7,
+                object_name: "Loop".to_string(),
+                asset_path: PathBuf::from("/tmp/loop.mp4"),
+            },
+            "AVFoundation rejected source".to_string(),
+        );
+
+        assert_eq!(warning.code, VIDEO_TEXTURE_SOURCE_FAILED_CODE);
+        assert!(warning.message.contains("Loop"));
+        let detail = warning.detail.as_ref().expect("video texture detail");
+        assert_eq!(detail.domain, SceneDiagnosticDomain::VideoTexture);
+        assert_eq!(detail.runtime_stage.as_deref(), Some("video-source-sync"));
+        assert_eq!(
+            detail.underlying_diagnostic.as_deref(),
+            Some("scene-video-texture/source-sync")
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -6464,12 +6523,24 @@ mod tests {
     }
 
     #[test]
-    fn scene_video_source_sync_plan_reuses_matching_items_and_removes_stale_entries() {
+    fn scene_video_texture_module_filters_and_syncs_scene_video_sources() {
         let current = BTreeMap::from([
-            (7_u32, PathBuf::from("/tmp/loop-a.mp4")),
-            (8_u32, PathBuf::from("/tmp/loop-b.mp4")),
+            (
+                7_u32,
+                SceneVideoTextureSourceState {
+                    asset_path: PathBuf::from("/tmp/loop-a.mp4"),
+                    paused: false,
+                },
+            ),
+            (
+                8_u32,
+                SceneVideoTextureSourceState {
+                    asset_path: PathBuf::from("/tmp/loop-b.mp4"),
+                    paused: false,
+                },
+            ),
         ]);
-        let visuals = vec![SceneRenderVisualItem {
+        let video = SceneRenderVisualItem {
             object_id: 7,
             object_name: "Loop".to_string(),
             texture_path: PathBuf::from("/tmp/loop-a.mp4"),
@@ -6485,32 +6556,38 @@ mod tests {
                 flip_y: false,
             },
             blend_mode: SceneRenderBlendMode::Normal,
-        }];
+        };
+        let mut image = video.clone();
+        image.object_id = 9;
+        image.object_name = "Poster".to_string();
+        image.source_kind = SceneRenderSourceKind::Image;
+        image.texture_path = PathBuf::from("/tmp/poster.png");
 
-        let plan = super::plan_scene_video_source_sync(&current, &visuals);
+        let desired = scene_video_texture_service::desired_video_texture_sources(&[video, image]);
+        let plan =
+            scene_video_texture_service::plan_video_texture_source_sync(&current, &desired, true);
 
-        assert_eq!(plan.ensure, vec![(7_u32, PathBuf::from("/tmp/loop-a.mp4"))]);
-        assert_eq!(plan.remove, vec![8_u32]);
-    }
-
-    #[test]
-    fn scene_video_runtime_contract_owns_pause_resume_switch_and_clear_lifecycle() {
-        let source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/services/scene_native_renderer_service.rs"
-        ));
-        let native_video_runtime = ["native", "video", "service"].join("_");
-        let av_player_view = ["AV", "Player", "View"].join("");
-
-        assert!(source.contains("fn sync_video_sources("));
-        assert!(source.contains("entry.get().asset_path != asset_path"));
-        assert!(source.contains("fn set_paused(&mut self, paused: bool)"));
-        assert!(source.contains("self.clear_video_sources()"));
-        assert!(source.contains("replaceCurrentItemWithPlayerItem(None)"));
-        assert!(source.contains("AVPlayerItemVideoOutput"));
-        assert!(source.contains("CVMetalTextureCache"));
-        assert!(!source.contains(&native_video_runtime));
-        assert!(!source.contains(&av_player_view));
+        assert_eq!(
+            desired,
+            vec![SceneVideoTextureSourceSpec {
+                object_id: 7,
+                object_name: "Loop".to_string(),
+                asset_path: PathBuf::from("/tmp/loop-a.mp4"),
+            }]
+        );
+        assert_eq!(
+            plan.actions,
+            vec![
+                SceneVideoTextureLifecycleAction::Remove {
+                    object_id: 8,
+                    asset_path: PathBuf::from("/tmp/loop-b.mp4"),
+                },
+                SceneVideoTextureLifecycleAction::SetPaused {
+                    object_id: 7,
+                    paused: true,
+                },
+            ]
+        );
     }
 
     #[test]
