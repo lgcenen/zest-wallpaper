@@ -66,9 +66,8 @@ use objc2::{
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSColor, NSFont, NSFontAttributeName,
     NSForegroundColorAttributeName, NSGraphicsContext, NSImageInterpolation, NSLineBreakMode,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSShadow, NSShadowAttributeName,
-    NSStringDrawingContext, NSStringDrawingOptions, NSStringNSExtendedStringDrawing,
-    NSTextAlignment, NSView,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawingContext,
+    NSStringDrawingOptions, NSStringNSExtendedStringDrawing, NSTextAlignment, NSView,
 };
 #[cfg(target_os = "macos")]
 use objc2_av_foundation::{
@@ -4716,13 +4715,7 @@ fn rasterize_text_texture(
     if let Some(detail) = resolved_font.fallback_detail.clone() {
         warnings.push(NativeSceneWarning::text_font_fallback(item, detail));
     }
-    let text_shadow = (!item.blur_enabled).then(standard_text_shadow);
-    let attributes = match text_shadow.as_deref() {
-        Some(shadow) => {
-            build_text_attributes_with_shadow(&resolved_font.font, &color, &paragraph_style, shadow)
-        }
-        None => build_text_attributes(&resolved_font.font, &color, &paragraph_style),
-    };
+    let attributes = build_text_attributes(&resolved_font.font, &color, &paragraph_style);
     let rect = CGRect::new(
         CGPoint::new(item.content_left, item.content_top),
         CGSize::new(item.content_width.max(1.0), item.content_height.max(1.0)),
@@ -4765,17 +4758,6 @@ pub(crate) fn rasterize_scene_text_item_snapshot(
     item: &SceneRenderTextItem,
 ) -> Result<DynamicImage, String> {
     rasterize_text_texture(item).map(|rasterized| rasterized.image)
-}
-
-#[cfg(target_os = "macos")]
-fn standard_text_shadow() -> Retained<NSShadow> {
-    let shadow = NSShadow::new();
-    shadow.setShadowOffset(NSSize::new(0.0, 6.0));
-    shadow.setShadowBlurRadius(18.0);
-    shadow.setShadowColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-        0.0, 0.0, 0.0, 0.48,
-    )));
-    shadow
 }
 
 #[cfg(target_os = "macos")]
@@ -5000,26 +4982,6 @@ fn build_text_attributes(
                 NSParagraphStyleAttributeName,
             ],
             &[font, color, paragraph_style],
-        )
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn build_text_attributes_with_shadow(
-    font: &NSFont,
-    color: &NSColor,
-    paragraph_style: &NSMutableParagraphStyle,
-    shadow: &NSShadow,
-) -> Retained<NSDictionary<NSAttributedStringKey, objc2::runtime::AnyObject>> {
-    unsafe {
-        NSDictionary::from_slices(
-            &[
-                NSFontAttributeName,
-                NSForegroundColorAttributeName,
-                NSParagraphStyleAttributeName,
-                NSShadowAttributeName,
-            ],
-            &[font, color, paragraph_style, shadow],
         )
     }
 }
@@ -6352,6 +6314,37 @@ mod tests {
 
         assert!(first.fallback_detail.is_some());
         assert_eq!(first.fallback_detail, second.fallback_detail);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plain_text_rasterization_does_not_add_unauthored_shadow_pixels() {
+        let mut item = sample_text_item();
+        item.behavior = SceneTextBehavior::Static;
+        item.object_name = "Plain Caption".to_string();
+        item.text = "SHADOW".to_string();
+        item.point_size = 72.0;
+        item.content_width = 420.0;
+        item.content_height = 180.0;
+        item.quad.width = 420.0;
+        item.quad.height = 180.0;
+        item.color.alpha = 255;
+        item.font.authored_reference = Some("Helvetica".to_string());
+        item.font.reference_kind =
+            Some(crate::services::scene_resource_service::SceneTextFontReferenceKind::FamilyLike);
+        item.font.file_candidates.clear();
+        item.font.family_candidates = vec!["Helvetica".to_string()];
+        item.font.cache_key = "font:phase-09a-plain-shadow-regression".to_string();
+
+        let rasterized = super::rasterize_text_texture(&item).expect("plain text raster");
+        let dark_shadow_pixels = rasterized
+            .image
+            .to_rgba8()
+            .pixels()
+            .filter(|pixel| pixel.0[3] > 8 && pixel.0[0] < 80 && pixel.0[1] < 80 && pixel.0[2] < 80)
+            .count();
+
+        assert_eq!(dark_shadow_pixels, 0);
     }
 
     #[cfg(target_os = "macos")]

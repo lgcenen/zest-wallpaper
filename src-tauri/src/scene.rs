@@ -791,8 +791,14 @@ fn parse_text_layer(
         script,
     );
     let padding = object.get("padding").and_then(as_f64);
+    let block_align = object.get("blockalign").and_then(as_bool);
     let max_width = object.get("maxwidth").and_then(as_f64);
-    let size = normalize_text_layout_size(explicit_size, estimated_size, max_width, padding);
+    let size = normalize_text_layout_size(
+        explicit_size,
+        estimated_size,
+        max_width,
+        text_layout_padding_for_block(padding, block_align),
+    );
     let alignment = object
         .get("alignment")
         .and_then(Value::as_str)
@@ -910,7 +916,7 @@ fn parse_text_layer(
         max_width,
         limit_width: object.get("limitwidth").and_then(as_bool),
         limit_use_ellipsis: object.get("limituseellipsis").and_then(as_bool),
-        block_align: object.get("blockalign").and_then(as_bool),
+        block_align,
     })
 }
 
@@ -1520,6 +1526,14 @@ fn normalize_text_layout_size(
         .map(|limit| estimated_width.min(limit))
         .unwrap_or(estimated_width);
     Some([width.max(24.0), estimated_height.max(24.0)])
+}
+
+fn text_layout_padding_for_block(padding: Option<f64>, block_align: Option<bool>) -> Option<f64> {
+    if block_align == Some(false) {
+        None
+    } else {
+        padding
+    }
 }
 
 fn text_bounds_alignment(
@@ -2133,6 +2147,7 @@ mod tests {
     use super::{
         detect_text_behavior, estimate_text_layer_size, normalize_text_layout_size,
         parse_scene_manifest, resolve_texture_candidates, sample_text_for_behavior,
+        text_layout_padding_for_block,
     };
     use serde_json::json;
 
@@ -2694,6 +2709,24 @@ mod tests {
             normalize_text_layout_size(None, Some([92.0, 116.0]), Some(500.0), Some(32.0))
                 .expect("normalized text layout size");
         assert_eq!(normalized, [156.0, 180.0]);
+    }
+
+    #[test]
+    fn blockalign_false_text_size_estimation_does_not_apply_padding() {
+        let normalized = normalize_text_layout_size(
+            None,
+            Some([92.0, 116.0]),
+            Some(500.0),
+            text_layout_padding_for_block(Some(32.0), Some(false)),
+        )
+        .expect("normalized text layout size");
+
+        assert_eq!(normalized, [92.0, 116.0]);
+        assert_eq!(
+            text_layout_padding_for_block(Some(32.0), Some(true)),
+            Some(32.0)
+        );
+        assert_eq!(text_layout_padding_for_block(Some(32.0), None), Some(32.0));
     }
 
     #[test]

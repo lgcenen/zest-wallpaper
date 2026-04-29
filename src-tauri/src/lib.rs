@@ -488,7 +488,8 @@ mod tests {
         assert!(scene_native_renderer_service.contains("setDevice(Some(device.as_ref()))"));
         assert!(scene_native_renderer_service.contains("isDescendantOf(container)"));
         assert!(scene_native_renderer_service.contains("AVAudioPlayer"));
-        assert!(scene_native_renderer_service.contains("NSShadow"));
+        assert!(scene_native_renderer_service.contains("rasterize_text_texture"));
+        assert!(scene_native_renderer_service.contains("build_text_attributes"));
         assert!(scene_native_renderer_service.contains("SCENE_TEXT_FONT_CACHE"));
         assert!(!scene_native_renderer_service.contains("apply_standard_text_shadow("));
         assert!(scene_support_service.contains("SceneSupportSeverity"));

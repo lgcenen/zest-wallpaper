@@ -930,7 +930,7 @@ fn evaluate_text_layout(
     let world_scale = transform.scale;
     let layout_scale_factor = world_scale[0].abs().max(world_scale[1].abs()).max(0.001);
     let base_point_size = normalize_scene_point_size(point_size);
-    let scaled_padding = layer.padding.unwrap_or(0.0).max(0.0) * layout_scale_factor;
+    let scaled_padding = text_layout_padding(layer) * layout_scale_factor;
     let render_bounds = transform.render_bounds;
     let estimated_content_size = estimate_text_size(text, base_point_size, layer.behavior.clone())
         .unwrap_or([base_point_size, base_point_size]);
@@ -999,6 +999,14 @@ fn evaluate_text_layout(
         scaled_point_size,
         scaled_padding,
         world_scale,
+    }
+}
+
+fn text_layout_padding(layer: &SceneTextLayer) -> f64 {
+    if layer.block_align == Some(false) {
+        0.0
+    } else {
+        layer.padding.unwrap_or(0.0).max(0.0)
     }
 }
 
@@ -2753,6 +2761,7 @@ mod tests {
         text.vertical_align = Some("top".to_string());
         text.scale_binding = Some("textScale".to_string());
         text.padding = Some(10.0);
+        text.block_align = Some(true);
         text.point_size = Some(20.0);
         let source = SceneManifest {
             canvas_width: Some(400.0),
@@ -2786,6 +2795,59 @@ mod tests {
             }
             other => panic!("expected text object, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn blockalign_false_text_uses_authored_box_without_padding_inset() {
+        let mut padded =
+            neighboring_marker_text_layer(118, "left", [100.0, 150.0, 0.0], [300.0, 60.0], "READY");
+        padded.padding = Some(32.0);
+        padded.block_align = Some(true);
+        padded.point_size = Some(12.0);
+
+        let mut unpadded = padded.clone();
+        unpadded.id = 119;
+        unpadded.name = "Caption 119".to_string();
+        unpadded.position = [100.0, 70.0, 0.0];
+        unpadded.block_align = Some(false);
+
+        let source = SceneManifest {
+            canvas_width: Some(500.0),
+            canvas_height: Some(300.0),
+            text_layers: vec![padded, unpadded],
+            ..SceneManifest::default()
+        };
+
+        let evaluated = evaluate_scene(
+            &source,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            Utc::now(),
+        );
+        let Some(EvaluatedSceneObject::Text {
+            text: padded_text, ..
+        }) = evaluated.objects.get(&118)
+        else {
+            panic!("expected padded text object");
+        };
+        let Some(EvaluatedSceneObject::Text {
+            text: unpadded_text,
+            ..
+        }) = evaluated.objects.get(&119)
+        else {
+            panic!("expected unpadded text object");
+        };
+
+        let [padded_x, _, _, _] = padded_text.layout.content_bounds.expect("content bounds");
+        let [unpadded_x, _, _, _] = unpadded_text.layout.content_bounds.expect("content bounds");
+
+        assert_eq!(padded_text.layout.scaled_padding, 32.0);
+        assert_eq!(unpadded_text.layout.scaled_padding, 0.0);
+        assert!((padded_x - 132.0).abs() < 0.001);
+        assert!((unpadded_x - 100.0).abs() < 0.001);
+        assert!(unpadded_text.layout.scaled_point_size > padded_text.layout.scaled_point_size);
     }
 
     #[test]
