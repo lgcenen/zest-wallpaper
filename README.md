@@ -29,6 +29,10 @@
 
 This project is under active development.
 
+## Community
+
+- QQ group: `867740762`
+
 ## Scope
 
 | Capability | Status |
@@ -42,12 +46,10 @@ This project is under active development.
 
 ## Platform and Stack
 
-- macOS only
-- current bundle configuration targets macOS `15.0+`
+- macOS `15.0+` only
 - Tauri 2
 - React + Vite
 - Rust
-- native macOS runtimes for `Scene`, `Video`, and `Web` playback
 
 ## Development
 
