@@ -85,11 +85,15 @@ pub fn text_layer_update_cadence(layer: &SceneTextLayer) -> Option<SceneTextRefr
         });
     }
 
+    if let Some(cadence) = scripted_text_update_cadence(layer.script_text.as_deref()) {
+        return Some(cadence);
+    }
+
     match layer.behavior {
         SceneTextBehavior::Clock if layer.show_seconds == Some(true) => {
             Some(SceneTextRefreshCadence::Second)
         }
-        SceneTextBehavior::Script => scripted_text_update_cadence(layer.script_text.as_deref()),
+        SceneTextBehavior::Script => None,
         SceneTextBehavior::Clock
         | SceneTextBehavior::Date
         | SceneTextBehavior::Weekday

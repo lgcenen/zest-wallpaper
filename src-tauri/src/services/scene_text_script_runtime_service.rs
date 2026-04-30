@@ -83,6 +83,19 @@ pub fn evaluate_scripted_text_layer(
     )
 }
 
+pub fn text_script_requires_runtime(script_text: Option<&str>) -> bool {
+    let lower_script = script_text.unwrap_or_default().to_ascii_lowercase();
+    lower_script.contains("export function update")
+        || lower_script.contains("function update")
+        || lower_script.contains("module.update")
+        || lower_script.contains("export default")
+        || lower_script.contains("export function applyuserproperties")
+        || lower_script.contains("function applyuserproperties")
+        || lower_script.contains("module.applyuserproperties")
+        || lower_script.contains("thislayer.")
+        || lower_script.contains("engine.userproperties")
+}
+
 pub fn evaluate_scripted_text_layer_detailed(
     runtime_owner_key: Option<&str>,
     layer: &SceneTextLayer,
@@ -498,6 +511,85 @@ globalThis.engine = {
   frametime: 1 / 60,
 };
 globalThis.thisLayer = __hostThisLayer;
+
+function __hostPropertyValue(name, fallback) {
+  let value = fallback;
+  if (__hostUserProperties && Object.prototype.hasOwnProperty.call(__hostUserProperties, name)) {
+    value = __hostUserProperties[name];
+  }
+  if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "value")) {
+    value = value.value;
+  }
+  return value;
+}
+
+function __hostBool(value) {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return !(normalized === "" || normalized === "0" || normalized === "false" || normalized === "off");
+  }
+  return !!value;
+}
+
+function __hostNumber(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function __hostText(value, fallback) {
+  if (value === null || typeof value === "undefined") {
+    return fallback;
+  }
+  return String(value);
+}
+
+function __hostSetScriptProperty(target, definition, fallback, coerce) {
+  if (!definition || !definition.name) {
+    return;
+  }
+  const authoredFallback = Object.prototype.hasOwnProperty.call(definition, "value")
+    ? definition.value
+    : fallback;
+  target[definition.name] = coerce(__hostPropertyValue(definition.name, authoredFallback), authoredFallback);
+}
+
+globalThis.createScriptProperties = function createScriptProperties() {
+  const values = {};
+  const builder = {
+    addSlider(definition) {
+      __hostSetScriptProperty(values, definition, 0, __hostNumber);
+      return builder;
+    },
+    addCheckbox(definition) {
+      __hostSetScriptProperty(values, definition, false, (value) => __hostBool(value));
+      return builder;
+    },
+    addText(definition) {
+      __hostSetScriptProperty(values, definition, "", __hostText);
+      return builder;
+    },
+    addCombo(definition) {
+      __hostSetScriptProperty(values, definition, 0, (value) => value);
+      return builder;
+    },
+    addColor(definition) {
+      __hostSetScriptProperty(values, definition, "1 1 1", (value) => value);
+      return builder;
+    },
+    addFile(definition) {
+      __hostSetScriptProperty(values, definition, "", __hostText);
+      return builder;
+    },
+    addDirectory(definition) {
+      __hostSetScriptProperty(values, definition, "", __hostText);
+      return builder;
+    },
+    finish() {
+      return values;
+    },
+  };
+  return builder;
+};
 "#;
 
 const TEXT_SCRIPT_RUNNER: &str = r#"
@@ -792,6 +884,38 @@ mod tests {
 
         assert_eq!(first, "Good evening, Alice!");
         assert_eq!(second, "Good evening, Alice!");
+    }
+
+    #[test]
+    fn scripted_text_layer_supports_script_properties_defaults_and_overrides() {
+        clear_scene_text_script_runtime_cache();
+        let layer = sample_script_layer(
+            "'use strict';\nexport var scriptProperties = createScriptProperties()\n  .addCheckbox({ name: 'use24hFormat', value: true })\n  .addText({ name: 'delimiter', value: '·' })\n  .finish();\nexport function update(value) {\n  return String(scriptProperties.use24hFormat) + ' ' + scriptProperties.delimiter;\n}\n",
+        );
+        let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
+
+        let defaults = evaluate_scripted_text_layer(
+            Some("script-properties-demo"),
+            &layer,
+            &BTreeMap::new(),
+            &now,
+        )
+        .expect("default script properties evaluation")
+        .expect("default script properties text");
+        let overrides = evaluate_scripted_text_layer(
+            Some("script-properties-demo"),
+            &layer,
+            &BTreeMap::from([
+                (String::from("use24hFormat"), json!(false)),
+                (String::from("delimiter"), json!(":")),
+            ]),
+            &now,
+        )
+        .expect("override script properties evaluation")
+        .expect("override script properties text");
+
+        assert_eq!(defaults, "true ·");
+        assert_eq!(overrides, "false :");
     }
 
     #[test]

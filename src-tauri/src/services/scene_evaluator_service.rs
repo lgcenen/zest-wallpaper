@@ -76,7 +76,7 @@ fn evaluate_scene_with_runtime_key(
     let active_script_layer_ids = source
         .text_layers
         .iter()
-        .filter(|layer| layer.behavior == SceneTextBehavior::Script)
+        .filter(|layer| text_layer_prefers_authored_script_text(layer))
         .map(|layer| layer.id)
         .collect::<BTreeSet<_>>();
 
@@ -947,7 +947,7 @@ fn resolve_text(
         }
     }
 
-    if layer.behavior == SceneTextBehavior::Script {
+    if text_layer_prefers_authored_script_text(layer) {
         return scene_text_script_runtime_service::evaluate_scripted_text_layer(
             runtime_owner_key,
             layer,
@@ -956,10 +956,25 @@ fn resolve_text(
         )
         .ok()
         .flatten()
-        .unwrap_or_else(|| scene_text_behavior_service::fallback_text(layer));
+        .unwrap_or_else(|| {
+            scene_text_behavior_service::evaluate_text_behavior(layer, now, now_playing).value
+        });
     }
 
     scene_text_behavior_service::evaluate_text_behavior(layer, now, now_playing).value
+}
+
+fn text_layer_prefers_authored_script_text(layer: &SceneTextLayer) -> bool {
+    matches!(
+        layer.behavior,
+        SceneTextBehavior::Static
+            | SceneTextBehavior::Script
+            | SceneTextBehavior::Clock
+            | SceneTextBehavior::Date
+            | SceneTextBehavior::Weekday
+    ) && scene_text_script_runtime_service::text_script_requires_runtime(
+        layer.script_text.as_deref(),
+    )
 }
 
 fn evaluate_text_layout(
@@ -2935,6 +2950,95 @@ mod tests {
                 assert!(((y + h * 0.5) - (render_y + render_h * 0.5)).abs() < 1.0);
             }
             other => panic!("expected text object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_calendar_text_prefers_authored_update_script_format() {
+        clear_scene_text_script_runtime_cache();
+        let source = SceneManifest {
+            canvas_width: Some(3840.0),
+            canvas_height: Some(2160.0),
+            text_layers: vec![SceneTextLayer {
+                id: 46,
+                name: "Date".to_string(),
+                dependencies: vec![],
+                parent_id: None,
+                alignment: None,
+                anchor: Some("none".to_string()),
+                horizontal_align: Some("center".to_string()),
+                vertical_align: Some("center".to_string()),
+                content: "28 May".to_string(),
+                behavior: SceneTextBehavior::Date,
+                delimiter: None,
+                month_format: None,
+                day_format: None,
+                show_day: None,
+                align_vertical: None,
+                use_delimiter: None,
+                show_seconds: None,
+                use_24h_format: None,
+                visible: true,
+                visibility_binding: None,
+                text_binding: None,
+                position: [0.0, -55.0, 0.0],
+                position_bindings: None,
+                scale: [1.0, 1.0, 1.0],
+                scale_binding: None,
+                angles: None,
+                rotation: None,
+                size: Some([88.0, 30.0]),
+                render_bounds: None,
+                parallax_depth: None,
+                color: Some("1 0.65 0.14".to_string()),
+                color_binding: None,
+                alpha: Some(1.0),
+                alpha_binding: None,
+                point_size: Some(6.0),
+                point_size_binding: None,
+                font_reference: None,
+                font_path: None,
+                effect_paths: vec![],
+                script_text: Some(
+                    "'use strict';\nexport function update(value) {\n  let time = new Date();\n  let months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n  return time.getDate().toString() + ' ' + months[time.getMonth()];\n}\n"
+                        .to_string(),
+                ),
+                script_refresh_interval_millis: None,
+                padding: Some(32.0),
+                max_rows: Some(1),
+                max_width: Some(500.0),
+                limit_width: Some(false),
+                limit_use_ellipsis: Some(false),
+                block_align: Some(false),
+            }],
+            render_graph: vec![SceneRenderNode {
+                id: 46,
+                name: "Date".to_string(),
+                parent_id: None,
+                kind: SceneRenderNodeKind::Text,
+                visible: true,
+                asset_path: None,
+                material_path: None,
+            }],
+            ..SceneManifest::default()
+        };
+
+        let evaluated = evaluate_scene_with_runtime_key(
+            Some("calendar-script-format"),
+            &source,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            Utc.with_ymd_and_hms(2026, 4, 22, 12, 36, 0).unwrap(),
+        );
+
+        match evaluated.objects.get(&46) {
+            Some(EvaluatedSceneObject::Text { behavior, text, .. }) => {
+                assert_eq!(*behavior, SceneTextBehavior::Date);
+                assert_eq!(text.value, "22 Apr");
+            }
+            other => panic!("expected scripted date text object, got {other:?}"),
         }
     }
 
