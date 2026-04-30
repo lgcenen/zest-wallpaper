@@ -1,15 +1,24 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::models::{
     EvaluatedAudioState, EvaluatedSceneObject, EvaluatedTextState, SceneAssetKind,
-    SceneParticleKind, SceneParticleRuntime, SceneParticleScheduleMode, SceneRuntimeDocument,
-    SceneTextBehavior, SceneTextLayer,
+    SceneParticleChildKind, SceneParticleKind, SceneParticleRendererFamily, SceneParticleRuntime,
+    SceneParticleScheduleMode, SceneParticleStageRuntime, SceneRuntimeDocument, SceneTextBehavior,
+    SceneTextLayer,
 };
 
 use super::{
-    scene_particle_runtime_service::scene_particle_runtime_uses_input_control_points,
+    scene_particle_runtime_service::{
+        build_authored_particle_runtime_for_resource,
+        scene_particle_runtime_uses_input_control_points,
+    },
     scene_resource_service::{
         font_reference_looks_like_path, scene_text_font_reference_kind, SceneResourceResolver,
         SceneTextFontCandidates, SceneTextFontReferenceKind,
@@ -199,6 +208,46 @@ pub struct SceneRenderParticleItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SceneSpriteParticleConfig {
+    pub texture_path: PathBuf,
+    pub blend_mode: SceneRenderBlendMode,
+    pub spawn_origin: [f64; 2],
+    pub spawn_radius: [f64; 2],
+    pub directions: Vec<[f64; 2]>,
+    pub sign: f64,
+    pub color_min: SceneRenderColor,
+    pub color_max: SceneRenderColor,
+    pub alpha_range: [f64; 2],
+    pub size_range: [f64; 2],
+    pub lifetime_ms_range: [f64; 2],
+    pub speed_range: [f64; 2],
+    pub rotation_range: [f64; 2],
+    pub angular_velocity_range: [f64; 2],
+    pub turbulence: f64,
+    pub size_change: Option<[f64; 2]>,
+    pub emission_rate: f64,
+    pub max_count: usize,
+    pub start_time_ms: f64,
+    pub instantaneous: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneSpriteParticleChildItem {
+    pub child_type: SceneParticleChildKind,
+    pub config: SceneSpriteParticleConfig,
+    pub probability: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneRenderSpriteParticleItem {
+    pub object_id: u32,
+    pub object_name: String,
+    pub schedule_mode: SceneParticleScheduleMode,
+    pub config: SceneSpriteParticleConfig,
+    pub children: Vec<SceneSpriteParticleChildItem>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SceneRenderSoundItem {
     pub object_id: u32,
     pub object_name: String,
@@ -213,6 +262,7 @@ pub enum SceneRenderDrawKind {
     Text,
     Audio,
     Particle,
+    SpriteParticle,
     Sound,
 }
 
@@ -233,6 +283,7 @@ pub struct SceneRenderPlan {
     pub texts: Vec<SceneRenderTextItem>,
     pub audios: Vec<SceneRenderAudioItem>,
     pub particles: Vec<SceneRenderParticleItem>,
+    pub sprite_particles: Vec<SceneRenderSpriteParticleItem>,
     pub sounds: Vec<SceneRenderSoundItem>,
 }
 
@@ -242,6 +293,7 @@ impl SceneRenderPlan {
             || !self.texts.is_empty()
             || !self.audios.is_empty()
             || !self.particles.is_empty()
+            || !self.sprite_particles.is_empty()
             || !self.sounds.is_empty()
     }
 }
@@ -325,6 +377,7 @@ pub fn build_scene_render_plan_with_resolver(
     let mut texts = Vec::new();
     let mut audios = Vec::new();
     let mut particles = Vec::new();
+    let mut sprite_particles = Vec::new();
     let mut sounds = Vec::new();
     let mut draw_order = Vec::new();
     let mut issues = Vec::new();
@@ -470,6 +523,25 @@ pub fn build_scene_render_plan_with_resolver(
                 if !base.visible {
                     continue;
                 }
+                let runtime = source_particle_runtimes.get(&base.id).copied();
+
+                if runtime
+                    .and_then(|runtime| runtime.system.renderers.first())
+                    .map(|renderer| renderer.family)
+                    == Some(SceneParticleRendererFamily::Sprite)
+                {
+                    let Some(sprite_item) =
+                        plan_sprite_particle_item(base, runtime, resolver, &mut issues)
+                    else {
+                        continue;
+                    };
+                    sprite_particles.push(sprite_item);
+                    draw_order.push(SceneRenderDrawItem {
+                        object_id: base.id,
+                        kind: SceneRenderDrawKind::SpriteParticle,
+                    });
+                    continue;
+                }
 
                 let Some(particle_item) = plan_particle_item(
                     base,
@@ -477,7 +549,7 @@ pub fn build_scene_render_plan_with_resolver(
                     color.as_deref(),
                     *size,
                     *emission_rate,
-                    source_particle_runtimes.get(&base.id).copied(),
+                    runtime,
                     &mut issues,
                 ) else {
                     continue;
@@ -541,6 +613,7 @@ pub fn build_scene_render_plan_with_resolver(
         texts,
         audios,
         particles,
+        sprite_particles,
         sounds,
     };
 
@@ -1064,6 +1137,727 @@ fn plan_particle_item(
     })
 }
 
+fn plan_sprite_particle_item(
+    base: &crate::models::EvaluatedSceneObjectBase,
+    runtime: Option<&SceneParticleRuntime>,
+    resolver: Option<&SceneResourceResolver>,
+    issues: &mut Vec<SceneRenderIssue>,
+) -> Option<SceneRenderSpriteParticleItem> {
+    let runtime = runtime?;
+    if !runtime.adapter.supported {
+        let detail = runtime.adapter.reason.clone().or_else(|| {
+            runtime
+                .diagnostics
+                .first()
+                .map(|diagnostic| diagnostic.message.clone())
+        });
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(base.id, &base.name, detail),
+        );
+        return None;
+    }
+
+    let config = plan_sprite_particle_config(base.id, &base.name, base, runtime, resolver, issues)?;
+    let children = runtime
+        .system
+        .children
+        .iter()
+        .filter_map(|child| plan_sprite_particle_child(base, runtime, child, resolver, issues))
+        .collect::<Vec<_>>();
+
+    Some(SceneRenderSpriteParticleItem {
+        object_id: base.id,
+        object_name: base.name.clone(),
+        schedule_mode: if scene_particle_runtime_uses_input_control_points(runtime) {
+            SceneParticleScheduleMode::InputDriven
+        } else {
+            runtime.adapter.schedule_mode
+        },
+        config,
+        children,
+    })
+}
+
+fn plan_sprite_particle_child(
+    base: &crate::models::EvaluatedSceneObjectBase,
+    parent: &SceneParticleRuntime,
+    child: &crate::models::SceneParticleChildRuntime,
+    resolver: Option<&SceneResourceResolver>,
+    issues: &mut Vec<SceneRenderIssue>,
+) -> Option<SceneSpriteParticleChildItem> {
+    if matches!(
+        child.child_type,
+        SceneParticleChildKind::EventSpawn | SceneParticleChildKind::Unsupported
+    ) {
+        return None;
+    }
+
+    let mut child_runtime = if let (Some(resolver), Some(path)) = (
+        resolver,
+        child
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty()),
+    ) {
+        match load_particle_runtime_from_resource(path, resolver) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                push_unique_issue(
+                    issues,
+                    SceneRenderIssue::unsupported_particle_runtime(
+                        base.id,
+                        &base.name,
+                        Some(error),
+                    ),
+                );
+                return None;
+            }
+        }
+    } else {
+        parent.clone()
+    };
+
+    child_runtime.object_origin = [
+        parent.object_origin[0] + child.origin.unwrap_or([0.0, 0.0, 0.0])[0],
+        parent.object_origin[1] + child.origin.unwrap_or([0.0, 0.0, 0.0])[1],
+        parent.object_origin[2] + child.origin.unwrap_or([0.0, 0.0, 0.0])[2],
+    ];
+    let child_scale = child.scale.unwrap_or([1.0, 1.0, 1.0]);
+    child_runtime.object_scale = [
+        parent.object_scale[0] * child_scale[0],
+        parent.object_scale[1] * child_scale[1],
+        parent.object_scale[2] * child_scale[2],
+    ];
+    child_runtime.object_angles = child.angles.or(parent.object_angles);
+    if let Some(max_count) = child.max_count {
+        child_runtime.system.max_count = Some(max_count);
+    }
+
+    if !child_runtime.adapter.supported
+        || child_runtime
+            .system
+            .renderers
+            .first()
+            .map(|renderer| renderer.family)
+            != Some(SceneParticleRendererFamily::Sprite)
+    {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                base.id,
+                &base.name,
+                Some(
+                    "Sprite child runtime is outside the phase-09e2 first-class sprite boundary."
+                        .to_string(),
+                ),
+            ),
+        );
+        return None;
+    }
+
+    let config =
+        plan_sprite_particle_config(base.id, &base.name, base, &child_runtime, resolver, issues)?;
+    Some(SceneSpriteParticleChildItem {
+        child_type: child.child_type,
+        config,
+        probability: child.probability.unwrap_or(1.0).clamp(0.0, 1.0),
+    })
+}
+
+fn plan_sprite_particle_config(
+    object_id: u32,
+    object_name: &str,
+    base: &crate::models::EvaluatedSceneObjectBase,
+    runtime: &SceneParticleRuntime,
+    resolver: Option<&SceneResourceResolver>,
+    issues: &mut Vec<SceneRenderIssue>,
+) -> Option<SceneSpriteParticleConfig> {
+    let material =
+        resolve_sprite_particle_material(object_id, object_name, runtime, resolver, issues)?;
+    let emitter = runtime.system.emitters.first();
+    let emitter_origin = emitter
+        .and_then(|emitter| emitter.origin)
+        .unwrap_or([0.0, 0.0, 0.0]);
+    let origin = [
+        base.transform.position[0]
+            + (runtime.object_origin[0] + emitter_origin[0]) * base.transform.scale[0],
+        base.transform.position[1]
+            + (runtime.object_origin[1] + emitter_origin[1]) * base.transform.scale[1],
+    ];
+    let scale_x = (base.transform.scale[0] * runtime.object_scale[0])
+        .abs()
+        .max(0.001);
+    let scale_y = (base.transform.scale[1] * runtime.object_scale[1])
+        .abs()
+        .max(0.001);
+    let authored_size = stage_range(
+        &runtime.system.initializers,
+        &["sizerandom", "size"],
+        &["sizemin", "minsize", "min"],
+        &["sizemax", "maxsize", "max"],
+        [24.0, 42.0],
+    );
+    let size_scale = runtime.instance_override.size.unwrap_or(1.0).max(0.01);
+    let size_range = [
+        authored_size[0].max(0.5) * scale_x.min(scale_y) * size_scale,
+        authored_size[1].max(authored_size[0]).max(0.5) * scale_x.min(scale_y) * size_scale,
+    ];
+    let lifetime_range = runtime
+        .instance_override
+        .lifetime
+        .map(normalize_particle_lifetime_ms)
+        .map(|value| [value, value])
+        .unwrap_or_else(|| {
+            let authored = stage_range(
+                &runtime.system.initializers,
+                &["lifetimerandom", "lifetime", "life"],
+                &["lifemin", "lifetimemin", "minlife", "min"],
+                &["lifemax", "lifetimemax", "maxlife", "max"],
+                [1_200.0, 2_400.0],
+            );
+            [
+                normalize_particle_lifetime_ms(authored[0]),
+                normalize_particle_lifetime_ms(authored[1].max(authored[0])),
+            ]
+        });
+    let base_speed = runtime
+        .instance_override
+        .speed
+        .map(|speed| [speed.max(0.0), speed.max(0.0)])
+        .or_else(|| {
+            emitter.map(|emitter| {
+                let min = emitter.speed_min.unwrap_or(0.0).max(0.0);
+                let max = emitter.speed_max.unwrap_or(min).max(min);
+                [min, max]
+            })
+        })
+        .unwrap_or([0.0, 18.0]);
+    let speed_random = stage_range(
+        &runtime.system.initializers,
+        &["velocityrandom", "speed"],
+        &["speedmin", "minspeed", "min"],
+        &["speedmax", "maxspeed", "max"],
+        base_speed,
+    );
+    let color_range = stage_color_range(
+        &runtime.system.initializers,
+        runtime
+            .instance_override
+            .color
+            .as_deref()
+            .map(|color| parse_scene_color(Some(color), 1.0))
+            .unwrap_or_else(|| parse_scene_color(None, 1.0)),
+    );
+    let alpha_override = runtime
+        .instance_override
+        .alpha
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    let alpha_range = stage_range(
+        &runtime.system.initializers,
+        &["alpharandom", "alpha"],
+        &["alphamin", "minalpha", "min"],
+        &["alphamax", "maxalpha", "max"],
+        [1.0, 1.0],
+    );
+    let rotation_range = stage_range(
+        &runtime.system.initializers,
+        &["rotationrandom", "rotation"],
+        &["rotationmin", "minrotation", "min"],
+        &["rotationmax", "maxrotation", "max"],
+        [0.0, 360.0],
+    );
+    let angular_velocity_range = stage_range(
+        &runtime.system.initializers,
+        &["angularvelocityrandom", "angular", "spin"],
+        &["speedmin", "minspeed", "angularvelocitymin", "min"],
+        &["speedmax", "maxspeed", "angularvelocitymax", "max"],
+        [0.0, 0.0],
+    );
+    let movement_speed = stage_range(
+        &runtime.system.operators,
+        &["movement"],
+        &["speedmin", "minspeed", "min"],
+        &["speedmax", "maxspeed", "max"],
+        speed_random,
+    );
+    let speed_range = runtime
+        .instance_override
+        .speed
+        .map(|speed| [speed.max(0.0), speed.max(0.0)])
+        .unwrap_or_else(|| {
+            [
+                movement_speed[0].max(0.0),
+                movement_speed[1].max(movement_speed[0]).max(0.0),
+            ]
+        });
+    let turbulence = stage_scalar(
+        &runtime.system.operators,
+        &["turbulentvelocityrandom", "turbulence"],
+        &["strength", "force", "amount", "scale"],
+        0.0,
+    )
+    .abs()
+    .min(500.0);
+    let size_change = stage_optional_range(
+        &runtime.system.operators,
+        &["sizechange"],
+        &["startvalue", "start", "from", "min"],
+        &["endvalue", "end", "to", "max"],
+    );
+
+    Some(SceneSpriteParticleConfig {
+        texture_path: material.texture_path,
+        blend_mode: material.blend_mode,
+        spawn_origin: origin,
+        spawn_radius: emitter
+            .map(|emitter| {
+                [
+                    emitter.distance_min.unwrap_or(0.0).abs() * scale_x,
+                    emitter.distance_max.unwrap_or(0.0).abs() * scale_y,
+                ]
+            })
+            .unwrap_or([0.0, 0.0]),
+        directions: emitter
+            .map(|emitter| {
+                emitter
+                    .directions
+                    .iter()
+                    .map(|direction| [direction[0], direction[1]])
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        sign: emitter.and_then(|emitter| emitter.sign).unwrap_or(1.0),
+        color_min: SceneRenderColor {
+            alpha: normalize_color_alpha(color_range[0], alpha_range[0] * alpha_override),
+            ..color_range[0]
+        },
+        color_max: SceneRenderColor {
+            alpha: normalize_color_alpha(color_range[1], alpha_range[1] * alpha_override),
+            ..color_range[1]
+        },
+        alpha_range: [
+            (alpha_range[0] * alpha_override).clamp(0.0, 1.0),
+            (alpha_range[1] * alpha_override).clamp(0.0, 1.0),
+        ],
+        size_range,
+        lifetime_ms_range: lifetime_range,
+        speed_range,
+        rotation_range,
+        angular_velocity_range,
+        turbulence,
+        size_change,
+        emission_rate: runtime
+            .instance_override
+            .rate
+            .or_else(|| emitter.and_then(|emitter| emitter.rate))
+            .unwrap_or(0.0)
+            .max(0.0),
+        max_count: runtime
+            .instance_override
+            .count
+            .or(runtime.system.max_count)
+            .map(|value| value as usize)
+            .unwrap_or(128)
+            .clamp(1, 8192),
+        start_time_ms: runtime
+            .system
+            .start_time
+            .map(normalize_particle_lifetime_ms)
+            .unwrap_or(0.0)
+            .max(0.0),
+        instantaneous: emitter
+            .map(|emitter| emitter.instantaneous)
+            .unwrap_or(false),
+    })
+}
+
+struct SpriteParticleMaterial {
+    texture_path: PathBuf,
+    blend_mode: SceneRenderBlendMode,
+}
+
+fn resolve_sprite_particle_material(
+    object_id: u32,
+    object_name: &str,
+    runtime: &SceneParticleRuntime,
+    resolver: Option<&SceneResourceResolver>,
+    issues: &mut Vec<SceneRenderIssue>,
+) -> Option<SpriteParticleMaterial> {
+    let Some(material_path) = runtime
+        .system
+        .material
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::missing_asset_path(
+                SceneRenderIssueSeverity::Warning,
+                object_id,
+                object_name,
+                "particle material",
+            ),
+        );
+        return None;
+    };
+    let Some(resolver) = resolver else {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some(
+                    "Sprite particle material resolution requires Scene resource roots."
+                        .to_string(),
+                ),
+            ),
+        );
+        return None;
+    };
+    let lookup = resolver.inspect_relative_path(material_path);
+    let Some(material_file) = lookup.matched_path else {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::missing_asset_file(
+                SceneRenderIssueSeverity::Warning,
+                object_id,
+                object_name,
+                "particle material",
+                material_path.to_string(),
+            ),
+        );
+        return None;
+    };
+    let material_json = match read_json_value(&material_file) {
+        Ok(value) => value,
+        Err(error) => {
+            push_unique_issue(
+                issues,
+                SceneRenderIssue::unsupported_particle_runtime(object_id, object_name, Some(error)),
+            );
+            return None;
+        }
+    };
+    let passes = particle_material_pass_values(&material_json);
+    if passes.len() != 1 {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some("Sprite particle material bridge only supports a single pass.".to_string()),
+            ),
+        );
+        return None;
+    }
+    if particle_material_requires_phase10(&material_json, passes.first()) {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some("Sprite particle material declares shader/material features reserved for phase-10.".to_string()),
+            ),
+        );
+        return None;
+    }
+    let pass = &passes[0];
+    let shader = pass
+        .get("shader")
+        .and_then(Value::as_str)
+        .or_else(|| material_json.get("shader").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !shader.contains("genericparticle") && !shader.is_empty() {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some(format!(
+                    "Sprite particle material shader {shader:?} is outside the phase-09e2 genericparticle bridge."
+                )),
+            ),
+        );
+        return None;
+    }
+    let textures = pass
+        .get("textures")
+        .or_else(|| material_json.get("textures"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let Some(texture_name) = textures
+        .first()
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::missing_asset_path(
+                SceneRenderIssueSeverity::Warning,
+                object_id,
+                object_name,
+                "particle texture",
+            ),
+        );
+        return None;
+    };
+    let texture_lookup = resolver.inspect_texture_candidates(
+        Some(material_path),
+        Some(material_file.as_path()),
+        texture_name,
+    );
+    let Some(texture_path) = texture_lookup.matched_paths.first().cloned() else {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::missing_asset_file(
+                SceneRenderIssueSeverity::Warning,
+                object_id,
+                object_name,
+                "particle texture",
+                texture_name.to_string(),
+            ),
+        );
+        return None;
+    };
+
+    Some(SpriteParticleMaterial {
+        texture_path,
+        blend_mode: parse_particle_material_blend_mode(
+            pass.get("blending")
+                .or_else(|| material_json.get("blending"))
+                .and_then(Value::as_str),
+        ),
+    })
+}
+
+fn load_particle_runtime_from_resource(
+    particle_path: &str,
+    resolver: &SceneResourceResolver,
+) -> Result<SceneParticleRuntime, String> {
+    let lookup = resolver.inspect_relative_path(particle_path);
+    let resolved = lookup.matched_path.ok_or_else(|| {
+        format!("Sprite particle child resource {particle_path} could not be resolved")
+    })?;
+    let json = read_json_value(&resolved)?;
+    Ok(build_authored_particle_runtime_for_resource(
+        particle_path.to_string(),
+        &json,
+    ))
+}
+
+fn read_json_value(path: &Path) -> Result<Value, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("unable to read {}: {error}", path.display()))?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("unable to parse {}: {error}", path.display()))
+}
+
+fn particle_material_pass_values(json: &Value) -> Vec<Value> {
+    if let Some(passes) = json.get("passes").and_then(Value::as_array) {
+        return passes.clone();
+    }
+    if particle_material_declares_inline_pass(json) {
+        return vec![json.clone()];
+    }
+    Vec::new()
+}
+
+fn particle_material_declares_inline_pass(json: &Value) -> bool {
+    json.get("shader")
+        .and_then(Value::as_str)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || json
+            .get("textures")
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false)
+        || json.get("blending").and_then(Value::as_str).is_some()
+}
+
+fn particle_material_requires_phase10(root: &Value, pass: Option<&Value>) -> bool {
+    if root
+        .get("effects")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    for scope in pass.into_iter().chain(std::iter::once(root)) {
+        if scope
+            .get("usertextures")
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if scope
+            .get("textures")
+            .and_then(Value::as_array)
+            .map(|items| items.len() > 1)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if scope
+            .get("combos")
+            .and_then(Value::as_object)
+            .map(|items| {
+                items.iter().any(|(key, value)| {
+                    let lower = key.to_ascii_lowercase();
+                    let enabled = value.as_i64().unwrap_or(1) != 0;
+                    enabled
+                        && (lower.contains("refract")
+                            || lower.contains("lighting")
+                            || lower.contains("normal")
+                            || lower.contains("blur")
+                            || lower.contains("cutout"))
+                })
+            })
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        for key in ["refract", "lighting", "normal", "worldblur", "cutout"] {
+            if scope.get(key).is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn parse_particle_material_blend_mode(value: Option<&str>) -> SceneRenderBlendMode {
+    match value
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "additive" | "add" => SceneRenderBlendMode::Additive,
+        "translucent" | "alpha" | "blend" | "" => SceneRenderBlendMode::Normal,
+        _ => SceneRenderBlendMode::Normal,
+    }
+}
+
+fn stage_range(
+    stages: &[SceneParticleStageRuntime],
+    name_tokens: &[&str],
+    min_keys: &[&str],
+    max_keys: &[&str],
+    default: [f64; 2],
+) -> [f64; 2] {
+    let Some(stage) = find_stage(stages, name_tokens) else {
+        return default;
+    };
+    let min = stage_f64(stage, min_keys).unwrap_or(default[0]);
+    let max = stage_f64(stage, max_keys).unwrap_or(default[1]).max(min);
+    [min, max]
+}
+
+fn stage_optional_range(
+    stages: &[SceneParticleStageRuntime],
+    name_tokens: &[&str],
+    min_keys: &[&str],
+    max_keys: &[&str],
+) -> Option<[f64; 2]> {
+    let stage = find_stage(stages, name_tokens)?;
+    let min = stage_f64(stage, min_keys)?;
+    let max = stage_f64(stage, max_keys).unwrap_or(min);
+    Some([min, max])
+}
+
+fn stage_scalar(
+    stages: &[SceneParticleStageRuntime],
+    name_tokens: &[&str],
+    keys: &[&str],
+    default: f64,
+) -> f64 {
+    find_stage(stages, name_tokens)
+        .and_then(|stage| stage_f64(stage, keys))
+        .unwrap_or(default)
+}
+
+fn stage_color_range(
+    stages: &[SceneParticleStageRuntime],
+    default: SceneRenderColor,
+) -> [SceneRenderColor; 2] {
+    let Some(stage) = find_stage(stages, &["colorrandom", "colourrandom", "color"]) else {
+        return [default, default];
+    };
+    let min = stage_string(stage, &["colormin", "mincolor", "colourmin", "min"])
+        .map(|value| parse_scene_color(Some(value.as_str()), 1.0))
+        .unwrap_or(default);
+    let max = stage_string(stage, &["colormax", "maxcolor", "colourmax", "max"])
+        .map(|value| parse_scene_color(Some(value.as_str()), 1.0))
+        .unwrap_or(min);
+    [min, max]
+}
+
+fn find_stage<'a>(
+    stages: &'a [SceneParticleStageRuntime],
+    name_tokens: &[&str],
+) -> Option<&'a SceneParticleStageRuntime> {
+    stages.iter().find(|stage| {
+        let name = stage.name.to_ascii_lowercase();
+        name_tokens
+            .iter()
+            .any(|token| name.contains(&token.to_ascii_lowercase()))
+    })
+}
+
+fn stage_f64(stage: &SceneParticleStageRuntime, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| lookup_stage_value(stage, key).and_then(value_as_f64))
+}
+
+fn stage_string(stage: &SceneParticleStageRuntime, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| lookup_stage_value(stage, key).and_then(value_as_string))
+}
+
+fn lookup_stage_value<'a>(stage: &'a SceneParticleStageRuntime, key: &str) -> Option<&'a Value> {
+    stage
+        .fields
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+        .map(|(_, value)| value)
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn value_as_string(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    if let Some(array) = value.as_array() {
+        return Some(
+            array
+                .iter()
+                .filter_map(value_as_f64)
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    value_as_f64(value).map(|value| value.to_string())
+}
+
+fn normalize_color_alpha(color: SceneRenderColor, alpha: f64) -> u8 {
+    ((color.alpha as f64) * alpha.clamp(0.0, 1.0)).round() as u8
+}
+
 fn required_file_path(
     issues: &mut Vec<SceneRenderIssue>,
     object_id: u32,
@@ -1263,7 +2057,7 @@ fn quoted(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use chrono::Utc;
     use image::{DynamicImage, Rgba, RgbaImage};
@@ -1272,10 +2066,12 @@ mod tests {
     use crate::models::{
         EvaluatedAudioState, EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
         EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
-        SceneAssetKind, SceneEvaluatedDocument, SceneManifest, SceneParticleControlPointRuntime,
-        SceneParticleEmitterRuntime, SceneParticleInstanceOverride, SceneParticleKind,
-        SceneParticleRuntime, SceneParticleRuntimeAdapter, SceneParticleScheduleMode,
-        SceneParticleSystemRuntime, SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer,
+        SceneAssetKind, SceneEvaluatedDocument, SceneManifest, SceneParticleChildKind,
+        SceneParticleChildRuntime, SceneParticleControlPointRuntime, SceneParticleEmitterRuntime,
+        SceneParticleInstanceOverride, SceneParticleKind, SceneParticleRendererFamily,
+        SceneParticleRendererRuntime, SceneParticleRuntime, SceneParticleRuntimeAdapter,
+        SceneParticleScheduleMode, SceneParticleStageRuntime, SceneParticleSystemRuntime,
+        SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer,
     };
 
     use super::{
@@ -1546,6 +2342,140 @@ mod tests {
         }
     }
 
+    fn supported_sprite_particle_runtime(object_id: u32) -> SceneParticleRuntime {
+        SceneParticleRuntime {
+            object_id,
+            object_name: "Sprite".to_string(),
+            particle_path: "particles/sprite.json".to_string(),
+            object_origin: [6.0, 10.0, 0.0],
+            object_scale: [1.0, 1.0, 1.0],
+            object_angles: None,
+            system: SceneParticleSystemRuntime {
+                max_count: Some(96),
+                start_time: Some(0.05),
+                material: Some("materials/sprite.material".to_string()),
+                emitters: vec![SceneParticleEmitterRuntime {
+                    rate: Some(30.0),
+                    origin: Some([4.0, 5.0, 0.0]),
+                    distance_min: Some(1.0),
+                    distance_max: Some(8.0),
+                    directions: vec![[0.0, 1.0, 0.0]],
+                    speed_min: Some(2.0),
+                    speed_max: Some(6.0),
+                    schedule_mode: SceneParticleScheduleMode::Autonomous,
+                    ..SceneParticleEmitterRuntime::default()
+                }],
+                renderers: vec![SceneParticleRendererRuntime {
+                    family: SceneParticleRendererFamily::Sprite,
+                    name: Some("sprite".to_string()),
+                    ..SceneParticleRendererRuntime::default()
+                }],
+                children: vec![SceneParticleChildRuntime {
+                    name: Some("particles/child.json".to_string()),
+                    child_type: SceneParticleChildKind::EventDeath,
+                    origin: Some([2.0, 3.0, 0.0]),
+                    probability: Some(1.0),
+                    max_count: Some(8),
+                    ..SceneParticleChildRuntime::default()
+                }],
+                initializers: vec![
+                    SceneParticleStageRuntime {
+                        name: "lifetimerandom".to_string(),
+                        fields: BTreeMap::from([
+                            ("min".to_string(), serde_json::json!(0.5)),
+                            ("max".to_string(), serde_json::json!(1.5)),
+                        ]),
+                    },
+                    SceneParticleStageRuntime {
+                        name: "sizerandom".to_string(),
+                        fields: BTreeMap::from([
+                            ("min".to_string(), serde_json::json!(12)),
+                            ("max".to_string(), serde_json::json!(24)),
+                        ]),
+                    },
+                    SceneParticleStageRuntime {
+                        name: "colorrandom".to_string(),
+                        fields: BTreeMap::from([
+                            ("min".to_string(), serde_json::json!("0.2 0.3 0.4")),
+                            ("max".to_string(), serde_json::json!("1 0.8 0.6")),
+                        ]),
+                    },
+                    SceneParticleStageRuntime {
+                        name: "rotationrandom".to_string(),
+                        fields: BTreeMap::from([
+                            ("min".to_string(), serde_json::json!(-10)),
+                            ("max".to_string(), serde_json::json!(20)),
+                        ]),
+                    },
+                ],
+                operators: vec![
+                    SceneParticleStageRuntime {
+                        name: "movement".to_string(),
+                        fields: BTreeMap::from([
+                            ("speedmin".to_string(), serde_json::json!(3)),
+                            ("speedmax".to_string(), serde_json::json!(7)),
+                        ]),
+                    },
+                    SceneParticleStageRuntime {
+                        name: "turbulentvelocityrandom".to_string(),
+                        fields: BTreeMap::from([("strength".to_string(), serde_json::json!(5))]),
+                    },
+                    SceneParticleStageRuntime {
+                        name: "sizechange".to_string(),
+                        fields: BTreeMap::from([
+                            ("startvalue".to_string(), serde_json::json!(1.0)),
+                            ("endvalue".to_string(), serde_json::json!(0.3)),
+                        ]),
+                    },
+                ],
+                ..SceneParticleSystemRuntime::default()
+            },
+            instance_override: SceneParticleInstanceOverride {
+                rate: Some(42.0),
+                size: Some(0.5),
+                speed: Some(11.0),
+                alpha: Some(0.6),
+                lifetime: Some(2.0),
+                count: Some(32),
+                color: Some("1 0.5 0.25".to_string()),
+                ..SceneParticleInstanceOverride::default()
+            },
+            adapter: SceneParticleRuntimeAdapter {
+                supported: true,
+                draw_kind: None,
+                schedule_mode: SceneParticleScheduleMode::Autonomous,
+                reason: None,
+            },
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn write_sprite_particle_material_fixture(managed_root: &std::path::Path) {
+        let source = managed_root.join("source");
+        fs::create_dir_all(source.join("materials")).expect("materials dir");
+        fs::create_dir_all(source.join("textures")).expect("textures dir");
+        fs::create_dir_all(source.join("particles")).expect("particles dir");
+        fs::write(
+            source.join("materials/sprite.material"),
+            r#"{"shader":"genericparticle","textures":["textures/sprite.png"],"blending":"additive"}"#,
+        )
+        .expect("material");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 2, Rgba([255, 255, 255, 255])))
+            .save(source.join("textures/sprite.png"))
+            .expect("texture");
+        fs::write(
+            source.join("particles/child.json"),
+            r#"{
+              "maxcount": 4,
+              "material": "materials/sprite.material",
+              "emitter": [{"name":"sphererandom","rate":4}],
+              "renderer": [{"name":"sprite"}],
+              "initializer": [{"name":"sizerandom","min":4,"max":8}]
+            }"#,
+        )
+        .expect("child particle");
+    }
+
     fn unsupported_particle_runtime(object_id: u32) -> SceneParticleRuntime {
         SceneParticleRuntime {
             object_id,
@@ -1794,6 +2724,86 @@ mod tests {
     }
 
     #[test]
+    fn render_plan_builds_first_class_sprite_particle_item_with_material_bridge() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(
+                4,
+                particle_object(4, "Sprite", SceneParticleKind::PetalTrail),
+            )],
+            vec![4],
+        );
+        scene.source.particle_runtimes = vec![supported_sprite_particle_runtime(4)];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        assert!(report.issues.is_empty());
+        assert!(report.plan.particles.is_empty());
+        assert_eq!(report.plan.sprite_particles.len(), 1);
+        assert_eq!(
+            report.plan.draw_order,
+            vec![SceneRenderDrawItem {
+                object_id: 4,
+                kind: SceneRenderDrawKind::SpriteParticle,
+            }]
+        );
+        let item = &report.plan.sprite_particles[0];
+        assert_eq!(item.schedule_mode, SceneParticleScheduleMode::Autonomous);
+        assert_eq!(item.config.blend_mode, SceneRenderBlendMode::Additive);
+        assert!(item.config.texture_path.ends_with("textures/sprite.png"));
+        assert_eq!(item.config.emission_rate, 42.0);
+        assert_eq!(item.config.max_count, 32);
+        assert_eq!(item.config.lifetime_ms_range, [2000.0, 2000.0]);
+        assert_eq!(item.config.speed_range, [11.0, 11.0]);
+        assert_eq!(item.config.size_range, [6.0, 12.0]);
+        assert_eq!(item.children.len(), 1);
+        assert_eq!(
+            item.children[0].child_type,
+            SceneParticleChildKind::EventDeath
+        );
+    }
+
+    #[test]
+    fn sprite_material_bridge_rejects_phase10_texture_variants_without_trail_fallback() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::write(
+            managed_root.join("source/materials/sprite.material"),
+            r#"{"shader":"genericparticle","textures":["textures/sprite.png","textures/normal.png"],"blending":"translucent"}"#,
+        )
+        .expect("complex material");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(
+                4,
+                particle_object(4, "Sprite", SceneParticleKind::PetalTrail),
+            )],
+            vec![4],
+        );
+        scene.source.particle_runtimes = vec![supported_sprite_particle_runtime(4)];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(report.plan.sprite_particles.is_empty());
+        assert!(report.plan.particles.is_empty());
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == SceneRenderIssueCode::UnsupportedParticleRuntime));
+    }
+
+    #[test]
     fn unsupported_particle_runtime_does_not_make_plan_renderable() {
         let mut scene = runtime_scene_with_objects(
             vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
@@ -2000,6 +3010,7 @@ mod tests {
             texts: Vec::new(),
             audios: Vec::new(),
             particles: Vec::new(),
+            sprite_particles: Vec::new(),
             sounds: vec![SceneRenderSoundItem {
                 object_id: 5,
                 object_name: "Ambient".to_string(),

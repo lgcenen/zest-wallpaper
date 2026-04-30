@@ -178,6 +178,10 @@ fn capture_scene_render_plan_snapshot_with_size(
                 "Scene particle item {} is dynamic and is not captured as a still",
                 draw_item.object_id
             )),
+            SceneRenderDrawKind::SpriteParticle => unsupported.push(format!(
+                "Scene sprite particle item {} is dynamic and is not captured as a still",
+                draw_item.object_id
+            )),
             SceneRenderDrawKind::Sound => unsupported.push(format!(
                 "Scene sound item {} has no visual still output",
                 draw_item.object_id

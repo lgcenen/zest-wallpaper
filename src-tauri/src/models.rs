@@ -256,7 +256,7 @@ pub enum SceneParticleRendererFamily {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum SceneParticleChildKind {
     Static,
@@ -372,6 +372,14 @@ pub struct SceneParticleChildRuntime {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SceneParticleStageRuntime {
+    pub name: String,
+    #[serde(default)]
+    pub fields: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SceneParticleControlPointOverride {
     pub key: String,
     #[serde(default)]
@@ -438,6 +446,10 @@ pub struct SceneParticleSystemRuntime {
     pub initializer_names: Vec<String>,
     #[serde(default)]
     pub operator_names: Vec<String>,
+    #[serde(default)]
+    pub initializers: Vec<SceneParticleStageRuntime>,
+    #[serde(default)]
+    pub operators: Vec<SceneParticleStageRuntime>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

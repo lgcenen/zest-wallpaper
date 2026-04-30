@@ -14,7 +14,7 @@ use crate::{
     services::asset_resolver::AssetResolver,
 };
 
-pub const SCENE_PARSER_REVISION: &str = "scene-parser:2026-04-29-1";
+pub const SCENE_PARSER_REVISION: &str = "scene-parser:2026-04-30-1";
 pub const SCENE_EVALUATOR_REVISION: &str = "scene-evaluator:2026-04-29-1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,12 +344,54 @@ fn hash_particle_baseline_dependencies(
     let Some(particle_path) = object.get("particle").and_then(Value::as_str) else {
         return Ok(());
     };
-    hash_projected_json_file(
+    let Some(particle_json) = hash_projected_json_file(
         hasher,
         "particle-baseline",
         extracted_root.join(particle_path),
         particle_baseline_projection,
-    )?;
+    )?
+    else {
+        return Ok(());
+    };
+    hash_particle_material_dependencies(hasher, extracted_root, &particle_json)?;
+    for child_path in particle_child_paths(&particle_json) {
+        let Some(child_json) = hash_projected_json_file(
+            hasher,
+            "particle-child-baseline",
+            extracted_root.join(&child_path),
+            particle_baseline_projection,
+        )?
+        else {
+            continue;
+        };
+        hash_particle_material_dependencies(hasher, extracted_root, &child_json)?;
+    }
+    Ok(())
+}
+
+fn hash_particle_material_dependencies(
+    hasher: &mut Sha256,
+    extracted_root: &Path,
+    particle_json: &Value,
+) -> Result<()> {
+    let Some(material_path) = particle_json.get("material").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Some(material_json) = hash_projected_json_file(
+        hasher,
+        "particle-material-baseline",
+        extracted_root.join(material_path),
+        material_baseline_projection,
+    )?
+    else {
+        return Ok(());
+    };
+    let texture_names = material_texture_names(&material_json);
+    for texture_path in
+        baseline_texture_candidates(extracted_root, Some(material_path), &texture_names)
+    {
+        hash_optional_file(hasher, texture_path)?;
+    }
     Ok(())
 }
 
@@ -439,21 +481,40 @@ fn material_baseline_projection(value: &Value) -> Value {
 
 fn particle_baseline_projection(value: &Value) -> Value {
     json!({
+        "maxcount": value.get("maxcount").cloned().unwrap_or(Value::Null),
+        "starttime": value.get("starttime").cloned().unwrap_or(Value::Null),
+        "material": value.get("material").cloned().unwrap_or(Value::Null),
         "renderer": value
             .get("renderer")
             .and_then(Value::as_array)
             .and_then(|items| items.first())
-            .and_then(|item| item.get("name"))
             .cloned()
             .unwrap_or(Value::Null),
-        "emitterRate": value
+        "emitter": value
             .get("emitter")
             .and_then(Value::as_array)
             .and_then(|items| items.first())
-            .and_then(|item| item.get("rate"))
             .cloned()
             .unwrap_or(Value::Null),
+        "initializer": value.get("initializer").cloned().unwrap_or(Value::Null),
+        "operator": value.get("operator").cloned().unwrap_or(Value::Null),
+        "children": value.get("children").cloned().unwrap_or(Value::Null),
     })
+}
+
+fn particle_child_paths(value: &Value) -> Vec<String> {
+    value
+        .get("children")
+        .or_else(|| value.get("child"))
+        .and_then(Value::as_array)
+        .map(|children| {
+            children
+                .iter()
+                .filter_map(|child| child.get("name").and_then(Value::as_str))
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn first_material_pass(value: &Value) -> Option<&Value> {

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 use crate::models::{
@@ -5,7 +7,7 @@ use crate::models::{
     SceneParticleControlPointRuntime, SceneParticleEmitterRuntime, SceneParticleInstanceOverride,
     SceneParticleKind, SceneParticleRendererFamily, SceneParticleRendererRuntime,
     SceneParticleRuntime, SceneParticleRuntimeAdapter, SceneParticleRuntimeDiagnostic,
-    SceneParticleScheduleMode, SceneParticleSystemRuntime,
+    SceneParticleScheduleMode, SceneParticleStageRuntime, SceneParticleSystemRuntime,
 };
 
 pub fn build_scene_particle_runtime(
@@ -96,6 +98,14 @@ fn parse_particle_system(root: &Value) -> SceneParticleSystemRuntime {
             .collect(),
         initializer_names: stage_names(root, &["initializer", "initializers"]),
         operator_names: stage_names(root, &["operator", "operators"]),
+        initializers: particle_entries(root, &["initializer", "initializers"])
+            .into_iter()
+            .filter_map(parse_stage)
+            .collect(),
+        operators: particle_entries(root, &["operator", "operators"])
+            .into_iter()
+            .filter_map(parse_stage)
+            .collect(),
     }
 }
 
@@ -180,6 +190,25 @@ fn parse_child(value: &Value) -> SceneParticleChildRuntime {
     }
 }
 
+fn parse_stage(value: &Value) -> Option<SceneParticleStageRuntime> {
+    let name = string_field(value, "name")
+        .or_else(|| string_field(value, "type"))
+        .or_else(|| value.as_str().map(ToString::to_string))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    let fields = value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    Some(SceneParticleStageRuntime { name, fields })
+}
+
 fn classify_particle_runtime(
     has_particle_json: bool,
     system: &SceneParticleSystemRuntime,
@@ -213,22 +242,24 @@ fn classify_particle_runtime(
     }
 
     let renderer = system.renderers.first();
+    let renderer_family = renderer.map(|renderer| renderer.family);
     let draw_kind = renderer.and_then(|renderer| particle_draw_kind(renderer.family));
-    match renderer.map(|renderer| renderer.family) {
-        Some(SceneParticleRendererFamily::Sprite) => diagnostics.push(runtime_diagnostic(
-            "particle-renderer-sprite-unsupported",
-            "Sprite particle systems need the first-class renderer path and are not mapped to the trail adapter.",
-        )),
-        Some(SceneParticleRendererFamily::Unsupported) | None => diagnostics.push(runtime_diagnostic(
-            "particle-renderer-family-unsupported",
-            "Renderer family is outside the phase-09e trail adapter whitelist.",
-        )),
+    match renderer_family {
+        Some(SceneParticleRendererFamily::Sprite) => {}
+        Some(SceneParticleRendererFamily::Unsupported) | None => {
+            diagnostics.push(runtime_diagnostic(
+                "particle-renderer-family-unsupported",
+                "Renderer family is outside the phase-09e trail adapter whitelist.",
+            ))
+        }
         Some(SceneParticleRendererFamily::SpriteTrail)
         | Some(SceneParticleRendererFamily::Rope)
         | Some(SceneParticleRendererFamily::RopeTrail) => {}
     }
 
-    if !system.children.is_empty() {
+    if renderer_family == Some(SceneParticleRendererFamily::Sprite) {
+        diagnostics.extend(sprite_particle_runtime_diagnostics(system));
+    } else if !system.children.is_empty() {
         let unsupported_child = system
             .children
             .iter()
@@ -256,18 +287,20 @@ fn classify_particle_runtime(
         ));
     }
 
-    for stage_name in system
-        .initializer_names
-        .iter()
-        .chain(system.operator_names.iter())
-    {
-        if !particle_stage_name_is_adapter_safe(stage_name) {
-            diagnostics.push(runtime_diagnostic(
-                "particle-stage-unsupported",
-                format!(
-                    "Particle initializer/operator {stage_name:?} is outside the phase-09e adapter whitelist."
-                ),
-            ));
+    if renderer_family != Some(SceneParticleRendererFamily::Sprite) {
+        for stage_name in system
+            .initializer_names
+            .iter()
+            .chain(system.operator_names.iter())
+        {
+            if !particle_stage_name_is_adapter_safe(stage_name) {
+                diagnostics.push(runtime_diagnostic(
+                    "particle-stage-unsupported",
+                    format!(
+                        "Particle initializer/operator {stage_name:?} is outside the phase-09e adapter whitelist."
+                    ),
+                ));
+            }
         }
     }
 
@@ -296,6 +329,51 @@ fn classify_particle_runtime(
             diagnostics,
         )
     }
+}
+
+fn sprite_particle_runtime_diagnostics(
+    system: &SceneParticleSystemRuntime,
+) -> Vec<SceneParticleRuntimeDiagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for child in &system.children {
+        if matches!(
+            child.child_type,
+            SceneParticleChildKind::EventSpawn | SceneParticleChildKind::Unsupported
+        ) {
+            diagnostics.push(runtime_diagnostic(
+                "particle-child-unsupported",
+                match child.child_type {
+                    SceneParticleChildKind::EventSpawn => {
+                        "Sprite particle child type eventspawn is outside phase-09e2."
+                    }
+                    SceneParticleChildKind::Unsupported => {
+                        "Sprite particle child type is not recognized by phase-09e2."
+                    }
+                    SceneParticleChildKind::Static
+                    | SceneParticleChildKind::EventFollow
+                    | SceneParticleChildKind::EventDeath => unreachable!(),
+                },
+            ));
+        }
+    }
+
+    for stage_name in system
+        .initializer_names
+        .iter()
+        .chain(system.operator_names.iter())
+    {
+        if sprite_stage_name_is_unsupported(stage_name) {
+            diagnostics.push(runtime_diagnostic(
+                "particle-stage-unsupported",
+                format!(
+                    "Sprite particle initializer/operator {stage_name:?} is outside the phase-09e2 whitelist."
+                ),
+            ));
+        }
+    }
+
+    diagnostics
 }
 
 fn particle_runtime_uses_input_control_points(
@@ -399,6 +477,29 @@ fn particle_stage_name_is_adapter_safe(name: &str) -> bool {
     adapter_safe_tokens
         .iter()
         .any(|token| lower.contains(token))
+}
+
+fn sprite_stage_name_is_unsupported(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let unsupported_tokens = [
+        "collision",
+        "collide",
+        "model",
+        "mask",
+        "boid",
+        "flock",
+        "vortex",
+        "remap",
+        "inherit",
+        "sequence",
+        "layerimage",
+        "maintain",
+        "oscillate",
+        "colorchange",
+        "colourchange",
+        "controlpointattract",
+    ];
+    unsupported_tokens.iter().any(|token| lower.contains(token))
 }
 
 fn runtime_diagnostic(
@@ -715,5 +816,87 @@ mod tests {
             runtime.adapter.schedule_mode,
             SceneParticleScheduleMode::InputDriven
         );
+    }
+
+    #[test]
+    fn ordinary_sprite_particles_are_first_class_without_trail_draw_kind() {
+        let particle = json!({
+            "maxcount": 64,
+            "material": "materials/genericparticle.json",
+            "emitter": [{
+                "name": "sphererandom",
+                "rate": 20,
+                "origin": "4 8 0",
+                "distancemin": 2,
+                "distancemax": 16,
+                "directions": ["0 1 0"],
+                "speedmin": 3,
+                "speedmax": 9
+            }],
+            "renderer": [{"name": "sprite"}],
+            "initializer": [
+                {"name": "lifetimerandom", "min": 0.4, "max": 1.2},
+                {"name": "sizerandom", "min": 12, "max": 24},
+                {"name": "colorrandom", "min": "255 160 80", "max": "255 240 180"}
+            ],
+            "operator": [
+                {"name": "movement"},
+                {"name": "alphafade"},
+                {"name": "turbulentvelocityrandom", "strength": 4},
+                {"name": "angularvelocityrandom", "min": -30, "max": 30}
+            ],
+            "children": [
+                {"name": "particles/static.json", "type": "static"},
+                {"name": "particles/follow.json", "type": "eventfollow"},
+                {"name": "particles/death.json", "type": "eventdeath"}
+            ]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/sprite.json".to_string(),
+            &particle,
+        );
+
+        assert!(runtime.adapter.supported);
+        assert_eq!(runtime.adapter.draw_kind, None);
+        assert_eq!(
+            runtime.system.renderers[0].family,
+            SceneParticleRendererFamily::Sprite
+        );
+        assert_eq!(runtime.system.initializers.len(), 3);
+        assert_eq!(
+            runtime.system.initializers[1]
+                .fields
+                .get("min")
+                .and_then(|value| value.as_f64()),
+            Some(12.0)
+        );
+        assert_eq!(runtime.system.children.len(), 3);
+    }
+
+    #[test]
+    fn sprite_runtime_rejects_eventspawn_and_complex_stage_families() {
+        let particle = json!({
+            "material": "materials/genericparticle.json",
+            "emitter": [{"name": "sphererandom", "rate": 20}],
+            "renderer": [{"name": "sprite"}],
+            "operator": [{"name": "vortex"}],
+            "children": [{"name": "particles/spawn.json", "type": "eventspawn"}]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/complex-sprite.json".to_string(),
+            &particle,
+        );
+
+        assert!(!runtime.adapter.supported);
+        assert!(runtime
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "particle-child-unsupported"));
+        assert!(runtime
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"));
     }
 }

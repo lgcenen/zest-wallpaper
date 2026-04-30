@@ -36,8 +36,9 @@ use crate::{
             build_scene_render_plan_with_resolver, build_scene_render_text_update_with_resolver,
             SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderColor,
             SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem, SceneRenderPlan,
-            SceneRenderQuad, SceneRenderSoundItem, SceneRenderSourceKind, SceneRenderTextItem,
-            SceneRenderVisualItem, SceneTextHorizontalAlign,
+            SceneRenderQuad, SceneRenderSoundItem, SceneRenderSourceKind,
+            SceneRenderSpriteParticleItem, SceneRenderTextItem, SceneRenderVisualItem,
+            SceneTextHorizontalAlign,
         },
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
         scene_runtime_settings_service,
@@ -51,6 +52,9 @@ use crate::{
             scene_sound_playback_load_warning, scene_sound_reactive_levels,
             SceneSoundLifecycleAction, SceneSoundMeterReading, SceneSoundPlaybackWarning,
             SceneSoundRuntimeState,
+        },
+        scene_sprite_particle_scheduler_service::{
+            SceneSpriteParticlePrimitive, SceneSpriteParticleScheduler,
         },
         scene_text_script_runtime_service,
         scene_video_texture_service::{
@@ -1628,6 +1632,7 @@ struct NativeSceneMetalRenderer {
     input_coordinator: SceneInputCoordinator,
     particle_signature: Option<u64>,
     particle_scheduler: SceneParticleScheduler,
+    sprite_particle_scheduler: SceneSpriteParticleScheduler,
     paused: bool,
 }
 
@@ -1722,6 +1727,7 @@ impl NativeSceneMetalRenderer {
             input_coordinator: SceneInputCoordinator::default(),
             particle_signature: None,
             particle_scheduler: SceneParticleScheduler::default(),
+            sprite_particle_scheduler: SceneSpriteParticleScheduler::default(),
             paused: false,
         })
     }
@@ -1743,7 +1749,7 @@ impl NativeSceneMetalRenderer {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let next_particle_signature = particle_plan_signature(&plan.particles);
+        let next_particle_signature = particle_plan_signature(&plan);
 
         if self.scene_key.as_deref() != Some(scene_key) {
             self.clear_video_sources();
@@ -1798,6 +1804,18 @@ impl NativeSceneMetalRenderer {
                         error,
                     )),
                 }),
+            }
+        }
+
+        for item in &plan.sprite_particles {
+            for texture_path in sprite_particle_texture_paths(item) {
+                match self.ensure_phase10_texture_loaded(&texture_path, &mut required_keys) {
+                    Ok(()) => {}
+                    Err(error) => warnings.push(NativeSceneWarning::texture_load(
+                        &texture_path,
+                        format!("Sprite particle texture could not be prepared: {error}"),
+                    )),
+                }
             }
         }
 
@@ -1908,6 +1926,7 @@ impl NativeSceneMetalRenderer {
             || self.particle_signature != next_particle_signature
         {
             self.particle_scheduler.reset();
+            self.sprite_particle_scheduler.reset();
         }
         if self.scene_key.as_deref() != Some(scene_key) {
             self.audio_coordinator.reset();
@@ -1991,6 +2010,7 @@ impl NativeSceneMetalRenderer {
         self.audio_coordinator.reset();
         self.input_coordinator.reset();
         self.particle_scheduler.reset();
+        self.sprite_particle_scheduler.reset();
         self.last_frame_at = Instant::now();
         self.animation_time_seconds = 0.0;
         self.paused = false;
@@ -2062,6 +2082,11 @@ impl NativeSceneMetalRenderer {
             .iter()
             .map(|item| (item.object_id, item))
             .collect::<BTreeMap<_, _>>();
+        let sprite_particle_items = plan
+            .sprite_particles
+            .iter()
+            .map(|item| (item.object_id, item))
+            .collect::<BTreeMap<_, _>>();
         let mut drawn_phase10_ids = BTreeSet::new();
         let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(pass_descriptor)
         else {
@@ -2073,6 +2098,14 @@ impl NativeSceneMetalRenderer {
 
         if white_texture.is_some() && !plan.particles.is_empty() {
             self.advance_particle_items(&plan.particles, input_frame.response, now_ms_f64);
+        }
+        if !plan.sprite_particles.is_empty() {
+            if !self.paused {
+                self.sprite_particle_scheduler
+                    .advance(&plan.sprite_particles, now_ms_f64);
+            } else {
+                self.sprite_particle_scheduler.pause();
+            }
         }
 
         for draw_item in &plan.draw_order {
@@ -2162,6 +2195,12 @@ impl NativeSceneMetalRenderer {
                         item,
                         now_ms_f64,
                     );
+                }
+                SceneRenderDrawKind::SpriteParticle => {
+                    let Some(item) = sprite_particle_items.get(&draw_item.object_id) else {
+                        continue;
+                    };
+                    self.draw_sprite_particle_item(&encoder, &projection, plan, item, now_ms_f64);
                 }
                 SceneRenderDrawKind::Sound => {}
             }
@@ -3706,6 +3745,32 @@ impl NativeSceneMetalRenderer {
             }
         }
     }
+
+    fn draw_sprite_particle_item(
+        &mut self,
+        encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+        projection: &SceneProjection,
+        plan: &SceneRenderPlan,
+        item: &SceneRenderSpriteParticleItem,
+        now_ms: f64,
+    ) {
+        for primitive in self
+            .sprite_particle_scheduler
+            .primitives(item, plan.canvas_height, now_ms)
+        {
+            let key = phase10_texture_cache_key(&primitive.texture_path);
+            let Some(texture) = self.texture_cache.get(&key).cloned() else {
+                continue;
+            };
+            self.draw_quad(
+                encoder,
+                texture.as_ref(),
+                primitive.blend_mode,
+                projection,
+                quad_primitive_from_sprite_particle(primitive),
+            );
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -4377,13 +4442,24 @@ fn text_texture_cache_key(item: &SceneRenderTextItem) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn particle_plan_signature(items: &[SceneRenderParticleItem]) -> Option<u64> {
-    if items.is_empty() {
+fn sprite_particle_texture_paths(item: &SceneRenderSpriteParticleItem) -> Vec<PathBuf> {
+    let mut paths = vec![item.config.texture_path.clone()];
+    for child in &item.children {
+        if !paths.contains(&child.config.texture_path) {
+            paths.push(child.config.texture_path.clone());
+        }
+    }
+    paths
+}
+
+#[cfg(target_os = "macos")]
+fn particle_plan_signature(plan: &SceneRenderPlan) -> Option<u64> {
+    if plan.particles.is_empty() && plan.sprite_particles.is_empty() {
         return None;
     }
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for item in items {
+    for item in &plan.particles {
         item.object_id.hash(&mut hasher);
         match item.particle_kind {
             crate::models::SceneParticleKind::LineTrail => 0_u8.hash(&mut hasher),
@@ -4404,7 +4480,66 @@ fn particle_plan_signature(items: &[SceneRenderParticleItem]) -> Option<u64> {
         item.speed_range[1].to_bits().hash(&mut hasher);
         item.instantaneous.hash(&mut hasher);
     }
+    for item in &plan.sprite_particles {
+        2_u8.hash(&mut hasher);
+        hash_sprite_particle_item(&mut hasher, item);
+    }
     Some(hasher.finish())
+}
+
+#[cfg(target_os = "macos")]
+fn hash_sprite_particle_item(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    item: &SceneRenderSpriteParticleItem,
+) {
+    item.object_id.hash(hasher);
+    item.object_name.hash(hasher);
+    hash_sprite_particle_config(hasher, &item.config);
+    item.schedule_mode.hash(hasher);
+    item.children.len().hash(hasher);
+    for child in &item.children {
+        child.child_type.hash(hasher);
+        child.probability.to_bits().hash(hasher);
+        hash_sprite_particle_config(hasher, &child.config);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hash_sprite_particle_config(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    config: &crate::services::scene_render_planner_service::SceneSpriteParticleConfig,
+) {
+    config.texture_path.hash(hasher);
+    config.blend_mode.hash(hasher);
+    for value in config
+        .spawn_origin
+        .iter()
+        .chain(config.spawn_radius.iter())
+        .chain(config.size_range.iter())
+        .chain(config.lifetime_ms_range.iter())
+        .chain(config.speed_range.iter())
+        .chain(config.rotation_range.iter())
+        .chain(config.angular_velocity_range.iter())
+        .chain(config.alpha_range.iter())
+    {
+        value.to_bits().hash(hasher);
+    }
+    for direction in &config.directions {
+        direction[0].to_bits().hash(hasher);
+        direction[1].to_bits().hash(hasher);
+    }
+    config.sign.to_bits().hash(hasher);
+    config.color_min.hash(hasher);
+    config.color_max.hash(hasher);
+    config.turbulence.to_bits().hash(hasher);
+    if let Some(size_change) = config.size_change {
+        size_change[0].to_bits().hash(hasher);
+        size_change[1].to_bits().hash(hasher);
+    }
+    config.emission_rate.to_bits().hash(hasher);
+    config.max_count.hash(hasher);
+    config.start_time_ms.to_bits().hash(hasher);
+    config.instantaneous.hash(hasher);
 }
 
 #[cfg(target_os = "macos")]
@@ -5421,6 +5556,25 @@ fn quad_primitive_from_particle(primitive: SceneParticlePrimitive) -> SceneQuadP
     }
 }
 
+#[cfg(target_os = "macos")]
+fn quad_primitive_from_sprite_particle(
+    primitive: SceneSpriteParticlePrimitive,
+) -> SceneQuadPrimitive {
+    SceneQuadPrimitive {
+        left: primitive.left,
+        top: primitive.top,
+        width: primitive.width,
+        height: primitive.height,
+        rotation: primitive.rotation,
+        opacity: primitive.opacity,
+        flip_x: false,
+        flip_y: false,
+        color: primitive.color,
+        transform_origin_x: primitive.transform_origin_x,
+        transform_origin_y: primitive.transform_origin_y,
+    }
+}
+
 #[cfg(all(target_os = "macos", test))]
 fn build_scene_vertices(
     item: &SceneRenderVisualItem,
@@ -5678,7 +5832,8 @@ mod tests {
     use crate::services::scene_render_planner_service::{
         SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderCamera,
         SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderParticleItem, SceneRenderPlan,
-        SceneRenderQuad, SceneRenderSourceKind, SceneRenderTextFontBinding, SceneRenderVisualItem,
+        SceneRenderQuad, SceneRenderSourceKind, SceneRenderTextFontBinding, SceneRenderTextItem,
+        SceneRenderVisualItem,
     };
 
     #[cfg(target_os = "macos")]
@@ -5775,6 +5930,7 @@ mod tests {
                 texts: Vec::new(),
                 audios: Vec::new(),
                 particles: Vec::new(),
+                sprite_particles: Vec::new(),
                 sounds: Vec::new(),
             },
             phase10_graph: super::ScenePhase10GraphPlan::default(),
@@ -5817,6 +5973,7 @@ mod tests {
                 texts: Vec::new(),
                 audios: Vec::new(),
                 particles: Vec::new(),
+                sprite_particles: Vec::new(),
                 sounds: (0..sound_count)
                     .map(|index| {
                         crate::services::scene_render_planner_service::SceneRenderSoundItem {
@@ -5898,6 +6055,7 @@ mod tests {
                 speed_range: [24.0, 48.0],
                 instantaneous: false,
             }],
+            sprite_particles: Vec::new(),
             sounds: Vec::new(),
         }
     }
@@ -6010,6 +6168,12 @@ mod tests {
             .iter()
             .map(|item| item.object_id)
             .collect::<std::collections::BTreeSet<_>>();
+        let sprite_particle_ids = spec
+            .render_plan
+            .sprite_particles
+            .iter()
+            .map(|item| item.object_id)
+            .collect::<std::collections::BTreeSet<_>>();
         let sound_ids = spec
             .render_plan
             .sounds
@@ -6039,6 +6203,11 @@ mod tests {
                 }
                 SceneRenderDrawKind::Particle if particle_ids.contains(&item.object_id) => {
                     sequence.push((item.object_id, SceneRenderDrawKind::Particle));
+                }
+                SceneRenderDrawKind::SpriteParticle
+                    if sprite_particle_ids.contains(&item.object_id) =>
+                {
+                    sequence.push((item.object_id, SceneRenderDrawKind::SpriteParticle));
                 }
                 SceneRenderDrawKind::Sound if sound_ids.contains(&item.object_id) => {
                     sequence.push((item.object_id, SceneRenderDrawKind::Sound));
@@ -6525,7 +6694,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn particle_signature_stays_stable_when_only_text_changes() {
-        let signature = particle_plan_signature(&[
+        let mut plan = sample_runtime_warning_plan();
+        plan.audios.clear();
+        plan.draw_order.clear();
+        plan.particles = vec![
             crate::services::scene_render_planner_service::SceneRenderParticleItem {
                 object_id: 9,
                 object_name: "trail".to_string(),
@@ -6545,32 +6717,52 @@ mod tests {
                 speed_range: [24.0, 48.0],
                 instantaneous: false,
             },
-        ]);
+        ];
+        let signature = particle_plan_signature(&plan);
 
-        assert_eq!(
-            signature,
-            particle_plan_signature(&[
-                crate::services::scene_render_planner_service::SceneRenderParticleItem {
-                    object_id: 9,
-                    object_name: "trail".to_string(),
-                    particle_kind: crate::models::SceneParticleKind::LineTrail,
-                    schedule_mode: crate::models::SceneParticleScheduleMode::InputDriven,
-                    spawn_origin: [0.0, 0.0],
-                    color: super::SceneRenderColor {
-                        red: 255,
-                        green: 255,
-                        blue: 255,
-                        alpha: 255,
-                    },
-                    size: 12.0,
-                    emission_rate: 48.0,
-                    max_count: 32,
-                    lifetime_ms: 520.0,
-                    speed_range: [24.0, 48.0],
-                    instantaneous: false,
-                },
-            ])
-        );
+        let mut next = plan.clone();
+        next.texts.push(SceneRenderTextItem {
+            object_id: 99,
+            object_name: "Clock".to_string(),
+            behavior: crate::models::SceneTextBehavior::Static,
+            quad: SceneRenderQuad {
+                left: 0.0,
+                top: 0.0,
+                width: 100.0,
+                height: 40.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                flip_x: false,
+                flip_y: false,
+            },
+            content_left: 0.0,
+            content_top: 0.0,
+            content_width: 100.0,
+            content_height: 40.0,
+            text: "12:00".to_string(),
+            font: crate::services::scene_render_planner_service::SceneRenderTextFontBinding {
+                authored_reference: None,
+                reference_kind: None,
+                file_candidates: Vec::new(),
+                family_candidates: Vec::new(),
+                cache_key: "default".to_string(),
+            },
+            point_size: 24.0,
+            color: SceneRenderColor::default(),
+            horizontal_align:
+                crate::services::scene_render_planner_service::SceneTextHorizontalAlign::Center,
+            vertical_align:
+                crate::services::scene_render_planner_service::SceneTextVerticalAlign::Center,
+            blur_enabled: false,
+            blur_radius: 0.0,
+            effect_paths: Vec::new(),
+            max_rows: None,
+            limit_width: false,
+            limit_use_ellipsis: false,
+            dynamic_input_generation: None,
+        });
+
+        assert_eq!(signature, particle_plan_signature(&next));
     }
 
     #[cfg(target_os = "macos")]
