@@ -545,11 +545,7 @@ pub fn build_scene_render_plan_with_resolver(
                 }
                 let runtime = source_particle_runtimes.get(&base.id).copied();
 
-                if runtime
-                    .and_then(|runtime| runtime.system.renderers.first())
-                    .map(|renderer| renderer.family)
-                    == Some(SceneParticleRendererFamily::Sprite)
-                {
+                if runtime_prefers_first_class_sprite_particles(runtime) {
                     let Some(sprite_item) =
                         plan_sprite_particle_item(base, runtime, resolver, &mut issues)
                     else {
@@ -642,6 +638,15 @@ pub fn build_scene_render_plan_with_resolver(
     }
 
     SceneRenderPlanReport { plan, issues }
+}
+
+fn runtime_prefers_first_class_sprite_particles(runtime: Option<&SceneParticleRuntime>) -> bool {
+    matches!(
+        runtime
+            .and_then(|runtime| runtime.system.renderers.first())
+            .map(|renderer| renderer.family),
+        Some(SceneParticleRendererFamily::Sprite | SceneParticleRendererFamily::SpriteTrail)
+    )
 }
 
 pub fn build_scene_render_text_update_with_resolver(
@@ -3231,6 +3236,47 @@ mod tests {
             item.children[0].child_type,
             SceneParticleChildKind::EventDeath
         );
+    }
+
+    #[test]
+    fn render_plan_promotes_spritetrail_genericparticle_to_first_class_sprite_runtime() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut particle = particle_object(4, "SpriteTrail", SceneParticleKind::PetalTrail);
+        if let EvaluatedSceneObject::Particle { base, .. } = &mut particle {
+            base.transform.position = [0.0, 0.0, 0.0];
+            base.transform.rotation = 0.0;
+        }
+        let mut scene = runtime_scene_with_objects(vec![(4, particle)], vec![4]);
+        let mut runtime = supported_sprite_particle_runtime(4);
+        runtime.system.renderers[0].family = SceneParticleRendererFamily::SpriteTrail;
+        runtime.system.renderers[0].name = Some("spritetrail".to_string());
+        runtime.system.children.clear();
+        runtime.system.max_count = Some(512);
+        runtime.instance_override.count = Some(1.0);
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        assert!(report.issues.is_empty());
+        assert!(report.plan.particles.is_empty());
+        assert_eq!(report.plan.sprite_particles.len(), 1);
+        assert_eq!(
+            report.plan.draw_order,
+            vec![SceneRenderDrawItem {
+                object_id: 4,
+                kind: SceneRenderDrawKind::SpriteParticle,
+            }]
+        );
+        let config = &report.plan.sprite_particles[0].config;
+        assert_eq!(config.max_count, 512);
+        assert!(config.texture_path.ends_with("textures/sprite.png"));
     }
 
     #[test]
