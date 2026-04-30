@@ -25,6 +25,18 @@ use crate::{
     store::wallpaper_dir,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyValueUpdateKind {
+    ValueOnly,
+    RequiresMetadataRefresh,
+}
+
+impl PropertyValueUpdateKind {
+    pub fn requires_metadata_refresh(self) -> bool {
+        matches!(self, Self::RequiresMetadataRefresh)
+    }
+}
+
 #[derive(Debug)]
 struct ImportedProject {
     title: String,
@@ -228,6 +240,25 @@ fn property_values_map(properties: &[WallpaperProperty]) -> BTreeMap<String, Val
         .iter()
         .map(|property| (property.key.clone(), property.value.clone()))
         .collect()
+}
+
+fn property_schema_matches_ignoring_values(
+    left: &[WallpaperProperty],
+    right: &[WallpaperProperty],
+) -> bool {
+    fn without_values(properties: &[WallpaperProperty]) -> Vec<WallpaperProperty> {
+        properties
+            .iter()
+            .cloned()
+            .map(|mut property| {
+                property.value = Value::Null;
+                property.default_value = Value::Null;
+                property
+            })
+            .collect()
+    }
+
+    without_values(left) == without_values(right)
 }
 
 fn decoration_to_section_item(property: &WallpaperProperty) -> Option<PropertySectionItem> {
@@ -935,7 +966,7 @@ where
 pub fn update_property_values(
     record: &mut WallpaperRecord,
     values: &BTreeMap<String, Value>,
-) -> Result<()> {
+) -> Result<PropertyValueUpdateKind> {
     let schema_by_key: BTreeMap<String, usize> = record
         .property_schema
         .iter()
@@ -951,11 +982,16 @@ pub fn update_property_values(
         record.property_schema[index].value = value.clone();
     }
 
+    let mut update_kind = PropertyValueUpdateKind::ValueOnly;
     let resolver = AssetResolver::for_record(record);
     let project_json_path = resolver.source_root().join("project.json");
     if project_json_path.exists() {
         let raw = fs::read_to_string(&project_json_path)?;
         let mut project_json: Value = serde_json::from_str(&raw)?;
+        let project_schema = property_schema(&project_json);
+        if !property_schema_matches_ignoring_values(&record.property_schema, &project_schema) {
+            update_kind = PropertyValueUpdateKind::RequiresMetadataRefresh;
+        }
         if let Some(properties) = project_json
             .get_mut("general")
             .and_then(|general| general.get_mut("properties"))
@@ -973,27 +1009,7 @@ pub fn update_property_values(
         )?;
     }
 
-    if matches!(
-        record.wallpaper_type,
-        WallpaperType::Scene | WallpaperType::Video | WallpaperType::Web
-    ) {
-        let resolver = AssetResolver::for_record(record);
-        let refreshed = detect_project(resolver.source_root())?;
-        record.title = refreshed.title;
-        record.wallpaper_type = refreshed.wallpaper_type;
-        record.preview_path = refreshed
-            .preview_path
-            .map(|path| path.display().to_string());
-        record.entry_path = refreshed.entry_path.map(|path| path.display().to_string());
-        record.property_schema = refreshed.property_schema;
-        record.property_sections = refreshed.property_sections;
-        record.scene_manifest = refreshed.scene_manifest;
-        record.tags = refreshed.tags;
-        let manifest = record.scene_manifest.clone();
-        scene_cache_service::refresh_cache_for_record(record, manifest)?;
-    }
-
-    Ok(())
+    Ok(update_kind)
 }
 
 fn registered_snapshot_is_usable(record: &WallpaperRecord) -> bool {
@@ -1002,6 +1018,7 @@ fn registered_snapshot_is_usable(record: &WallpaperRecord) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
@@ -1012,7 +1029,7 @@ mod tests {
     use super::{
         build_property_sections, clean_markup, detect_project, fallback_property_label,
         import_source_copy, import_wallpaper_path_inner, parse_options, property_schema,
-        refresh_record_metadata_inner,
+        refresh_record_metadata_inner, update_property_values, PropertyValueUpdateKind,
     };
     use crate::{
         models::{PropertyPresentation, PropertySectionItemKind, WallpaperRecord, WallpaperType},
@@ -1283,6 +1300,146 @@ mod tests {
                 .map(|property| property.label.as_str()),
             Some("Dock Enabled")
         );
+    }
+
+    #[test]
+    fn pure_property_value_update_only_updates_schema_and_project_json_value() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Stable Title",
+                "type": "scene",
+                "general": {
+                    "properties": {
+                        "enabled": {
+                            "type": "bool",
+                            "text": "Enabled",
+                            "value": true
+                        }
+                    }
+                }
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+
+        let project = detect_project(&source).expect("project detected");
+        let mut record = WallpaperRecord {
+            id: "scene".to_string(),
+            title: project.title,
+            wallpaper_type: project.wallpaper_type,
+            source_path: managed.display().to_string(),
+            managed_path: managed.display().to_string(),
+            preview_path: project.preview_path.map(|path| path.display().to_string()),
+            entry_path: project.entry_path.map(|path| path.display().to_string()),
+            last_snapshot_path: None,
+            property_schema: project.property_schema,
+            property_sections: project.property_sections,
+            scene_cache: None,
+            scene_manifest: project.scene_manifest,
+            scene_manifest_version: None,
+            scene_manifest_dirty: false,
+            imported_at: chrono::Utc::now(),
+            tags: project.tags,
+        };
+
+        let outcome = update_property_values(
+            &mut record,
+            &BTreeMap::from([("enabled".to_string(), json!(false))]),
+        )
+        .expect("property update");
+
+        assert_eq!(outcome, PropertyValueUpdateKind::ValueOnly);
+        assert_eq!(record.title, "Stable Title");
+        assert_eq!(
+            record
+                .property_schema
+                .iter()
+                .find(|property| property.key == "enabled")
+                .map(|property| property.value.clone()),
+            Some(json!(false))
+        );
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(source.join("project.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            persisted
+                .pointer("/general/properties/enabled/value")
+                .cloned(),
+            Some(json!(false))
+        );
+    }
+
+    #[test]
+    fn property_update_reports_schema_drift_without_re_detecting_project() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).expect("source root");
+        fs::write(
+            source.join("project.json"),
+            serde_json::to_string_pretty(&json!({
+                "title": "Changed On Disk",
+                "type": "scene",
+                "general": {
+                    "properties": {
+                        "enabled": {
+                            "type": "bool",
+                            "text": "Enabled renamed",
+                            "value": true
+                        }
+                    }
+                }
+            }))
+            .expect("project json"),
+        )
+        .expect("write project json");
+        let mut record = WallpaperRecord {
+            id: "scene".to_string(),
+            title: "Original Title".to_string(),
+            wallpaper_type: WallpaperType::Scene,
+            source_path: managed.display().to_string(),
+            managed_path: managed.display().to_string(),
+            preview_path: None,
+            entry_path: None,
+            last_snapshot_path: None,
+            property_schema: vec![crate::models::WallpaperProperty {
+                key: "enabled".to_string(),
+                label: "Enabled".to_string(),
+                markup: Some("Enabled".to_string()),
+                kind: crate::models::PropertyKind::Bool,
+                value: json!(true),
+                default_value: json!(true),
+                min: None,
+                max: None,
+                step: None,
+                condition: None,
+                order: None,
+                presentation: PropertyPresentation::Control,
+                options: vec![],
+            }],
+            property_sections: vec![],
+            scene_cache: None,
+            scene_manifest: None,
+            scene_manifest_version: None,
+            scene_manifest_dirty: false,
+            imported_at: chrono::Utc::now(),
+            tags: vec![],
+        };
+
+        let outcome = update_property_values(
+            &mut record,
+            &BTreeMap::from([("enabled".to_string(), json!(false))]),
+        )
+        .expect("property update");
+
+        assert_eq!(outcome, PropertyValueUpdateKind::RequiresMetadataRefresh);
+        assert_eq!(record.title, "Original Title");
+        assert_eq!(record.property_schema[0].label, "Enabled");
     }
 
     #[test]

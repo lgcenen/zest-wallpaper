@@ -155,7 +155,7 @@ fn compute_source_fingerprint_with_baseline_engine(
         "phase-08-baseline-engine",
         baseline_engine_fingerprint.as_bytes(),
     );
-    hash_optional_file(&mut hasher, resolver.source_root().join("project.json"))?;
+    hash_project_metadata_file(&mut hasher, resolver.source_root().join("project.json"))?;
     if let Some(scene_json_path) = resolver.scene_json_path() {
         hash_optional_file(&mut hasher, &scene_json_path)?;
         hash_scene_baseline_dependencies(&mut hasher, resolver.extracted_root(), &scene_json_path)?;
@@ -637,6 +637,43 @@ fn hash_optional_file(hasher: &mut Sha256, path: impl AsRef<Path>) -> Result<()>
     Ok(())
 }
 
+fn hash_project_metadata_file(hasher: &mut Sha256, path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    hasher.update(path.display().to_string().as_bytes());
+    if !path.exists() {
+        hasher.update(b":missing");
+        return Ok(());
+    }
+    let contents = fs::read(path)
+        .with_context(|| format!("Unable to read cache fingerprint input {}", path.display()))?;
+    let Ok(project_json) = serde_json::from_slice::<Value>(&contents) else {
+        hasher.update(b":present-invalid:");
+        hasher.update(contents);
+        return Ok(());
+    };
+    hasher.update(b":present:");
+    hasher.update(serde_json::to_vec(&project_metadata_projection(
+        &project_json,
+    ))?);
+    Ok(())
+}
+
+fn project_metadata_projection(project_json: &Value) -> Value {
+    let mut projected = project_json.clone();
+    if let Some(properties) = projected
+        .get_mut("general")
+        .and_then(|general| general.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    {
+        for property in properties.values_mut() {
+            if let Some(property) = property.as_object_mut() {
+                property.remove("value");
+            }
+        }
+    }
+    projected
+}
+
 fn hash_optional_file_state(hasher: &mut Sha256, path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
     hasher.update(path.display().to_string().as_bytes());
@@ -740,6 +777,114 @@ mod tests {
         assert!(!record_needs_cache_refresh(&record).unwrap());
 
         fs::write(managed.join("source").join("project.json"), "{\"a\":2}").unwrap();
+        assert!(record_needs_cache_refresh(&record).unwrap());
+    }
+
+    #[test]
+    fn cache_refresh_ignores_project_property_value_only_changes() {
+        let temp = tempdir().unwrap();
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(managed.join("extracted")).unwrap();
+        fs::write(
+            source.join("project.json"),
+            json!({
+                "title": "Scene",
+                "type": "scene",
+                "general": {
+                    "properties": {
+                        "enabled": {
+                            "type": "bool",
+                            "text": "Enabled",
+                            "value": true
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(managed.join("extracted").join("scene.json"), "{}").unwrap();
+
+        let mut record = sample_scene_record(managed.display().to_string());
+        let manifest = record.scene_manifest.clone().unwrap();
+        refresh_cache_for_record(&mut record, Some(manifest)).unwrap();
+        assert!(!record_needs_cache_refresh(&record).unwrap());
+
+        fs::write(
+            source.join("project.json"),
+            json!({
+                "title": "Scene",
+                "type": "scene",
+                "general": {
+                    "properties": {
+                        "enabled": {
+                            "type": "bool",
+                            "text": "Enabled",
+                            "value": false
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(!record_needs_cache_refresh(&record).unwrap());
+    }
+
+    #[test]
+    fn cache_refresh_detects_project_property_schema_changes() {
+        let temp = tempdir().unwrap();
+        let managed = temp.path().join("managed");
+        let source = managed.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(managed.join("extracted")).unwrap();
+        fs::write(
+            source.join("project.json"),
+            json!({
+                "title": "Scene",
+                "type": "scene",
+                "general": {
+                    "properties": {
+                        "enabled": {
+                            "type": "bool",
+                            "text": "Enabled",
+                            "value": true
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(managed.join("extracted").join("scene.json"), "{}").unwrap();
+
+        let mut record = sample_scene_record(managed.display().to_string());
+        let manifest = record.scene_manifest.clone().unwrap();
+        refresh_cache_for_record(&mut record, Some(manifest)).unwrap();
+        assert!(!record_needs_cache_refresh(&record).unwrap());
+
+        fs::write(
+            source.join("project.json"),
+            json!({
+                "title": "Scene",
+                "type": "scene",
+                "general": {
+                    "properties": {
+                        "enabled": {
+                            "type": "bool",
+                            "text": "Enabled renamed",
+                            "value": true
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
         assert!(record_needs_cache_refresh(&record).unwrap());
     }
 

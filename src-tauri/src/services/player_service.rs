@@ -66,6 +66,14 @@ enum SceneUpdateSyncMode {
     FullNativeSync,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivePropertyUpdateSyncMode {
+    Current,
+    LightweightDynamicText,
+    LightweightSceneRuntime,
+    FullNativeSync,
+}
+
 impl From<scene_text_behavior_service::SceneTextRefreshCadence> for SceneUpdateCadence {
     fn from(cadence: scene_text_behavior_service::SceneTextRefreshCadence) -> Self {
         match cadence {
@@ -476,13 +484,54 @@ pub(crate) fn set_player_auto_pause_screen_labels(
     Ok(transition.effective_paused)
 }
 
-pub fn sync_active_scene_signature(
-    runtime_record: &WallpaperRuntimeRecord,
+pub(crate) fn sync_active_wallpaper_after_property_update(
+    app: &AppHandle,
     state: &AppState,
+    previous_runtime_record: Option<&WallpaperRuntimeRecord>,
+    runtime_record: &WallpaperRuntimeRecord,
+    requires_metadata_refresh: bool,
+) -> Result<(), String> {
+    {
+        let player = state.player.lock().map_err(|error| error.to_string())?;
+        if player.active_id.as_deref() != Some(runtime_record.id.as_str()) {
+            return Ok(());
+        }
+    }
+
+    let sync_mode = active_property_update_sync_mode(
+        previous_runtime_record,
+        runtime_record,
+        requires_metadata_refresh,
+    );
+    let next_signature = scene_signature(runtime_record);
+    if sync_mode != ActivePropertyUpdateSyncMode::Current {
+        set_active_scene_signature(state, runtime_record.id.as_str(), next_signature.clone())?;
+    }
+
+    dispatch_active_property_update_sync(
+        sync_mode,
+        || sync_scene_dynamic_text_update_for_runtime_record(app, state, runtime_record),
+        || sync_scene_runtime_update_for_runtime_record(app, state, runtime_record),
+        || sync_native_runtime_for_active_wallpaper(app, state),
+        || {
+            scene_update_sync_is_current_for_signature(
+                state,
+                runtime_record.id.as_str(),
+                next_signature.as_deref(),
+            )
+        },
+    )?;
+    Ok(())
+}
+
+fn set_active_scene_signature(
+    state: &AppState,
+    active_id: &str,
+    signature: Option<String>,
 ) -> Result<(), String> {
     let mut player = state.player.lock().map_err(|error| error.to_string())?;
-    if player.active_id.as_deref() == Some(runtime_record.id.as_str()) {
-        player.last_scene_signature = scene_signature(runtime_record);
+    if player.active_id.as_deref() == Some(active_id) {
+        player.last_scene_signature = signature;
     }
     Ok(())
 }
@@ -544,6 +593,32 @@ fn sync_scene_dynamic_text_update_for_runtime_record(
         }
     }
     scene_native_renderer_service::update_native_scene_dynamic_text(app, runtime_record)
+}
+
+fn sync_scene_runtime_update_for_runtime_record(
+    app: &AppHandle,
+    state: &AppState,
+    runtime_record: &WallpaperRuntimeRecord,
+) -> Result<(), String> {
+    let _runtime_sync = state
+        .runtime_sync
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let effective_paused = {
+        let player = state.player.lock().map_err(|error| error.to_string())?;
+        if player.active_id.as_deref() != Some(runtime_record.id.as_str()) {
+            return Err(format!(
+                "native Scene property update targeted {}, but it is no longer active",
+                runtime_record.id
+            ));
+        }
+        player.effective_paused()
+    };
+    scene_native_renderer_service::sync_native_scene_runtime(
+        app,
+        Some(runtime_record),
+        effective_paused,
+    )
 }
 
 fn sync_native_runtime_with_transaction_lock(
@@ -727,6 +802,21 @@ fn scene_update_sync_is_current(state: &AppState, generation: u64, active_id: &s
         .unwrap_or(false)
 }
 
+fn scene_update_sync_is_current_for_signature(
+    state: &AppState,
+    active_id: &str,
+    signature: Option<&str>,
+) -> bool {
+    state
+        .player
+        .lock()
+        .map(|player| {
+            player.active_id.as_deref() == Some(active_id)
+                && player.last_scene_signature.as_deref() == signature
+        })
+        .unwrap_or(false)
+}
+
 fn dispatch_scene_update_sync<LightweightSync, FullSync, IsCurrent>(
     sync_mode: SceneUpdateSyncMode,
     mut lightweight_sync: LightweightSync,
@@ -751,6 +841,44 @@ where
         SceneUpdateSyncMode::FullNativeSync => {
             full_sync()?;
             Ok(SceneUpdateSyncMode::FullNativeSync)
+        }
+    }
+}
+
+fn dispatch_active_property_update_sync<DynamicTextSync, SceneRuntimeSync, FullSync, IsCurrent>(
+    sync_mode: ActivePropertyUpdateSyncMode,
+    mut dynamic_text_sync: DynamicTextSync,
+    mut scene_runtime_sync: SceneRuntimeSync,
+    mut full_sync: FullSync,
+    mut is_current: IsCurrent,
+) -> Result<ActivePropertyUpdateSyncMode, String>
+where
+    DynamicTextSync: FnMut() -> Result<(), String>,
+    SceneRuntimeSync: FnMut() -> Result<(), String>,
+    FullSync: FnMut() -> Result<(), String>,
+    IsCurrent: FnMut() -> bool,
+{
+    match sync_mode {
+        ActivePropertyUpdateSyncMode::Current => Ok(ActivePropertyUpdateSyncMode::Current),
+        ActivePropertyUpdateSyncMode::LightweightDynamicText => match dynamic_text_sync() {
+            Ok(()) => Ok(ActivePropertyUpdateSyncMode::LightweightDynamicText),
+            Err(_) if is_current() => {
+                full_sync()?;
+                Ok(ActivePropertyUpdateSyncMode::FullNativeSync)
+            }
+            Err(error) => Err(error),
+        },
+        ActivePropertyUpdateSyncMode::LightweightSceneRuntime => match scene_runtime_sync() {
+            Ok(()) => Ok(ActivePropertyUpdateSyncMode::LightweightSceneRuntime),
+            Err(_) if is_current() => {
+                full_sync()?;
+                Ok(ActivePropertyUpdateSyncMode::FullNativeSync)
+            }
+            Err(error) => Err(error),
+        },
+        ActivePropertyUpdateSyncMode::FullNativeSync => {
+            full_sync()?;
+            Ok(ActivePropertyUpdateSyncMode::FullNativeSync)
         }
     }
 }
@@ -1120,6 +1248,81 @@ fn scene_update_sync_mode(
     }
 }
 
+fn active_property_update_sync_mode(
+    previous_runtime_record: Option<&WallpaperRuntimeRecord>,
+    runtime_record: &WallpaperRuntimeRecord,
+    requires_metadata_refresh: bool,
+) -> ActivePropertyUpdateSyncMode {
+    if requires_metadata_refresh {
+        return ActivePropertyUpdateSyncMode::FullNativeSync;
+    }
+
+    let Some(previous_runtime_record) = previous_runtime_record else {
+        return ActivePropertyUpdateSyncMode::FullNativeSync;
+    };
+
+    let (previous_scene, current_scene) =
+        match (&previous_runtime_record.runtime, &runtime_record.runtime) {
+            (
+                WallpaperRuntime::Scene { scene: previous },
+                WallpaperRuntime::Scene { scene: current },
+            ) => (previous, current),
+            _ => {
+                return if previous_runtime_record.runtime == runtime_record.runtime {
+                    ActivePropertyUpdateSyncMode::Current
+                } else {
+                    ActivePropertyUpdateSyncMode::FullNativeSync
+                };
+            }
+        };
+
+    match scene_update_sync_mode(
+        scene_signature(previous_runtime_record).as_deref(),
+        scene_signature(runtime_record).as_deref(),
+    ) {
+        SceneUpdateSyncMode::Current => return ActivePropertyUpdateSyncMode::Current,
+        SceneUpdateSyncMode::LightweightDynamicText => {
+            return ActivePropertyUpdateSyncMode::LightweightDynamicText
+        }
+        SceneUpdateSyncMode::FullNativeSync => {}
+    }
+
+    if scene_value_update_preserves_runtime_structure(previous_scene, current_scene) {
+        ActivePropertyUpdateSyncMode::LightweightSceneRuntime
+    } else {
+        ActivePropertyUpdateSyncMode::FullNativeSync
+    }
+}
+
+fn scene_value_update_preserves_runtime_structure(
+    previous: &SceneRuntimeDocument,
+    current: &SceneRuntimeDocument,
+) -> bool {
+    previous.source == current.source
+        && previous.evaluated.render_list == current.evaluated.render_list
+        && scene_object_topology(previous) == scene_object_topology(current)
+}
+
+fn scene_object_topology(scene: &SceneRuntimeDocument) -> BTreeMap<u32, &'static str> {
+    scene
+        .evaluated
+        .objects
+        .iter()
+        .map(|(id, object)| (*id, scene_object_kind(object)))
+        .collect()
+}
+
+fn scene_object_kind(object: &EvaluatedSceneObject) -> &'static str {
+    match object {
+        EvaluatedSceneObject::Container { .. } => "container",
+        EvaluatedSceneObject::Visual { .. } => "visual",
+        EvaluatedSceneObject::Text { .. } => "text",
+        EvaluatedSceneObject::Audio { .. } => "audio",
+        EvaluatedSceneObject::Particle { .. } => "particle",
+        EvaluatedSceneObject::Sound { .. } => "sound",
+    }
+}
+
 fn parse_scene_signature(signature: &str) -> Option<serde_json::Value> {
     serde_json::from_str(signature).ok()
 }
@@ -1322,13 +1525,15 @@ mod tests {
     };
 
     use super::{
-        apply_pause_change, apply_runtime_record_transaction, build_apply_wallpaper_candidate,
-        clear_player_session_state, dispatch_scene_update_sync,
+        active_property_update_sync_mode, apply_pause_change, apply_runtime_record_transaction,
+        build_apply_wallpaper_candidate, clear_player_session_state,
+        dispatch_active_property_update_sync, dispatch_scene_update_sync,
         ensure_apply_record_current_by_id_with, native_host_sync_disposition,
         push_critical_sync_error, scene_requires_periodic_updates, scene_signature,
         scene_update_cadence, scene_update_sync_is_current, scene_update_sync_mode,
         should_emit_scene_update, should_start_scene_update_loop, validate_scene_apply_preflight,
-        NativeHostKind, NativeHostSyncDisposition, SceneUpdateCadence, SceneUpdateSyncMode,
+        ActivePropertyUpdateSyncMode, NativeHostKind, NativeHostSyncDisposition,
+        SceneUpdateCadence, SceneUpdateSyncMode,
     };
 
     fn runtime_record(
@@ -1634,6 +1839,114 @@ mod tests {
     }
 
     #[test]
+    fn active_property_update_classifies_text_value_change_as_lightweight_text_patch() {
+        let mut earlier_objects = BTreeMap::new();
+        earlier_objects.insert(7, text_object(SceneTextBehavior::Static));
+        let mut later_objects = earlier_objects.clone();
+        if let Some(EvaluatedSceneObject::Text { text, .. }) = later_objects.get_mut(&7) {
+            text.value = "Updated".to_string();
+        }
+
+        let earlier = runtime_record(
+            WallpaperRuntime::Scene {
+                scene: scene_runtime_with_objects(
+                    earlier_objects,
+                    vec![source_text_layer(SceneTextBehavior::Static, None, None)],
+                    Utc::now(),
+                ),
+            },
+            WallpaperType::Scene,
+        );
+        let later = runtime_record(
+            WallpaperRuntime::Scene {
+                scene: scene_runtime_with_objects(
+                    later_objects,
+                    vec![source_text_layer(SceneTextBehavior::Static, None, None)],
+                    Utc::now(),
+                ),
+            },
+            WallpaperType::Scene,
+        );
+
+        assert_eq!(
+            active_property_update_sync_mode(Some(&earlier), &later, false),
+            ActivePropertyUpdateSyncMode::LightweightDynamicText
+        );
+    }
+
+    #[test]
+    fn active_property_update_classifies_same_topology_evaluated_change_as_scene_runtime_patch() {
+        let mut earlier_objects = BTreeMap::new();
+        earlier_objects.insert(7, text_object(SceneTextBehavior::Static));
+        let mut later_objects = earlier_objects.clone();
+        if let Some(EvaluatedSceneObject::Text { base, .. }) = later_objects.get_mut(&7) {
+            base.opacity = 0.5;
+        }
+
+        let earlier = runtime_record(
+            WallpaperRuntime::Scene {
+                scene: scene_runtime_with_objects(
+                    earlier_objects,
+                    vec![source_text_layer(SceneTextBehavior::Static, None, None)],
+                    Utc::now(),
+                ),
+            },
+            WallpaperType::Scene,
+        );
+        let later = runtime_record(
+            WallpaperRuntime::Scene {
+                scene: scene_runtime_with_objects(
+                    later_objects,
+                    vec![source_text_layer(SceneTextBehavior::Static, None, None)],
+                    Utc::now(),
+                ),
+            },
+            WallpaperType::Scene,
+        );
+
+        assert_eq!(
+            active_property_update_sync_mode(Some(&earlier), &later, false),
+            ActivePropertyUpdateSyncMode::LightweightSceneRuntime
+        );
+    }
+
+    #[test]
+    fn active_property_update_keeps_structural_changes_on_full_sync() {
+        let mut earlier_objects = BTreeMap::new();
+        earlier_objects.insert(7, text_object(SceneTextBehavior::Static));
+        let mut later_scene = scene_runtime_with_objects(
+            earlier_objects.clone(),
+            vec![source_text_layer(SceneTextBehavior::Static, None, None)],
+            Utc::now(),
+        );
+        later_scene.evaluated.render_list.clear();
+
+        let earlier = runtime_record(
+            WallpaperRuntime::Scene {
+                scene: scene_runtime_with_objects(
+                    earlier_objects,
+                    vec![source_text_layer(SceneTextBehavior::Static, None, None)],
+                    Utc::now(),
+                ),
+            },
+            WallpaperType::Scene,
+        );
+        let later = runtime_record(
+            WallpaperRuntime::Scene { scene: later_scene },
+            WallpaperType::Scene,
+        );
+
+        assert_eq!(
+            active_property_update_sync_mode(Some(&earlier), &later, false),
+            ActivePropertyUpdateSyncMode::FullNativeSync
+        );
+        assert_eq!(
+            active_property_update_sync_mode(Some(&earlier), &later, true),
+            ActivePropertyUpdateSyncMode::FullNativeSync
+        );
+    }
+
+    #[test]
     fn lightweight_scene_update_dispatch_does_not_call_full_sync() {
         let lightweight_calls = Cell::new(0);
         let full_sync_calls = Cell::new(0);
@@ -1654,6 +1967,36 @@ mod tests {
 
         assert_eq!(mode, SceneUpdateSyncMode::LightweightDynamicText);
         assert_eq!(lightweight_calls.get(), 1);
+        assert_eq!(full_sync_calls.get(), 0);
+    }
+
+    #[test]
+    fn active_property_update_dispatch_uses_scene_runtime_patch_without_full_sync() {
+        let dynamic_text_calls = Cell::new(0);
+        let scene_runtime_calls = Cell::new(0);
+        let full_sync_calls = Cell::new(0);
+
+        let mode = dispatch_active_property_update_sync(
+            ActivePropertyUpdateSyncMode::LightweightSceneRuntime,
+            || {
+                dynamic_text_calls.set(dynamic_text_calls.get() + 1);
+                Ok(())
+            },
+            || {
+                scene_runtime_calls.set(scene_runtime_calls.get() + 1);
+                Ok(())
+            },
+            || {
+                full_sync_calls.set(full_sync_calls.get() + 1);
+                Ok(())
+            },
+            || true,
+        )
+        .expect("scene runtime update should succeed");
+
+        assert_eq!(mode, ActivePropertyUpdateSyncMode::LightweightSceneRuntime);
+        assert_eq!(dynamic_text_calls.get(), 0);
+        assert_eq!(scene_runtime_calls.get(), 1);
         assert_eq!(full_sync_calls.get(), 0);
     }
 

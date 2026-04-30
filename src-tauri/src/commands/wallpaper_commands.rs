@@ -8,7 +8,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
-    importer::{import_wallpaper_path, update_property_values},
+    importer::{import_wallpaper_path, refresh_record_metadata, update_property_values},
     models::{LibraryStore, WallpaperRecord, WallpaperRuntimeRecord},
     services::{player_service, runtime_document_service, scene_manifest_service},
     store::{remove_dir_if_exists, save_library, AppState},
@@ -192,6 +192,12 @@ pub fn set_wallpaper_properties(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<WallpaperRuntimeRecord, String> {
+    let active_id = state
+        .player
+        .lock()
+        .map_err(|error| error.to_string())?
+        .active_id
+        .clone();
     let mut store = state.library.lock().map_err(|error| error.to_string())?;
     let record = store
         .wallpapers
@@ -199,23 +205,30 @@ pub fn set_wallpaper_properties(
         .find(|record| record.id == id)
         .ok_or_else(|| format!("Wallpaper {id} was not found"))?;
 
-    scene_manifest_service::refresh_scene_manifest_for_record(record)?;
-    update_property_values(record, &values).map_err(|error| error.to_string())?;
+    let is_active = active_id.as_deref() == Some(record.id.as_str());
+    let manifest_refreshed = scene_manifest_service::refresh_scene_manifest_for_record(record)?;
+    let previous_runtime_record =
+        is_active.then(|| runtime_document_service::runtime_record(record));
+    let update_kind = update_property_values(record, &values).map_err(|error| error.to_string())?;
+    let mut requires_metadata_refresh =
+        manifest_refreshed || update_kind.requires_metadata_refresh();
+    if update_kind.requires_metadata_refresh() {
+        requires_metadata_refresh |=
+            refresh_record_metadata(record).map_err(|error| error.to_string())?;
+    }
     let updated = record.clone();
     save_library(&store).map_err(|error| error.to_string())?;
     drop(store);
     let runtime_record = runtime_document_service::runtime_record(&updated);
 
-    let should_emit = state
-        .player
-        .lock()
-        .map_err(|error| error.to_string())?
-        .active_id
-        .as_deref()
-        == Some(updated.id.as_str());
-    if should_emit {
-        player_service::sync_active_scene_signature(&runtime_record, &state)?;
-        player_service::sync_native_runtime_for_active_wallpaper(&app, &state)?;
+    if is_active {
+        player_service::sync_active_wallpaper_after_property_update(
+            &app,
+            &state,
+            previous_runtime_record.as_ref(),
+            &runtime_record,
+            requires_metadata_refresh,
+        )?;
         app.emit("player:update", runtime_record.clone())
             .map_err(|error| error.to_string())?;
     }
