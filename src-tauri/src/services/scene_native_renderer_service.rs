@@ -4531,6 +4531,17 @@ fn hash_sprite_particle_config(
         direction[1].to_bits().hash(hasher);
     }
     config.sign.to_bits().hash(hasher);
+    config.orientation.to_bits().hash(hasher);
+    match config.velocity_range {
+        Some(range) => {
+            true.hash(hasher);
+            for vector in range {
+                vector[0].to_bits().hash(hasher);
+                vector[1].to_bits().hash(hasher);
+            }
+        }
+        None => false.hash(hasher),
+    }
     config.color_min.hash(hasher);
     config.color_max.hash(hasher);
     config.texture_frames.len().hash(hasher);
@@ -4545,6 +4556,8 @@ fn hash_sprite_particle_config(
         size_change[0].to_bits().hash(hasher);
         size_change[1].to_bits().hash(hasher);
     }
+    config.fade_in_ms.to_bits().hash(hasher);
+    config.fade_out_ms.to_bits().hash(hasher);
     config.emission_rate.to_bits().hash(hasher);
     config.max_count.hash(hasher);
     config.start_time_ms.to_bits().hash(hasher);

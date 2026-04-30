@@ -65,6 +65,8 @@ struct SceneSpriteParticle {
     turbulence: f64,
     size: f64,
     size_change: Option<[f64; 2]>,
+    fade_in_ms: f64,
+    fade_out_ms: f64,
     born_at_ms: f64,
     life_ms: f64,
     color: SceneRenderColor,
@@ -130,7 +132,6 @@ impl SceneSpriteParticleScheduler {
             let mut root_deaths = advance_emitter_particles(
                 &mut self.random,
                 &mut state.root,
-                &item.config,
                 delta_ms,
                 now_ms,
             );
@@ -149,7 +150,6 @@ impl SceneSpriteParticleScheduler {
                 advance_emitter_particles(
                     &mut self.random,
                     child_state,
-                    &child.config,
                     delta_ms,
                     now_ms,
                 );
@@ -168,6 +168,9 @@ impl SceneSpriteParticleScheduler {
                     }
                     SceneParticleChildKind::EventFollow => {
                         for parent in &state.root.particles {
+                            if remaining_capacity(child_state, child.config.max_count) == 0 {
+                                break;
+                            }
                             if self.random.chance(child.probability / 60.0) {
                                 let mut spawned = spawn_particle(
                                     &mut self.random,
@@ -183,6 +186,9 @@ impl SceneSpriteParticleScheduler {
                     }
                     SceneParticleChildKind::EventDeath => {
                         for death in &root_deaths {
+                            if remaining_capacity(child_state, child.config.max_count) == 0 {
+                                break;
+                            }
                             if self.random.chance(child.probability) {
                                 child_state.particles.push(spawn_particle(
                                     &mut self.random,
@@ -195,10 +201,8 @@ impl SceneSpriteParticleScheduler {
                     }
                     SceneParticleChildKind::EventSpawn | SceneParticleChildKind::Unsupported => {}
                 }
-                clamp_particle_count(child_state, child.config.max_count);
             }
             root_deaths.clear();
-            clamp_particle_count(&mut state.root, item.config.max_count);
         }
     }
 
@@ -241,7 +245,6 @@ impl SceneSpriteParticleScheduler {
 fn advance_emitter_particles(
     random: &mut SceneSpriteRandom,
     state: &mut SceneSpriteEmitterState,
-    config: &SceneSpriteParticleConfig,
     delta_ms: f64,
     now_ms: f64,
 ) -> Vec<[f64; 2]> {
@@ -261,7 +264,6 @@ fn advance_emitter_particles(
         }
         alive
     });
-    clamp_particle_count(state, config.max_count);
     deaths
 }
 
@@ -279,7 +281,7 @@ fn emit_for_config(
         return;
     }
     if config.instantaneous && !state.instantaneous_emitted {
-        let emit_count = config.max_count.min(MAX_FRAME_EMITS);
+        let emit_count = remaining_capacity(state, config.max_count).min(MAX_FRAME_EMITS);
         for _ in 0..emit_count {
             if probability
                 .map(|value| random.chance(value))
@@ -293,12 +295,13 @@ fn emit_for_config(
         state.instantaneous_emitted = true;
     } else if !config.instantaneous {
         state.emission_credit += config.emission_rate.max(0.0) * delta_ms / 1000.0;
-        let emit_count = state
+        let requested_count = state
             .emission_credit
             .floor()
             .clamp(0.0, MAX_FRAME_EMITS as f64) as usize;
-        if emit_count > 0 {
-            state.emission_credit -= emit_count as f64;
+        if requested_count > 0 {
+            state.emission_credit -= requested_count as f64;
+            let emit_count = requested_count.min(remaining_capacity(state, config.max_count));
             for _ in 0..emit_count {
                 if probability
                     .map(|value| random.chance(value))
@@ -311,7 +314,6 @@ fn emit_for_config(
             }
         }
     }
-    clamp_particle_count(state, config.max_count);
 }
 
 fn spawn_particle(
@@ -324,8 +326,7 @@ fn spawn_particle(
     let angle = random.range(0.0, std::f64::consts::TAU);
     let x = origin[0] + angle.cos() * radius;
     let y = origin[1] + angle.sin() * radius;
-    let direction = choose_direction(random, config, angle);
-    let speed = random.range(config.speed_range[0], config.speed_range[1]);
+    let velocity = choose_velocity(random, config, angle);
     let color = interpolate_color(
         config.color_min,
         config.color_max,
@@ -341,8 +342,8 @@ fn spawn_particle(
         blend_mode: config.blend_mode,
         x,
         y,
-        vx: direction[0] * speed,
-        vy: direction[1] * speed,
+        vx: velocity[0],
+        vy: velocity[1],
         rotation_degrees: random.range(config.rotation_range[0], config.rotation_range[1]),
         angular_velocity: random.range(
             config.angular_velocity_range[0],
@@ -353,12 +354,34 @@ fn spawn_particle(
             .range(config.size_range[0], config.size_range[1])
             .max(0.5),
         size_change: config.size_change,
+        fade_in_ms: config.fade_in_ms.max(0.0),
+        fade_out_ms: config.fade_out_ms.max(0.0),
         born_at_ms: now_ms,
         life_ms: random
             .range(config.lifetime_ms_range[0], config.lifetime_ms_range[1])
             .max(16.0),
         color,
     }
+}
+
+fn choose_velocity(
+    random: &mut SceneSpriteRandom,
+    config: &SceneSpriteParticleConfig,
+    fallback_angle: f64,
+) -> [f64; 2] {
+    if let Some(range) = config.velocity_range {
+        return rotate_2d(
+            [
+                random.range(range[0][0], range[1][0]),
+                random.range(range[0][1], range[1][1]),
+            ],
+            config.orientation,
+        );
+    }
+
+    let direction = choose_direction(random, config, fallback_angle);
+    let speed = random.range(config.speed_range[0], config.speed_range[1]);
+    [direction[0] * speed, direction[1] * speed]
 }
 
 fn choose_direction(
@@ -379,7 +402,10 @@ fn choose_direction(
     let length = (direction[0] * direction[0] + direction[1] * direction[1])
         .sqrt()
         .max(0.0001);
-    [direction[0] / length * sign, direction[1] / length * sign]
+    rotate_2d(
+        [direction[0] / length * sign, direction[1] / length * sign],
+        config.orientation,
+    )
 }
 
 fn choose_texture_frame(
@@ -406,8 +432,9 @@ fn primitive_from_particle(
     if now_ms - particle.born_at_ms >= particle.life_ms {
         return None;
     }
-    let age = ((now_ms - particle.born_at_ms) / particle.life_ms).clamp(0.0, 1.0);
-    let opacity = 1.0 - age;
+    let age_ms = now_ms - particle.born_at_ms;
+    let age = (age_ms / particle.life_ms).clamp(0.0, 1.0);
+    let opacity = particle_alpha(particle, age_ms);
     let size_factor = particle
         .size_change
         .map(|range| range[0] + (range[1] - range[0]) * age)
@@ -435,6 +462,18 @@ fn primitive_from_particle(
     })
 }
 
+fn particle_alpha(particle: &SceneSpriteParticle, age_ms: f64) -> f64 {
+    let mut alpha: f64 = 1.0;
+    if particle.fade_in_ms > 0.0 {
+        alpha = alpha.min((age_ms / particle.fade_in_ms).clamp(0.0, 1.0));
+    }
+    if particle.fade_out_ms > 0.0 {
+        let remaining_ms = particle.life_ms - age_ms;
+        alpha = alpha.min((remaining_ms / particle.fade_out_ms).clamp(0.0, 1.0));
+    }
+    alpha.clamp(0.0, 1.0)
+}
+
 fn interpolate_color(
     min: SceneRenderColor,
     max: SceneRenderColor,
@@ -454,12 +493,20 @@ fn lerp_channel(min: u8, max: u8, t: f64) -> u8 {
     (min as f64 + (max as f64 - min as f64) * t.clamp(0.0, 1.0)).round() as u8
 }
 
-fn clamp_particle_count(state: &mut SceneSpriteEmitterState, max_count: usize) {
-    if state.particles.len() > max_count {
-        state
-            .particles
-            .drain(0..state.particles.len().saturating_sub(max_count));
+fn remaining_capacity(state: &SceneSpriteEmitterState, max_count: usize) -> usize {
+    max_count.saturating_sub(state.particles.len())
+}
+
+fn rotate_2d(vector: [f64; 2], radians: f64) -> [f64; 2] {
+    if radians.abs() <= f64::EPSILON {
+        return vector;
     }
+    let cos = radians.cos();
+    let sin = radians.sin();
+    [
+        vector[0] * cos - vector[1] * sin,
+        vector[0] * sin + vector[1] * cos,
+    ]
 }
 
 #[cfg(test)]
@@ -484,6 +531,8 @@ mod tests {
             spawn_radius: [0.0, 4.0],
             directions: vec![[0.0, 1.0]],
             sign: 1.0,
+            orientation: 0.0,
+            velocity_range: None,
             color_min: SceneRenderColor {
                 red: 200,
                 green: 120,
@@ -504,6 +553,8 @@ mod tests {
             angular_velocity_range: [90.0, 120.0],
             turbulence: 8.0,
             size_change: Some([1.0, 0.5]),
+            fade_in_ms: 0.0,
+            fade_out_ms: 0.0,
             emission_rate: 120.0,
             max_count: 24,
             start_time_ms: 0.0,
@@ -553,6 +604,88 @@ mod tests {
         assert_eq!(primitives.len(), 1);
         assert_eq!(primitives[0].uv_rect, [0.25, 0.0, 0.5, 0.75]);
         assert!((primitives[0].width / primitives[0].height - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn sprite_scheduler_applies_velocityrandom_vector_components() {
+        let mut config = config();
+        config.emission_rate = 20.0;
+        config.max_count = 256;
+        config.velocity_range = Some([[-50.0, -40.0], [-50.0, -40.0]]);
+        config.spawn_radius = [0.0, 0.0];
+        config.lifetime_ms_range = [1000.0, 1000.0];
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 9,
+            object_name: "SpriteVelocity".to_string(),
+            schedule_mode: SceneParticleScheduleMode::Autonomous,
+            config,
+            children: vec![],
+        };
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance(&[item.clone()], 0.0);
+        scheduler.advance(&[item.clone()], 100.0);
+        let first = scheduler.primitives(&item, 400.0, 100.0);
+        scheduler.advance(&[item.clone()], 200.0);
+        let second = scheduler.primitives(&item, 400.0, 200.0);
+
+        assert!(!first.is_empty());
+        assert!(!second.is_empty());
+        assert!(second[0].left < first[0].left);
+        assert!(second[0].top > first[0].top);
+    }
+
+    #[test]
+    fn sprite_scheduler_uses_alphafade_only_at_lifetime_edges() {
+        let mut config = config();
+        config.instantaneous = true;
+        config.max_count = 1;
+        config.lifetime_ms_range = [1000.0, 1000.0];
+        config.fade_in_ms = 100.0;
+        config.fade_out_ms = 200.0;
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 10,
+            object_name: "SpriteFade".to_string(),
+            schedule_mode: SceneParticleScheduleMode::Autonomous,
+            config,
+            children: vec![],
+        };
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance(&[item.clone()], 0.0);
+
+        let fade_in = scheduler.primitives(&item, 400.0, 50.0);
+        let steady = scheduler.primitives(&item, 400.0, 500.0);
+        let fade_out = scheduler.primitives(&item, 400.0, 900.0);
+
+        assert!(fade_in[0].opacity < steady[0].opacity);
+        assert_eq!(steady[0].opacity, 1.0);
+        assert!(fade_out[0].opacity < steady[0].opacity);
+    }
+
+    #[test]
+    fn sprite_scheduler_does_not_reap_live_particles_to_make_room_for_new_emissions() {
+        let mut config = config();
+        config.emission_rate = 1000.0;
+        config.max_count = 2;
+        config.spawn_radius = [0.0, 0.0];
+        config.velocity_range = Some([[100.0, 0.0], [100.0, 0.0]]);
+        config.size_range = [2.0, 2.0];
+        config.lifetime_ms_range = [10_000.0, 10_000.0];
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 11,
+            object_name: "SpritePool".to_string(),
+            schedule_mode: SceneParticleScheduleMode::Autonomous,
+            config,
+            children: vec![],
+        };
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance(&[item.clone()], 0.0);
+        let initial = scheduler.primitives(&item, 400.0, 0.0);
+        scheduler.advance(&[item.clone()], 16.0);
+        let after_full = scheduler.primitives(&item, 400.0, 16.0);
+
+        assert_eq!(initial.len(), 2);
+        assert_eq!(after_full.len(), 2);
+        assert!(after_full[0].left > initial[0].left + 1.0);
     }
 
     #[test]
