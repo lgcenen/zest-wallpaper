@@ -213,6 +213,14 @@ pub struct SceneSpriteParticleFrame {
     pub aspect_ratio: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSpriteParticleOscillationConfig {
+    pub amplitude_range: [f64; 2],
+    pub frequency_range: [f64; 2],
+    pub phase_range: [f64; 2],
+    pub axis_scale: [f64; 2],
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneSpriteParticleConfig {
     pub texture_path: PathBuf,
@@ -234,6 +242,7 @@ pub struct SceneSpriteParticleConfig {
     pub angular_velocity_range: [f64; 2],
     pub turbulence: f64,
     pub size_change: Option<[f64; 2]>,
+    pub position_oscillation: Option<SceneSpriteParticleOscillationConfig>,
     pub fade_in_ms: f64,
     pub fade_out_ms: f64,
     pub emission_rate: f64,
@@ -1451,6 +1460,8 @@ fn plan_sprite_particle_config(
         &["startvalue", "start", "from", "min"],
         &["endvalue", "end", "to", "max"],
     );
+    let position_oscillation =
+        sprite_position_oscillation(&runtime.system.operators, scale_x, scale_y);
     let [fade_in_ms, fade_out_ms] = stage_range(
         &runtime.system.operators,
         &["alphafade"],
@@ -1504,6 +1515,7 @@ fn plan_sprite_particle_config(
         angular_velocity_range,
         turbulence,
         size_change,
+        position_oscillation,
         fade_in_ms,
         fade_out_ms,
         emission_rate: sprite_override_scalar(
@@ -2094,6 +2106,68 @@ fn sprite_turbulence(
         .unwrap_or(0.0)
 }
 
+fn sprite_position_oscillation(
+    operators: &[SceneParticleStageRuntime],
+    scale_x: f64,
+    scale_y: f64,
+) -> Option<SceneSpriteParticleOscillationConfig> {
+    let stage = find_stage(
+        operators,
+        &[
+            "oscillateposition",
+            "oscillate position",
+            "oscillate_position",
+        ],
+    )?;
+    let amplitude_range = stage_range(
+        std::slice::from_ref(stage),
+        &[
+            "oscillateposition",
+            "oscillate position",
+            "oscillate_position",
+        ],
+        &["scalemin", "minscale", "scale", "min"],
+        &["scalemax", "maxscale", "scale", "max"],
+        [0.0, 0.0],
+    );
+    let frequency_range = stage_range(
+        std::slice::from_ref(stage),
+        &[
+            "oscillateposition",
+            "oscillate position",
+            "oscillate_position",
+        ],
+        &["frequencymin", "minfrequency", "frequency", "min"],
+        &["frequencymax", "maxfrequency", "frequency", "max"],
+        [1.0, 1.0],
+    );
+    let phase_range = stage_range(
+        std::slice::from_ref(stage),
+        &[
+            "oscillateposition",
+            "oscillate position",
+            "oscillate_position",
+        ],
+        &["phasemin", "minphase", "phase", "min"],
+        &["phasemax", "maxphase", "phase", "max"],
+        [0.0, 0.0],
+    );
+    let mask = stage_vector2(stage, &["mask", "axis"]).unwrap_or([1.0, 1.0]);
+
+    Some(SceneSpriteParticleOscillationConfig {
+        amplitude_range: ordered_range(amplitude_range),
+        frequency_range: ordered_range(frequency_range),
+        phase_range: ordered_range(phase_range),
+        axis_scale: [mask[0] * scale_x, mask[1] * scale_y],
+    })
+}
+
+fn ordered_range(range: [f64; 2]) -> [f64; 2] {
+    let min = if range[0].is_finite() { range[0] } else { 0.0 };
+    let max = if range[1].is_finite() { range[1] } else { min };
+    [min.min(max), min.max(max)]
+}
+
 fn stage_color_range(
     stages: &[SceneParticleStageRuntime],
     default: SceneRenderColor,
@@ -2461,7 +2535,7 @@ mod tests {
         SceneClearColor, SceneRenderBlendMode, SceneRenderCamera, SceneRenderDrawItem,
         SceneRenderDrawKind, SceneRenderIssueCode, SceneRenderIssueSeverity, SceneRenderPlan,
         SceneRenderSoundItem, SceneRenderSourceKind, SceneSpriteParticleFrame,
-        SceneTextHorizontalAlign,
+        SceneSpriteParticleOscillationConfig, SceneTextHorizontalAlign,
     };
     use crate::services::scene_resource_service::{
         SceneResourceResolver, SceneTextFontReferenceKind,
@@ -3330,6 +3404,52 @@ mod tests {
         let config = &report.plan.sprite_particles[0].config;
         assert_eq!(config.fade_in_ms, 100.0);
         assert_eq!(config.fade_out_ms, 900.0);
+    }
+
+    #[test]
+    fn sprite_oscillateposition_enters_runtime_as_position_oscillation() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(
+                4,
+                particle_object(4, "Sprite", SceneParticleKind::PetalTrail),
+            )],
+            vec![4],
+        );
+        let mut runtime = supported_sprite_particle_runtime(4);
+        runtime.system.operators.push(SceneParticleStageRuntime {
+            name: "oscillateposition".to_string(),
+            fields: BTreeMap::from([
+                ("frequencymin".to_string(), serde_json::json!(0.8)),
+                ("frequencymax".to_string(), serde_json::json!(1.0)),
+                ("phasemin".to_string(), serde_json::json!(0.25)),
+                ("phasemax".to_string(), serde_json::json!(0.75)),
+                ("scalemin".to_string(), serde_json::json!(20)),
+                ("scalemax".to_string(), serde_json::json!(35)),
+                ("mask".to_string(), serde_json::json!("1 0.5 0")),
+            ]),
+        });
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        let config = &report.plan.sprite_particles[0].config;
+        assert_eq!(
+            config.position_oscillation,
+            Some(SceneSpriteParticleOscillationConfig {
+                amplitude_range: [20.0, 35.0],
+                frequency_range: [0.8, 1.0],
+                phase_range: [0.25, 0.75],
+                axis_scale: [1.0, 0.5],
+            })
+        );
     }
 
     #[test]

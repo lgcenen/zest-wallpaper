@@ -484,6 +484,18 @@ fn particle_stage_name_is_adapter_safe(name: &str) -> bool {
 
 fn sprite_stage_name_is_unsupported(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
+    let compact = lower
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>();
+    if compact == "oscillateposition"
+        || compact.ends_with("oscillateposition")
+        || compact == "positionoscillate"
+        || compact.ends_with("positionoscillate")
+    {
+        return false;
+    }
+
     let unsupported_tokens = [
         "collision",
         "collide",
@@ -875,6 +887,53 @@ mod tests {
             Some(12.0)
         );
         assert_eq!(runtime.system.children.len(), 3);
+    }
+
+    #[test]
+    fn sprite_runtime_accepts_position_oscillation_without_admitting_alpha_oscillation() {
+        let particle = json!({
+            "material": "materials/genericparticle.json",
+            "emitter": [{"name": "sphererandom", "rate": 20}],
+            "renderer": [{"name": "sprite"}],
+            "operator": [
+                {
+                    "name": "oscillateposition",
+                    "frequencymin": 0.8,
+                    "frequencymax": 1.0,
+                    "phasemin": 0.0,
+                    "phasemax": 1.0,
+                    "scalemin": 20,
+                    "scalemax": 35,
+                    "mask": "1 0.5 0"
+                }
+            ]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/oscillating-sprite.json".to_string(),
+            &particle,
+        );
+
+        assert!(runtime.adapter.supported);
+        assert!(runtime.diagnostics.is_empty());
+
+        let particle = json!({
+            "material": "materials/genericparticle.json",
+            "emitter": [{"name": "sphererandom", "rate": 20}],
+            "renderer": [{"name": "sprite"}],
+            "operator": [{"name": "oscillatealpha"}]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/alpha-oscillating-sprite.json".to_string(),
+            &particle,
+        );
+
+        assert!(!runtime.adapter.supported);
+        assert!(runtime
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"));
     }
 
     #[test]

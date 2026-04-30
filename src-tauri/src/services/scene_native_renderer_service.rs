@@ -4556,6 +4556,20 @@ fn hash_sprite_particle_config(
         size_change[0].to_bits().hash(hasher);
         size_change[1].to_bits().hash(hasher);
     }
+    if let Some(position_oscillation) = config.position_oscillation {
+        true.hash(hasher);
+        for value in position_oscillation
+            .amplitude_range
+            .iter()
+            .chain(position_oscillation.frequency_range.iter())
+            .chain(position_oscillation.phase_range.iter())
+            .chain(position_oscillation.axis_scale.iter())
+        {
+            value.to_bits().hash(hasher);
+        }
+    } else {
+        false.hash(hasher);
+    }
     config.fade_in_ms.to_bits().hash(hasher);
     config.fade_out_ms.to_bits().hash(hasher);
     config.emission_rate.to_bits().hash(hasher);

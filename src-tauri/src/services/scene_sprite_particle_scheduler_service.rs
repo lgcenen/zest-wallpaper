@@ -7,7 +7,7 @@ use crate::{
     models::SceneParticleChildKind,
     services::scene_render_planner_service::{
         SceneRenderBlendMode, SceneRenderColor, SceneRenderSpriteParticleItem,
-        SceneSpriteParticleConfig, SceneSpriteParticleFrame,
+        SceneSpriteParticleConfig, SceneSpriteParticleFrame, SceneSpriteParticleOscillationConfig,
     },
 };
 
@@ -65,11 +65,20 @@ struct SceneSpriteParticle {
     turbulence: f64,
     size: f64,
     size_change: Option<[f64; 2]>,
+    position_oscillation: Option<SceneSpriteParticleOscillation>,
     fade_in_ms: f64,
     fade_out_ms: f64,
     born_at_ms: f64,
     life_ms: f64,
     color: SceneRenderColor,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneSpriteParticleOscillation {
+    amplitude: f64,
+    frequency_hz: f64,
+    phase_radians: f64,
+    axis_scale: [f64; 2],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,12 +138,8 @@ impl SceneSpriteParticleScheduler {
             }
             state.children.truncate(item.children.len());
 
-            let mut root_deaths = advance_emitter_particles(
-                &mut self.random,
-                &mut state.root,
-                delta_ms,
-                now_ms,
-            );
+            let mut root_deaths =
+                advance_emitter_particles(&mut self.random, &mut state.root, delta_ms, now_ms);
             emit_for_config(
                 &mut self.random,
                 &mut state.root,
@@ -147,12 +152,7 @@ impl SceneSpriteParticleScheduler {
 
             for (child_index, child) in item.children.iter().enumerate() {
                 let child_state = &mut state.children[child_index];
-                advance_emitter_particles(
-                    &mut self.random,
-                    child_state,
-                    delta_ms,
-                    now_ms,
-                );
+                advance_emitter_particles(&mut self.random, child_state, delta_ms, now_ms);
 
                 match child.child_type {
                     SceneParticleChildKind::Static => {
@@ -354,6 +354,7 @@ fn spawn_particle(
             .range(config.size_range[0], config.size_range[1])
             .max(0.5),
         size_change: config.size_change,
+        position_oscillation: spawn_position_oscillation(random, config.position_oscillation),
         fade_in_ms: config.fade_in_ms.max(0.0),
         fade_out_ms: config.fade_out_ms.max(0.0),
         born_at_ms: now_ms,
@@ -362,6 +363,23 @@ fn spawn_particle(
             .max(16.0),
         color,
     }
+}
+
+fn spawn_position_oscillation(
+    random: &mut SceneSpriteRandom,
+    config: Option<SceneSpriteParticleOscillationConfig>,
+) -> Option<SceneSpriteParticleOscillation> {
+    config.map(|config| SceneSpriteParticleOscillation {
+        amplitude: random
+            .range(config.amplitude_range[0], config.amplitude_range[1])
+            .abs(),
+        frequency_hz: random
+            .range(config.frequency_range[0], config.frequency_range[1])
+            .max(0.0),
+        phase_radians: random.range(config.phase_range[0], config.phase_range[1])
+            * std::f64::consts::TAU,
+        axis_scale: config.axis_scale,
+    })
 }
 
 fn choose_velocity(
@@ -442,11 +460,12 @@ fn primitive_from_particle(
         .max(0.0);
     let height = (particle.size * size_factor).max(0.5);
     let width = (height * particle.aspect_ratio).max(0.5);
-    let top = canvas_height - particle.y - height / 2.0;
+    let render_position = oscillated_position(particle, age_ms / 1000.0);
+    let top = canvas_height - render_position[1] - height / 2.0;
     Some(SceneSpriteParticlePrimitive {
         texture_path: particle.texture_path.clone(),
         blend_mode: particle.blend_mode,
-        left: particle.x - width / 2.0,
+        left: render_position[0] - width / 2.0,
         top,
         width,
         height,
@@ -457,9 +476,23 @@ fn primitive_from_particle(
             alpha: ((particle.color.alpha as f64) * opacity).round() as u8,
             ..particle.color
         },
-        transform_origin_x: particle.x,
+        transform_origin_x: render_position[0],
         transform_origin_y: top + height / 2.0,
     })
+}
+
+fn oscillated_position(particle: &SceneSpriteParticle, age_seconds: f64) -> [f64; 2] {
+    let Some(oscillation) = particle.position_oscillation else {
+        return [particle.x, particle.y];
+    };
+    let wave = (oscillation.phase_radians
+        + age_seconds.max(0.0) * oscillation.frequency_hz * std::f64::consts::TAU)
+        .sin()
+        * oscillation.amplitude;
+    [
+        particle.x + wave * oscillation.axis_scale[0],
+        particle.y + wave * oscillation.axis_scale[1],
+    ]
 }
 
 fn particle_alpha(particle: &SceneSpriteParticle, age_ms: f64) -> f64 {
@@ -516,6 +549,7 @@ mod tests {
     use crate::services::scene_render_planner_service::{
         SceneRenderBlendMode, SceneRenderColor, SceneRenderSpriteParticleItem,
         SceneSpriteParticleChildItem, SceneSpriteParticleFrame,
+        SceneSpriteParticleOscillationConfig,
     };
     use std::path::PathBuf;
 
@@ -553,6 +587,7 @@ mod tests {
             angular_velocity_range: [90.0, 120.0],
             turbulence: 8.0,
             size_change: Some([1.0, 0.5]),
+            position_oscillation: None,
             fade_in_ms: 0.0,
             fade_out_ms: 0.0,
             emission_rate: 120.0,
@@ -632,6 +667,41 @@ mod tests {
         assert!(!second.is_empty());
         assert!(second[0].left < first[0].left);
         assert!(second[0].top > first[0].top);
+    }
+
+    #[test]
+    fn sprite_scheduler_applies_position_oscillation_to_rendered_position() {
+        let mut config = config();
+        config.instantaneous = true;
+        config.max_count = 1;
+        config.spawn_radius = [0.0, 0.0];
+        config.velocity_range = Some([[0.0, 0.0], [0.0, 0.0]]);
+        config.size_range = [10.0, 10.0];
+        config.size_change = None;
+        config.lifetime_ms_range = [1000.0, 1000.0];
+        config.position_oscillation = Some(SceneSpriteParticleOscillationConfig {
+            amplitude_range: [20.0, 20.0],
+            frequency_range: [1.0, 1.0],
+            phase_range: [0.0, 0.0],
+            axis_scale: [1.0, 0.0],
+        });
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 12,
+            object_name: "SpriteOscillate".to_string(),
+            schedule_mode: SceneParticleScheduleMode::Autonomous,
+            config,
+            children: vec![],
+        };
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance(&[item.clone()], 0.0);
+
+        let start = scheduler.primitives(&item, 400.0, 0.0);
+        let quarter = scheduler.primitives(&item, 400.0, 250.0);
+
+        assert_eq!(start.len(), 1);
+        assert_eq!(quarter.len(), 1);
+        assert!(quarter[0].left > start[0].left + 15.0);
+        assert_eq!(quarter[0].top, start[0].top);
     }
 
     #[test]
