@@ -1216,7 +1216,7 @@ fn parse_particle_instance_override(
         alpha_binding,
         lifetime,
         lifetime_binding,
-        count: count.map(|value| value.max(0.0).round() as u32),
+        count: count.map(|value| value.max(0.0)),
         count_binding,
         color,
         color_binding,
@@ -2413,7 +2413,7 @@ mod tests {
             runtime.system.control_points[0].offset,
             Some([1.0, 2.0, 0.0])
         );
-        assert_eq!(runtime.instance_override.count, Some(24));
+        assert_eq!(runtime.instance_override.count, Some(24.0));
 
         let _ = fs::remove_dir_all(root);
     }

@@ -1677,6 +1677,7 @@ struct SceneQuadPrimitive {
     opacity: f64,
     flip_x: bool,
     flip_y: bool,
+    uv_rect: [f32; 4],
     color: SceneRenderColor,
     transform_origin_x: f64,
     transform_origin_y: f64,
@@ -3671,6 +3672,7 @@ impl NativeSceneMetalRenderer {
                 opacity: item.quad.opacity * clamp_f64(0.35 + scale_y * 0.65, 0.35, 1.0),
                 flip_x: item.quad.flip_x,
                 flip_y: item.quad.flip_y,
+                uv_rect: full_quad_uv_rect(),
                 color: item.color,
                 transform_origin_x: origin_x,
                 transform_origin_y: origin_y,
@@ -4531,6 +4533,13 @@ fn hash_sprite_particle_config(
     config.sign.to_bits().hash(hasher);
     config.color_min.hash(hasher);
     config.color_max.hash(hasher);
+    config.texture_frames.len().hash(hasher);
+    for frame in &config.texture_frames {
+        for value in frame.uv_rect {
+            value.to_bits().hash(hasher);
+        }
+        frame.aspect_ratio.to_bits().hash(hasher);
+    }
     config.turbulence.to_bits().hash(hasher);
     if let Some(size_change) = config.size_change {
         size_change[0].to_bits().hash(hasher);
@@ -5533,6 +5542,7 @@ fn quad_primitive_from_render_quad(
         opacity: quad.opacity,
         flip_x: quad.flip_x,
         flip_y: quad.flip_y,
+        uv_rect: full_quad_uv_rect(),
         color,
         transform_origin_x: quad.left + quad.width / 2.0,
         transform_origin_y: quad.top + quad.height / 2.0,
@@ -5550,6 +5560,7 @@ fn quad_primitive_from_particle(primitive: SceneParticlePrimitive) -> SceneQuadP
         opacity: primitive.opacity,
         flip_x: false,
         flip_y: false,
+        uv_rect: full_quad_uv_rect(),
         color: primitive.color,
         transform_origin_x: primitive.transform_origin_x,
         transform_origin_y: primitive.transform_origin_y,
@@ -5569,6 +5580,7 @@ fn quad_primitive_from_sprite_particle(
         opacity: primitive.opacity,
         flip_x: false,
         flip_y: false,
+        uv_rect: primitive.uv_rect,
         color: primitive.color,
         transform_origin_x: primitive.transform_origin_x,
         transform_origin_y: primitive.transform_origin_y,
@@ -5619,6 +5631,7 @@ fn build_projected_quad_vertices(
     let (sin, cos) = quad.rotation.sin_cos();
     let color = color_to_shader(quad.color);
     let opacity = quad.opacity as f32;
+    let [u0, v0, u1, v1] = quad.uv_rect;
 
     let corner = |x: f64, y: f64| -> [f32; 2] {
         let local_center_x = x * flip_x;
@@ -5645,41 +5658,46 @@ fn build_projected_quad_vertices(
     [
         SceneVertex {
             position: top_left,
-            uv: [0.0, 0.0],
+            uv: [u0, v0],
             color,
             opacity,
         },
         SceneVertex {
             position: bottom_left,
-            uv: [0.0, 1.0],
+            uv: [u0, v1],
             color,
             opacity,
         },
         SceneVertex {
             position: top_right,
-            uv: [1.0, 0.0],
+            uv: [u1, v0],
             color,
             opacity,
         },
         SceneVertex {
             position: top_right,
-            uv: [1.0, 0.0],
+            uv: [u1, v0],
             color,
             opacity,
         },
         SceneVertex {
             position: bottom_left,
-            uv: [0.0, 1.0],
+            uv: [u0, v1],
             color,
             opacity,
         },
         SceneVertex {
             position: bottom_right,
-            uv: [1.0, 1.0],
+            uv: [u1, v1],
             color,
             opacity,
         },
     ]
+}
+
+#[cfg(target_os = "macos")]
+fn full_quad_uv_rect() -> [f32; 4] {
+    [0.0, 0.0, 1.0, 1.0]
 }
 
 #[cfg(target_os = "macos")]

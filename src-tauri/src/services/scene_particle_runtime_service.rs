@@ -127,6 +127,7 @@ fn parse_emitter(value: &Value) -> SceneParticleEmitterRuntime {
         distance_min: f64_field(value, "distancemin").or_else(|| f64_field(value, "distanceMin")),
         distance_max: f64_field(value, "distancemax").or_else(|| f64_field(value, "distanceMax")),
         directions: vector3_list_field(value, "directions")
+            .or_else(|| vector3_field(value, "directions").map(|direction| vec![direction]))
             .or_else(|| vector3_field(value, "direction").map(|direction| vec![direction]))
             .unwrap_or_default(),
         sign: f64_field(value, "sign"),
@@ -177,9 +178,10 @@ fn parse_control_point(value: &Value) -> SceneParticleControlPointRuntime {
 }
 
 fn parse_child(value: &Value) -> SceneParticleChildRuntime {
+    let name = string_field(value, "name");
     SceneParticleChildRuntime {
-        name: string_field(value, "name"),
-        child_type: particle_child_kind(string_field(value, "type").as_deref()),
+        child_type: particle_child_kind(string_field(value, "type").as_deref(), name.as_deref()),
+        name,
         origin: vector3_field(value, "origin"),
         scale: vector3_field(value, "scale"),
         angles: vector3_field(value, "angles"),
@@ -436,7 +438,7 @@ fn particle_renderer_family(name: Option<&str>) -> SceneParticleRendererFamily {
     }
 }
 
-fn particle_child_kind(value: Option<&str>) -> SceneParticleChildKind {
+fn particle_child_kind(value: Option<&str>, child_name: Option<&str>) -> SceneParticleChildKind {
     match value
         .map(|value| value.trim().to_ascii_lowercase())
         .as_deref()
@@ -445,6 +447,7 @@ fn particle_child_kind(value: Option<&str>) -> SceneParticleChildKind {
         Some("eventfollow") => SceneParticleChildKind::EventFollow,
         Some("eventdeath") => SceneParticleChildKind::EventDeath,
         Some("eventspawn") => SceneParticleChildKind::EventSpawn,
+        None if child_name.is_some() => SceneParticleChildKind::Static,
         _ => SceneParticleChildKind::Unsupported,
     }
 }
@@ -872,6 +875,32 @@ mod tests {
             Some(12.0)
         );
         assert_eq!(runtime.system.children.len(), 3);
+    }
+
+    #[test]
+    fn sprite_child_without_authored_type_defaults_to_static_child_system() {
+        let particle = json!({
+            "material": "materials/genericparticle.json",
+            "emitter": [{
+                "name": "sphererandom",
+                "rate": 5,
+                "directions": "1 0.1 1"
+            }],
+            "renderer": [{"name": "sprite"}],
+            "children": [{"name": "particles/secondary.json"}]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/sprite.json".to_string(),
+            &particle,
+        );
+
+        assert!(runtime.adapter.supported);
+        assert_eq!(
+            runtime.system.children[0].child_type,
+            SceneParticleChildKind::Static
+        );
+        assert_eq!(runtime.system.emitters[0].directions, vec![[1.0, 0.1, 1.0]]);
     }
 
     #[test]

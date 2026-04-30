@@ -7,7 +7,8 @@ use crate::models::{
     EvaluatedAudioState, EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
     EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
     SceneAxisBindings, SceneBinding, SceneCamera, SceneManifest, SceneNowPlayingSnapshot,
-    SceneRenderNodeKind, SceneTextBehavior, SceneTextLayer, SceneVisualLayer, WallpaperProperty,
+    SceneParticleKind, SceneRenderNodeKind, SceneTextBehavior, SceneTextLayer, SceneVisualLayer,
+    WallpaperProperty,
 };
 
 use super::{scene_text_behavior_service, scene_text_script_runtime_service};
@@ -385,6 +386,78 @@ fn evaluate_scene_with_runtime_key(
         );
     }
 
+    let legacy_particle_layer_ids = source
+        .particle_layers
+        .iter()
+        .map(|layer| layer.id)
+        .collect::<BTreeSet<_>>();
+    for runtime in &source.particle_runtimes {
+        if legacy_particle_layer_ids.contains(&runtime.object_id) {
+            continue;
+        }
+
+        let node = source
+            .nodes
+            .iter()
+            .find(|node| node.id == runtime.object_id);
+        let parent_id = node.and_then(|node| node.parent_id);
+        let visible = source_object_visible(
+            source,
+            Some(runtime.object_id),
+            properties,
+            persisted_properties,
+            property_definitions,
+        );
+        let transform = resolve_transform(
+            source,
+            parent_id,
+            [0.0, 0.0, 0.0],
+            None,
+            [1.0, 1.0, 1.0],
+            None,
+            0.0,
+            None,
+            None,
+            layer_visibility_alignment(source, parent_id),
+            canvas_width,
+            canvas_height,
+            properties,
+        );
+        objects.insert(
+            runtime.object_id,
+            EvaluatedSceneObject::Particle {
+                base: EvaluatedSceneObjectBase {
+                    id: runtime.object_id,
+                    name: node
+                        .map(|node| node.name.clone())
+                        .unwrap_or_else(|| runtime.object_name.clone()),
+                    parent_id,
+                    dependencies: node
+                        .map(|node| node.dependencies.clone())
+                        .unwrap_or_default(),
+                    visible,
+                    alignment: None,
+                    opacity: 1.0,
+                    transform,
+                },
+                particle_path: runtime.particle_path.clone(),
+                particle_kind: runtime
+                    .adapter
+                    .draw_kind
+                    .clone()
+                    .unwrap_or(SceneParticleKind::PetalTrail),
+                color: runtime.instance_override.color.clone(),
+                size: runtime.instance_override.size.unwrap_or(1.0).max(0.1),
+                emission_rate: runtime
+                    .system
+                    .emitters
+                    .first()
+                    .and_then(|emitter| emitter.rate)
+                    .unwrap_or(0.0),
+            },
+        );
+    }
+
     for track in &source.sound_tracks {
         let volume = resolve_bound_number(track.volume_binding.as_deref(), properties)
             .unwrap_or(track.volume);
@@ -431,6 +504,12 @@ fn evaluate_scene_with_runtime_key(
         .chain(source.text_layers.iter().map(|layer| layer.id))
         .chain(source.audio_layers.iter().map(|layer| layer.id))
         .chain(source.particle_layers.iter().map(|layer| layer.id))
+        .chain(
+            source
+                .particle_runtimes
+                .iter()
+                .map(|runtime| runtime.object_id),
+        )
     {
         if !render_list.contains(&id) {
             if let Some(object) = objects.get(&id) {
@@ -1558,6 +1637,8 @@ mod tests {
     use crate::models::{
         PropertyKind, PropertyPresentation, SceneAudioLayer, SceneBinding, SceneManifest,
         SceneNodeState, SceneNowPlayingAvailability, SceneNowPlayingSnapshot, SceneNowPlayingState,
+        SceneParticleRendererFamily, SceneParticleRendererRuntime, SceneParticleRuntime,
+        SceneParticleRuntimeAdapter, SceneParticleScheduleMode, SceneParticleSystemRuntime,
         SceneRenderNode, SceneRenderNodeKind, SceneRuntimeDocument, SceneTextLayer,
         WallpaperOption, WallpaperProperty,
     };
@@ -2170,6 +2251,67 @@ mod tests {
             evaluated.objects.get(&42),
             Some(EvaluatedSceneObject::Visual { .. })
         ));
+    }
+
+    #[test]
+    fn render_list_includes_first_class_particle_runtime_without_legacy_layer() {
+        let source = SceneManifest {
+            nodes: vec![SceneNodeState {
+                id: 49,
+                name: "Sprite Runtime".to_string(),
+                dependencies: vec![],
+                parent_id: None,
+                visible: true,
+                visibility_binding: Some(SceneBinding {
+                    property_key: "mode".to_string(),
+                    condition: Some("1".to_string()),
+                }),
+                position: [1311.0, 2.0, 0.0],
+                position_bindings: None,
+                scale: [1.0, 1.0, 1.0],
+                angles: None,
+                rotation: None,
+            }],
+            particle_runtimes: vec![SceneParticleRuntime {
+                object_id: 49,
+                object_name: "Sprite Runtime".to_string(),
+                particle_path: "particles/sprite.json".to_string(),
+                object_origin: [1311.0, 2.0, 0.0],
+                system: SceneParticleSystemRuntime {
+                    renderers: vec![SceneParticleRendererRuntime {
+                        family: SceneParticleRendererFamily::Sprite,
+                        name: Some("sprite".to_string()),
+                        ..SceneParticleRendererRuntime::default()
+                    }],
+                    ..SceneParticleSystemRuntime::default()
+                },
+                adapter: SceneParticleRuntimeAdapter {
+                    supported: true,
+                    draw_kind: None,
+                    schedule_mode: SceneParticleScheduleMode::Autonomous,
+                    reason: None,
+                },
+                ..SceneParticleRuntime::default()
+            }],
+            ..SceneManifest::default()
+        };
+        let properties = BTreeMap::from([("mode".to_string(), Value::String("1".to_string()))]);
+
+        let evaluated = evaluate_scene(
+            &source,
+            &properties,
+            &properties,
+            &property_definitions(),
+            None,
+            Utc::now(),
+        );
+
+        assert_eq!(evaluated.render_list, vec![49]);
+        let Some(EvaluatedSceneObject::Particle { base, .. }) = evaluated.objects.get(&49) else {
+            panic!("first-class particle runtime should evaluate as a renderable particle object");
+        };
+        assert!(base.visible);
+        assert_eq!(base.transform.position, [0.0, 0.0, 0.0]);
     }
 
     #[test]

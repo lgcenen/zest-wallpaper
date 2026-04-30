@@ -208,8 +208,15 @@ pub struct SceneRenderParticleItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SceneSpriteParticleFrame {
+    pub uv_rect: [f32; 4],
+    pub aspect_ratio: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SceneSpriteParticleConfig {
     pub texture_path: PathBuf,
+    pub texture_frames: Vec<SceneSpriteParticleFrame>,
     pub blend_mode: SceneRenderBlendMode,
     pub spawn_origin: [f64; 2],
     pub spawn_radius: [f64; 2],
@@ -1121,8 +1128,8 @@ fn plan_particle_item(
         max_count: runtime
             .instance_override
             .count
-            .or(runtime.system.max_count)
-            .map(|value| value as usize)
+            .map(|value| value.round() as usize)
+            .or_else(|| runtime.system.max_count.map(|value| value as usize))
             .unwrap_or_else(|| default_particle_max_count(&draw_kind))
             .clamp(1, 4096),
         lifetime_ms: runtime
@@ -1304,42 +1311,35 @@ fn plan_sprite_particle_config(
         authored_size[0].max(0.5) * scale_x.min(scale_y) * size_scale,
         authored_size[1].max(authored_size[0]).max(0.5) * scale_x.min(scale_y) * size_scale,
     ];
+    let authored_lifetime = stage_range(
+        &runtime.system.initializers,
+        &["lifetimerandom", "lifetime", "life"],
+        &["lifemin", "lifetimemin", "minlife", "min"],
+        &["lifemax", "lifetimemax", "maxlife", "max"],
+        [1_200.0, 2_400.0],
+    );
+    let authored_lifetime_ms = [
+        normalize_particle_lifetime_ms(authored_lifetime[0]),
+        normalize_particle_lifetime_ms(authored_lifetime[1].max(authored_lifetime[0])),
+    ];
     let lifetime_range = runtime
         .instance_override
         .lifetime
-        .map(normalize_particle_lifetime_ms)
-        .map(|value| [value, value])
-        .unwrap_or_else(|| {
-            let authored = stage_range(
-                &runtime.system.initializers,
-                &["lifetimerandom", "lifetime", "life"],
-                &["lifemin", "lifetimemin", "minlife", "min"],
-                &["lifemax", "lifetimemax", "maxlife", "max"],
-                [1_200.0, 2_400.0],
-            );
-            [
-                normalize_particle_lifetime_ms(authored[0]),
-                normalize_particle_lifetime_ms(authored[1].max(authored[0])),
-            ]
-        });
-    let base_speed = runtime
-        .instance_override
-        .speed
-        .map(|speed| [speed.max(0.0), speed.max(0.0)])
-        .or_else(|| {
-            emitter.map(|emitter| {
-                let min = emitter.speed_min.unwrap_or(0.0).max(0.0);
-                let max = emitter.speed_max.unwrap_or(min).max(min);
-                [min, max]
-            })
+        .map(|value| sprite_override_range(authored_lifetime_ms, value, true))
+        .unwrap_or(authored_lifetime_ms);
+    let emitter_speed = emitter
+        .map(|emitter| {
+            let min = emitter.speed_min.unwrap_or(0.0).max(0.0);
+            let max = emitter.speed_max.unwrap_or(min).max(min);
+            [min, max]
         })
         .unwrap_or([0.0, 18.0]);
-    let speed_random = stage_range(
+    let speed_random = stage_range_with_vector_magnitude(
         &runtime.system.initializers,
         &["velocityrandom", "speed"],
         &["speedmin", "minspeed", "min"],
         &["speedmax", "maxspeed", "max"],
-        base_speed,
+        emitter_speed,
     );
     let color_range = stage_color_range(
         &runtime.system.initializers,
@@ -1383,16 +1383,15 @@ fn plan_sprite_particle_config(
         &["speedmax", "maxspeed", "max"],
         speed_random,
     );
+    let authored_speed_range = [
+        movement_speed[0].max(0.0),
+        movement_speed[1].max(movement_speed[0]).max(0.0),
+    ];
     let speed_range = runtime
         .instance_override
         .speed
-        .map(|speed| [speed.max(0.0), speed.max(0.0)])
-        .unwrap_or_else(|| {
-            [
-                movement_speed[0].max(0.0),
-                movement_speed[1].max(movement_speed[0]).max(0.0),
-            ]
-        });
+        .map(|value| sprite_override_range(authored_speed_range, value, false))
+        .unwrap_or(authored_speed_range);
     let turbulence = stage_scalar(
         &runtime.system.operators,
         &["turbulentvelocityrandom", "turbulence"],
@@ -1410,6 +1409,7 @@ fn plan_sprite_particle_config(
 
     Some(SceneSpriteParticleConfig {
         texture_path: material.texture_path,
+        texture_frames: material.texture_frames,
         blend_mode: material.blend_mode,
         spawn_origin: origin,
         spawn_radius: emitter
@@ -1449,19 +1449,16 @@ fn plan_sprite_particle_config(
         angular_velocity_range,
         turbulence,
         size_change,
-        emission_rate: runtime
-            .instance_override
-            .rate
-            .or_else(|| emitter.and_then(|emitter| emitter.rate))
-            .unwrap_or(0.0)
-            .max(0.0),
-        max_count: runtime
-            .instance_override
-            .count
-            .or(runtime.system.max_count)
-            .map(|value| value as usize)
-            .unwrap_or(128)
-            .clamp(1, 8192),
+        emission_rate: sprite_override_scalar(
+            emitter.and_then(|emitter| emitter.rate).unwrap_or(0.0),
+            runtime.instance_override.rate,
+        )
+        .max(0.0),
+        max_count: sprite_override_count(
+            runtime.system.max_count.unwrap_or(128) as f64,
+            runtime.instance_override.count,
+        )
+        .clamp(1, 8192),
         start_time_ms: runtime
             .system
             .start_time
@@ -1476,6 +1473,7 @@ fn plan_sprite_particle_config(
 
 struct SpriteParticleMaterial {
     texture_path: PathBuf,
+    texture_frames: Vec<SceneSpriteParticleFrame>,
     blend_mode: SceneRenderBlendMode,
 }
 
@@ -1628,6 +1626,7 @@ fn resolve_sprite_particle_material(
     };
 
     Some(SpriteParticleMaterial {
+        texture_frames: sprite_particle_texture_frames(&texture_path),
         texture_path,
         blend_mode: parse_particle_material_blend_mode(
             pass.get("blending")
@@ -1635,6 +1634,111 @@ fn resolve_sprite_particle_material(
                 .and_then(Value::as_str),
         ),
     })
+}
+
+fn sprite_particle_texture_frames(texture_path: &Path) -> Vec<SceneSpriteParticleFrame> {
+    let Some((texture_width, texture_height)) = sprite_particle_texture_dimensions(texture_path)
+    else {
+        return vec![full_sprite_particle_frame()];
+    };
+    let metadata_path = sprite_particle_texture_metadata_path(texture_path);
+    let Ok(metadata) = read_json_value(&metadata_path) else {
+        return vec![full_sprite_particle_frame()];
+    };
+    let Some(sequences) = metadata
+        .get("spritesheetsequences")
+        .and_then(Value::as_array)
+    else {
+        return vec![full_sprite_particle_frame()];
+    };
+
+    let mut frames = Vec::new();
+    for sequence in sequences {
+        let frame_count = sequence
+            .get("frames")
+            .and_then(value_as_f64)
+            .map(|value| value.round().max(0.0) as usize)
+            .unwrap_or(0)
+            .min(4096);
+        let frame_width = sequence.get("width").and_then(value_as_f64).unwrap_or(0.0);
+        let frame_height = sequence.get("height").and_then(value_as_f64).unwrap_or(0.0);
+        if frame_count == 0 || frame_width <= 0.0 || frame_height <= 0.0 {
+            continue;
+        }
+
+        let columns = (texture_width / frame_width).round().max(1.0) as usize;
+        for index in 0..frame_count {
+            let column = index % columns;
+            let row = index / columns;
+            let left = column as f64 * frame_width;
+            let top = row as f64 * frame_height;
+            if left >= texture_width || top >= texture_height {
+                continue;
+            }
+            let right = (left + frame_width).min(texture_width);
+            let bottom = (top + frame_height).min(texture_height);
+            if right <= left || bottom <= top {
+                continue;
+            }
+            frames.push(SceneSpriteParticleFrame {
+                uv_rect: [
+                    (left / texture_width) as f32,
+                    (top / texture_height) as f32,
+                    (right / texture_width) as f32,
+                    (bottom / texture_height) as f32,
+                ],
+                aspect_ratio: ((right - left) / (bottom - top)).clamp(0.001, 1000.0),
+            });
+        }
+    }
+
+    if frames.is_empty() {
+        vec![full_sprite_particle_frame()]
+    } else {
+        frames
+    }
+}
+
+fn sprite_particle_texture_metadata_path(texture_path: &Path) -> PathBuf {
+    let file_name = texture_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".tex-json") || lower.ends_with(".tex.json") {
+        return texture_path.to_path_buf();
+    }
+    if lower.ends_with(".tex") {
+        return texture_path.with_extension("tex-json");
+    }
+    texture_path.with_extension("tex-json")
+}
+
+fn sprite_particle_texture_dimensions(texture_path: &Path) -> Option<(f64, f64)> {
+    let extension = texture_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    if extension.as_deref() == Some("tex") {
+        return crate::tex::inspect_tex_resolution(texture_path)
+            .ok()
+            .map(|resolution| {
+                (
+                    resolution.content_width.max(1) as f64,
+                    resolution.content_height.max(1) as f64,
+                )
+            });
+    }
+    image::image_dimensions(texture_path)
+        .ok()
+        .map(|(width, height)| (width.max(1) as f64, height.max(1) as f64))
+}
+
+fn full_sprite_particle_frame() -> SceneSpriteParticleFrame {
+    SceneSpriteParticleFrame {
+        uv_rect: [0.0, 0.0, 1.0, 1.0],
+        aspect_ratio: 1.0,
+    }
 }
 
 fn load_particle_runtime_from_resource(
@@ -1764,6 +1868,21 @@ fn stage_range(
     [min, max]
 }
 
+fn stage_range_with_vector_magnitude(
+    stages: &[SceneParticleStageRuntime],
+    name_tokens: &[&str],
+    min_keys: &[&str],
+    max_keys: &[&str],
+    default: [f64; 2],
+) -> [f64; 2] {
+    let Some(stage) = find_stage(stages, name_tokens) else {
+        return default;
+    };
+    let min = stage_number_or_vector_magnitude(stage, min_keys).unwrap_or(default[0]);
+    let max = stage_number_or_vector_magnitude(stage, max_keys).unwrap_or(default[1]);
+    [min.min(max), min.max(max)]
+}
+
 fn stage_optional_range(
     stages: &[SceneParticleStageRuntime],
     name_tokens: &[&str],
@@ -1774,6 +1893,43 @@ fn stage_optional_range(
     let min = stage_f64(stage, min_keys)?;
     let max = stage_f64(stage, max_keys).unwrap_or(min);
     Some([min, max])
+}
+
+fn sprite_override_scalar(authored: f64, override_value: Option<f64>) -> f64 {
+    let authored = authored.max(0.0);
+    match override_value {
+        Some(value) if value.is_finite() && value <= 1.0 && authored > 0.0 => {
+            authored * value.max(0.0)
+        }
+        Some(value) if value.is_finite() => value.max(0.0),
+        _ => authored,
+    }
+}
+
+fn sprite_override_range(
+    authored: [f64; 2],
+    override_value: f64,
+    normalize_absolute: bool,
+) -> [f64; 2] {
+    let authored = [authored[0].max(0.0), authored[1].max(authored[0]).max(0.0)];
+    if override_value.is_finite() && override_value <= 1.0 {
+        return [
+            authored[0] * override_value.max(0.0),
+            authored[1] * override_value.max(0.0),
+        ];
+    }
+    let absolute = if normalize_absolute {
+        normalize_particle_lifetime_ms(override_value)
+    } else {
+        override_value.max(0.0)
+    };
+    [absolute, absolute]
+}
+
+fn sprite_override_count(authored: f64, override_value: Option<f64>) -> usize {
+    sprite_override_scalar(authored, override_value)
+        .round()
+        .max(1.0) as usize
 }
 
 fn stage_scalar(
@@ -1820,6 +1976,20 @@ fn stage_f64(stage: &SceneParticleStageRuntime, keys: &[&str]) -> Option<f64> {
         .find_map(|key| lookup_stage_value(stage, key).and_then(value_as_f64))
 }
 
+fn stage_number_or_vector_magnitude(
+    stage: &SceneParticleStageRuntime,
+    keys: &[&str],
+) -> Option<f64> {
+    keys.iter().find_map(|key| {
+        let value = lookup_stage_value(stage, key)?;
+        value_as_f64(value).or_else(|| {
+            value_as_vector::<3>(value).map(|vector| {
+                (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
+            })
+        })
+    })
+}
+
 fn stage_string(stage: &SceneParticleStageRuntime, keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|key| lookup_stage_value(stage, key).and_then(value_as_string))
@@ -1852,6 +2022,35 @@ fn value_as_string(value: &Value) -> Option<String> {
         );
     }
     value_as_f64(value).map(|value| value.to_string())
+}
+
+fn value_as_vector<const N: usize>(value: &Value) -> Option<[f64; N]> {
+    if let Some(values) = value.as_array() {
+        let mut vector = [0.0; N];
+        for (index, slot) in vector.iter_mut().enumerate() {
+            *slot = values.get(index).and_then(value_as_f64).unwrap_or(0.0);
+        }
+        return Some(vector);
+    }
+
+    let text = value.as_str()?;
+    let values = text
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .filter_map(|part| {
+            let part = part.trim();
+            (!part.is_empty())
+                .then(|| part.parse::<f64>().ok())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    if values.len() < N.saturating_sub(1).max(1) {
+        return None;
+    }
+    let mut vector = [0.0; N];
+    for (index, slot) in vector.iter_mut().enumerate() {
+        *slot = values.get(index).copied().unwrap_or(0.0);
+    }
+    Some(vector)
 }
 
 fn normalize_color_alpha(color: SceneRenderColor, alpha: f64) -> u8 {
@@ -2078,7 +2277,8 @@ mod tests {
         build_scene_render_plan, build_scene_render_plan_with_resolver, parse_scene_clear_color,
         SceneClearColor, SceneRenderBlendMode, SceneRenderCamera, SceneRenderDrawItem,
         SceneRenderDrawKind, SceneRenderIssueCode, SceneRenderIssueSeverity, SceneRenderPlan,
-        SceneRenderSoundItem, SceneRenderSourceKind, SceneTextHorizontalAlign,
+        SceneRenderSoundItem, SceneRenderSourceKind, SceneSpriteParticleFrame,
+        SceneTextHorizontalAlign,
     };
     use crate::services::scene_resource_service::{
         SceneResourceResolver, SceneTextFontReferenceKind,
@@ -2328,7 +2528,7 @@ mod tests {
             instance_override: SceneParticleInstanceOverride {
                 size: Some(4.0),
                 lifetime: Some(1.2),
-                count: Some(32),
+                count: Some(32.0),
                 color: Some("0.2 0.4 1".to_string()),
                 ..SceneParticleInstanceOverride::default()
             },
@@ -2436,7 +2636,7 @@ mod tests {
                 speed: Some(11.0),
                 alpha: Some(0.6),
                 lifetime: Some(2.0),
-                count: Some(32),
+                count: Some(32.0),
                 color: Some("1 0.5 0.25".to_string()),
                 ..SceneParticleInstanceOverride::default()
             },
@@ -2763,11 +2963,90 @@ mod tests {
         assert_eq!(item.config.lifetime_ms_range, [2000.0, 2000.0]);
         assert_eq!(item.config.speed_range, [11.0, 11.0]);
         assert_eq!(item.config.size_range, [6.0, 12.0]);
+        assert_eq!(
+            item.config.texture_frames,
+            vec![SceneSpriteParticleFrame {
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                aspect_ratio: 1.0,
+            }]
+        );
         assert_eq!(item.children.len(), 1);
         assert_eq!(
             item.children[0].child_type,
             SceneParticleChildKind::EventDeath
         );
+    }
+
+    #[test]
+    fn sprite_material_bridge_reads_tex_json_spritesheet_frame_uvs() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        let texture_path = managed_root.join("source/textures/sprite.png");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 4, Rgba([255, 255, 255, 255])))
+            .save(&texture_path)
+            .expect("atlas texture");
+        fs::write(
+            managed_root.join("source/textures/sprite.tex-json"),
+            r#"{"spritesheetsequences":[{"frames":8,"width":2,"height":2}]}"#,
+        )
+        .expect("atlas metadata");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(
+                4,
+                particle_object(4, "Sprite", SceneParticleKind::PetalTrail),
+            )],
+            vec![4],
+        );
+        scene.source.particle_runtimes = vec![supported_sprite_particle_runtime(4)];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        assert!(report.issues.is_empty());
+        let frames = &report.plan.sprite_particles[0].config.texture_frames;
+        assert_eq!(frames.len(), 8);
+        assert_eq!(frames[0].uv_rect, [0.0, 0.0, 0.25, 0.5]);
+        assert_eq!(frames[1].uv_rect, [0.25, 0.0, 0.5, 0.5]);
+        assert_eq!(frames[4].uv_rect, [0.0, 0.5, 0.25, 1.0]);
+        assert_eq!(frames[0].aspect_ratio, 1.0);
+    }
+
+    #[test]
+    fn sprite_instanceoverride_fraction_values_scale_authored_particle_contract() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(
+                4,
+                particle_object(4, "Sprite", SceneParticleKind::PetalTrail),
+            )],
+            vec![4],
+        );
+        let mut runtime = supported_sprite_particle_runtime(4);
+        runtime.instance_override.rate = Some(0.5);
+        runtime.instance_override.speed = Some(0.5);
+        runtime.instance_override.lifetime = Some(0.5);
+        runtime.instance_override.count = Some(0.5);
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        let item = &report.plan.sprite_particles[0];
+        assert_eq!(item.config.emission_rate, 15.0);
+        assert_eq!(item.config.max_count, 48);
+        assert_eq!(item.config.speed_range, [1.5, 3.5]);
+        assert_eq!(item.config.lifetime_ms_range, [250.0, 750.0]);
     }
 
     #[test]

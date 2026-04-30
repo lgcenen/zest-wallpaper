@@ -7,7 +7,7 @@ use crate::{
     models::SceneParticleChildKind,
     services::scene_render_planner_service::{
         SceneRenderBlendMode, SceneRenderColor, SceneRenderSpriteParticleItem,
-        SceneSpriteParticleConfig,
+        SceneSpriteParticleConfig, SceneSpriteParticleFrame,
     },
 };
 
@@ -21,6 +21,7 @@ pub struct SceneSpriteParticlePrimitive {
     pub top: f64,
     pub width: f64,
     pub height: f64,
+    pub uv_rect: [f32; 4],
     pub rotation: f64,
     pub opacity: f64,
     pub color: SceneRenderColor,
@@ -52,6 +53,8 @@ struct SceneSpriteEmitterState {
 #[derive(Debug, Clone)]
 struct SceneSpriteParticle {
     texture_path: PathBuf,
+    uv_rect: [f32; 4],
+    aspect_ratio: f64,
     blend_mode: SceneRenderBlendMode,
     x: f64,
     y: f64,
@@ -329,9 +332,12 @@ fn spawn_particle(
         random.next_f64(),
         random.range(config.alpha_range[0], config.alpha_range[1]),
     );
+    let frame = choose_texture_frame(random, config);
 
     SceneSpriteParticle {
         texture_path: config.texture_path.clone(),
+        uv_rect: frame.uv_rect,
+        aspect_ratio: frame.aspect_ratio,
         blend_mode: config.blend_mode,
         x,
         y,
@@ -376,6 +382,22 @@ fn choose_direction(
     [direction[0] / length * sign, direction[1] / length * sign]
 }
 
+fn choose_texture_frame(
+    random: &mut SceneSpriteRandom,
+    config: &SceneSpriteParticleConfig,
+) -> SceneSpriteParticleFrame {
+    if config.texture_frames.is_empty() {
+        return SceneSpriteParticleFrame {
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            aspect_ratio: 1.0,
+        };
+    }
+    let index = (random.next_f64() * config.texture_frames.len() as f64)
+        .floor()
+        .clamp(0.0, config.texture_frames.len().saturating_sub(1) as f64) as usize;
+    config.texture_frames[index].clone()
+}
+
 fn primitive_from_particle(
     particle: &SceneSpriteParticle,
     canvas_height: f64,
@@ -391,15 +413,17 @@ fn primitive_from_particle(
         .map(|range| range[0] + (range[1] - range[0]) * age)
         .unwrap_or(1.0)
         .max(0.0);
-    let size = (particle.size * size_factor).max(0.5);
-    let top = canvas_height - particle.y - size / 2.0;
+    let height = (particle.size * size_factor).max(0.5);
+    let width = (height * particle.aspect_ratio).max(0.5);
+    let top = canvas_height - particle.y - height / 2.0;
     Some(SceneSpriteParticlePrimitive {
         texture_path: particle.texture_path.clone(),
         blend_mode: particle.blend_mode,
-        left: particle.x - size / 2.0,
+        left: particle.x - width / 2.0,
         top,
-        width: size,
-        height: size,
+        width,
+        height,
+        uv_rect: particle.uv_rect,
         rotation: particle.rotation_degrees.to_radians(),
         opacity,
         color: SceneRenderColor {
@@ -407,7 +431,7 @@ fn primitive_from_particle(
             ..particle.color
         },
         transform_origin_x: particle.x,
-        transform_origin_y: top + size / 2.0,
+        transform_origin_y: top + height / 2.0,
     })
 }
 
@@ -444,13 +468,17 @@ mod tests {
     use crate::models::{SceneParticleChildKind, SceneParticleScheduleMode};
     use crate::services::scene_render_planner_service::{
         SceneRenderBlendMode, SceneRenderColor, SceneRenderSpriteParticleItem,
-        SceneSpriteParticleChildItem,
+        SceneSpriteParticleChildItem, SceneSpriteParticleFrame,
     };
     use std::path::PathBuf;
 
     fn config() -> SceneSpriteParticleConfig {
         SceneSpriteParticleConfig {
             texture_path: PathBuf::from("/tmp/sprite.png"),
+            texture_frames: vec![SceneSpriteParticleFrame {
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                aspect_ratio: 1.0,
+            }],
             blend_mode: SceneRenderBlendMode::Normal,
             spawn_origin: [100.0, 120.0],
             spawn_radius: [0.0, 4.0],
@@ -500,6 +528,31 @@ mod tests {
         assert!(!primitives.is_empty());
         assert!(primitives[0].width > 0.0);
         assert_eq!(primitives[0].texture_path, PathBuf::from("/tmp/sprite.png"));
+    }
+
+    #[test]
+    fn sprite_scheduler_preserves_atlas_uv_and_frame_aspect_ratio() {
+        let mut config = config();
+        config.texture_frames = vec![SceneSpriteParticleFrame {
+            uv_rect: [0.25, 0.0, 0.5, 0.75],
+            aspect_ratio: 0.5,
+        }];
+        config.instantaneous = true;
+        config.max_count = 1;
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 8,
+            object_name: "SpriteAtlas".to_string(),
+            schedule_mode: SceneParticleScheduleMode::Autonomous,
+            config,
+            children: vec![],
+        };
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance(&[item.clone()], 100.0);
+
+        let primitives = scheduler.primitives(&item, 400.0, 100.0);
+        assert_eq!(primitives.len(), 1);
+        assert_eq!(primitives[0].uv_rect, [0.25, 0.0, 0.5, 0.75]);
+        assert!((primitives[0].width / primitives[0].height - 0.5).abs() < 0.001);
     }
 
     #[test]

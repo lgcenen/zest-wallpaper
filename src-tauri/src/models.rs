@@ -412,7 +412,7 @@ pub struct SceneParticleInstanceOverride {
     #[serde(default)]
     pub lifetime_binding: Option<String>,
     #[serde(default)]
-    pub count: Option<u32>,
+    pub count: Option<f64>,
     #[serde(default)]
     pub count_binding: Option<String>,
     #[serde(default)]
