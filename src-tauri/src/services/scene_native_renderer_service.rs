@@ -4488,6 +4488,8 @@ fn particle_plan_signature(plan: &SceneRenderPlan) -> Option<u64> {
         item.uv_scrolling[0].to_bits().hash(&mut hasher);
         item.uv_scrolling[1].to_bits().hash(&mut hasher);
         item.fade_alpha.to_bits().hash(&mut hasher);
+        item.subdivision.hash(&mut hasher);
+        item.rope_length.to_bits().hash(&mut hasher);
     }
     for item in &plan.sprite_particles {
         2_u8.hash(&mut hasher);
@@ -6118,6 +6120,8 @@ mod tests {
                 spawn_radius: [0.0, 0.0],
                 uv_scrolling: [0.0, 0.0],
                 fade_alpha: 0.0,
+                subdivision: 1,
+                rope_length: 0.0,
             }],
             sprite_particles: Vec::new(),
             sounds: Vec::new(),
@@ -6785,6 +6789,8 @@ mod tests {
                 spawn_radius: [0.0, 0.0],
                 uv_scrolling: [0.0, 0.0],
                 fade_alpha: 0.0,
+                subdivision: 1,
+                rope_length: 0.0,
             },
         ];
         let signature = particle_plan_signature(&plan);

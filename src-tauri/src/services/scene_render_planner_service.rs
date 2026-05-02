@@ -210,6 +210,8 @@ pub struct SceneRenderParticleItem {
     pub spawn_radius: [f64; 2],
     pub uv_scrolling: [f64; 2],
     pub fade_alpha: f64,
+    pub subdivision: u32,
+    pub rope_length: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1085,6 +1087,8 @@ fn plan_particle_item(
             spawn_radius: [0.0, 0.0],
             uv_scrolling: [0.0, 0.0],
             fade_alpha: 0.0,
+            subdivision: 1,
+            rope_length: 0.0,
         });
     };
 
@@ -1197,6 +1201,20 @@ fn plan_particle_item(
             .and_then(|renderer| renderer.fade_alpha)
             .unwrap_or(0.0)
             .clamp(0.0, 1.0),
+        subdivision: runtime
+            .system
+            .renderers
+            .first()
+            .and_then(|renderer| renderer.subdivision)
+            .unwrap_or(1)
+            .clamp(1, 64),
+        rope_length: runtime
+            .system
+            .renderers
+            .first()
+            .and_then(|renderer| renderer.length)
+            .unwrap_or(0.0)
+            .max(0.0),
     })
 }
 
@@ -3342,6 +3360,46 @@ mod tests {
         assert_eq!(report.plan.particles.len(), 1);
         assert_eq!(report.plan.particles[0].uv_scrolling, [0.0, 0.0]);
         assert_eq!(report.plan.particles[0].fade_alpha, 0.0);
+    }
+
+    #[test]
+    fn render_plan_passes_renderer_subdivision_and_length_to_particle_item() {
+        let mut scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+        let mut runtime = supported_particle_runtime(
+            4,
+            SceneParticleKind::LineTrail,
+            SceneParticleScheduleMode::Autonomous,
+        );
+        runtime.system.renderers = vec![SceneParticleRendererRuntime {
+            subdivision: Some(4),
+            length: Some(300.0),
+            ..SceneParticleRendererRuntime::default()
+        }];
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(report.plan.particles[0].subdivision, 4);
+        assert_eq!(report.plan.particles[0].rope_length, 300.0);
+    }
+
+    #[test]
+    fn render_plan_defaults_subdivision_and_length_for_missing_renderer_fields() {
+        let scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles[0].subdivision, 1);
+        assert_eq!(report.plan.particles[0].rope_length, 0.0);
     }
 
     #[test]

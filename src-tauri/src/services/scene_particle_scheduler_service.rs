@@ -160,47 +160,63 @@ impl SceneParticleScheduler {
     ) -> Vec<SceneParticlePrimitive> {
         let mut segments = Vec::new();
         if let Some(state) = self.input_states.get(&item.object_id) {
-            for points in state.line_points.windows(2) {
-                let start = points[0];
-                let end = points[1];
-                let dx = end.x - start.x;
-                let dy = end.y - start.y;
-                let length = (dx * dx + dy * dy).sqrt().max(1.0);
-                let center_x = (start.x + end.x) / 2.0;
-                let center_y_bottom = (start.y + end.y) / 2.0;
-                let point_age = now_ms - end.created_at_ms;
-                let age = clamp_f64(point_age / item.lifetime_ms, 0.0, 1.0);
-                let alpha = (1.0 - age) * (1.0 - item.fade_alpha);
-                let uv_offset = [
-                    (point_age / 1000.0 * item.uv_scrolling[0]) % 1.0,
-                    (point_age / 1000.0 * item.uv_scrolling[1]) % 1.0,
-                ];
-                for width_factor in [3.4, 1.6] {
-                    let thickness = (item.size * width_factor).max(1.0);
-                    let color = SceneRenderColor {
-                        alpha: normalize_alpha(
-                            item.color,
-                            if width_factor > 2.0 {
-                                0.28 * alpha
-                            } else {
-                                alpha
-                            },
-                        ),
-                        ..item.color
-                    };
-                    let top = canvas_height - center_y_bottom - thickness / 2.0;
-                    segments.push(SceneParticlePrimitive {
-                        left: center_x - length / 2.0,
-                        top,
-                        width: length,
-                        height: thickness,
-                        rotation: -(dy).atan2(dx),
-                        opacity: 1.0,
-                        color,
-                        transform_origin_x: center_x,
-                        transform_origin_y: top + thickness / 2.0,
-                        uv_offset,
-                    });
+            let points: &[SceneTrailPoint] = if item.rope_length > 0.0 {
+                let split_idx = trail_split_index(&state.line_points, item.rope_length);
+                &state.line_points[split_idx..]
+            } else {
+                &state.line_points
+            };
+
+            let subdivisions = item.subdivision.clamp(1, 64);
+            for point_window in points.windows(2) {
+                let start = point_window[0];
+                let end = point_window[1];
+                for sub_idx in 0..subdivisions {
+                    let t_start = sub_idx as f64 / subdivisions as f64;
+                    let t_end = (sub_idx + 1) as f64 / subdivisions as f64;
+                    let sub_start_x = start.x + (end.x - start.x) * t_start;
+                    let sub_start_y = start.y + (end.y - start.y) * t_start;
+                    let sub_end_x = start.x + (end.x - start.x) * t_end;
+                    let sub_end_y = start.y + (end.y - start.y) * t_end;
+                    let dx = sub_end_x - sub_start_x;
+                    let dy = sub_end_y - sub_start_y;
+                    let seg_length = (dx * dx + dy * dy).sqrt().max(1.0);
+                    let center_x = (sub_start_x + sub_end_x) / 2.0;
+                    let center_y = (sub_start_y + sub_end_y) / 2.0;
+                    let point_age = now_ms - end.created_at_ms;
+                    let age = clamp_f64(point_age / item.lifetime_ms, 0.0, 1.0);
+                    let alpha = (1.0 - age) * (1.0 - item.fade_alpha);
+                    let uv_offset = [
+                        (point_age / 1000.0 * item.uv_scrolling[0] + t_start) % 1.0,
+                        (point_age / 1000.0 * item.uv_scrolling[1]) % 1.0,
+                    ];
+                    for width_factor in [3.4, 1.6] {
+                        let thickness = (item.size * width_factor).max(1.0);
+                        let color = SceneRenderColor {
+                            alpha: normalize_alpha(
+                                item.color,
+                                if width_factor > 2.0 {
+                                    0.28 * alpha
+                                } else {
+                                    alpha
+                                },
+                            ),
+                            ..item.color
+                        };
+                        let top = canvas_height - center_y - thickness / 2.0;
+                        segments.push(SceneParticlePrimitive {
+                            left: center_x - seg_length / 2.0,
+                            top,
+                            width: seg_length,
+                            height: thickness,
+                            rotation: -(dy).atan2(dx),
+                            opacity: 1.0,
+                            color,
+                            transform_origin_x: center_x,
+                            transform_origin_y: top + thickness / 2.0,
+                            uv_offset,
+                        });
+                    }
                 }
             }
         }
@@ -509,6 +525,21 @@ fn clamp_f64(value: f64, min: f64, max: f64) -> f64 {
     value.clamp(min, max)
 }
 
+fn trail_split_index(points: &[SceneTrailPoint], max_length: f64) -> usize {
+    let mut cumulative = 0.0;
+    points
+        .windows(2)
+        .rev()
+        .position(|pair| {
+            let dx = pair[1].x - pair[0].x;
+            let dy = pair[1].y - pair[0].y;
+            cumulative += (dx * dx + dy * dy).sqrt();
+            cumulative > max_length
+        })
+        .map(|index| points.len().saturating_sub(2) - index)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::models::{SceneParticleKind, SceneParticleScheduleMode};
@@ -542,6 +573,8 @@ mod tests {
             spawn_radius: [0.0, 0.0],
             uv_scrolling: [0.0, 0.0],
             fade_alpha: 0.0,
+            subdivision: 1,
+            rope_length: 0.0,
         }
     }
 
@@ -569,6 +602,8 @@ mod tests {
             spawn_radius: [0.0, 0.0],
             uv_scrolling: [0.0, 0.0],
             fade_alpha: 0.0,
+            subdivision: 1,
+            rope_length: 0.0,
         }
     }
 
@@ -596,6 +631,8 @@ mod tests {
             spawn_radius: [0.0, 0.0],
             uv_scrolling: [0.0, 0.0],
             fade_alpha: 0.0,
+            subdivision: 1,
+            rope_length: 0.0,
         }
     }
 
@@ -937,5 +974,95 @@ mod tests {
             has_offset,
             "uv_scrolling should produce non-zero uv_offset after elapsed time"
         );
+    }
+
+    #[test]
+    fn line_trail_with_subdivision_produces_more_quads_per_segment() {
+        let item = line_item();
+        let mut item_sub = line_item();
+        item_sub.object_id = 3;
+        item_sub.subdivision = 3;
+
+        let mut scheduler1 = SceneParticleScheduler::default();
+        scheduler1.advance(
+            Some(SceneParticleCursor { x: 10.0, y: 10.0 }),
+            &[item.clone()],
+            1000.0,
+        );
+        scheduler1.advance(
+            Some(SceneParticleCursor { x: 310.0, y: 10.0 }),
+            &[item.clone()],
+            1016.0,
+        );
+
+        let mut scheduler3 = SceneParticleScheduler::default();
+        scheduler3.advance(
+            Some(SceneParticleCursor { x: 10.0, y: 10.0 }),
+            &[item_sub.clone()],
+            1000.0,
+        );
+        scheduler3.advance(
+            Some(SceneParticleCursor { x: 310.0, y: 10.0 }),
+            &[item_sub.clone()],
+            1016.0,
+        );
+
+        let prim1 = scheduler1.line_primitives(&item, 1080.0, 1016.0);
+        let prim3 = scheduler3.line_primitives(&item_sub, 1080.0, 1016.0);
+        assert!(!prim1.is_empty());
+        assert!(!prim3.is_empty());
+        assert!(
+            prim3.len() > prim1.len(),
+            "subdivision=3 should produce more quads than subdivision=1 (got {} vs {})",
+            prim3.len(),
+            prim1.len()
+        );
+    }
+
+    #[test]
+    fn rope_length_truncates_long_trail() {
+        let mut item = line_item();
+        item.rope_length = 50.0;
+        item.lifetime_ms = 50000.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        let mut x = 10.0;
+        for step in 0..30 {
+            x += 20.0;
+            scheduler.advance(
+                Some(SceneParticleCursor { x, y: 10.0 }),
+                &[item.clone()],
+                1000.0 + step as f64 * 16.0,
+            );
+        }
+
+        let primitives = scheduler.line_primitives(&item, 1080.0, 2000.0);
+        assert!(!primitives.is_empty());
+        let total_width: f64 = primitives.iter().map(|p| p.width).sum();
+        assert!(
+            total_width <= item.rope_length * 2.0 + 50.0,
+            "rope_length=50 should cap trail visible extent; total width={}",
+            total_width
+        );
+    }
+
+    #[test]
+    fn rope_length_zero_keeps_full_trail() {
+        let mut item = line_item();
+        item.rope_length = 0.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        let mut x = 10.0;
+        for step in 0..10 {
+            x += 20.0;
+            scheduler.advance(
+                Some(SceneParticleCursor { x, y: 10.0 }),
+                &[item.clone()],
+                1000.0 + step as f64 * 16.0,
+            );
+        }
+
+        let primitives = scheduler.line_primitives(&item, 1080.0, 1200.0);
+        assert!(!primitives.is_empty());
     }
 }
