@@ -12,7 +12,7 @@
   <p><strong>面向 macOS 的动态壁纸播放器，用于导入并播放 Wallpaper Engine 项目。</strong></p>
 
   <p>
-    <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2015%2B-111111?style=flat-square&logo=apple" />
+    <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2014%2B-111111?style=flat-square&logo=apple" />
     <img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-0F766E?style=flat-square" />
     <img alt="runtime" src="https://img.shields.io/badge/runtime-Scene%20%7C%20Video%20%7C%20Web-2563EB?style=flat-square" />
     <img alt="status" src="https://img.shields.io/badge/status-active%20development-F59E0B?style=flat-square" />
@@ -46,7 +46,7 @@
 
 ## 平台与技术栈
 
-- 仅限 macOS `15.0+` 使用
+- 仅限 macOS `14.0+` 使用
 - Tauri 2
 - React + Vite
 - Rust

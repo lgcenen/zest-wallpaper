@@ -12,7 +12,7 @@
   <p><strong>macOS-only wallpaper player for importing and playing Wallpaper Engine projects.</strong></p>
 
   <p>
-    <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2015%2B-111111?style=flat-square&logo=apple" />
+    <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2014%2B-111111?style=flat-square&logo=apple" />
     <img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-0F766E?style=flat-square" />
     <img alt="runtime" src="https://img.shields.io/badge/runtime-Scene%20%7C%20Video%20%7C%20Web-2563EB?style=flat-square" />
     <img alt="status" src="https://img.shields.io/badge/status-active%20development-F59E0B?style=flat-square" />
@@ -46,7 +46,7 @@ This project is under active development.
 
 ## Platform and Stack
 
-- macOS `15.0+` only
+- macOS `14.0+` only
 - Tauri 2
 - React + Vite
 - Rust
