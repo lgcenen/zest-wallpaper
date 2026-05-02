@@ -206,6 +206,8 @@ pub struct SceneRenderParticleItem {
     pub speed_range: [f64; 2],
     pub instantaneous: bool,
     pub start_time_ms: f64,
+    pub sign: f64,
+    pub spawn_radius: [f64; 2],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1077,6 +1079,8 @@ fn plan_particle_item(
             speed_range: default_particle_speed_range(particle_kind),
             instantaneous: false,
             start_time_ms: 0.0,
+            sign: 1.0,
+            spawn_radius: [0.0, 0.0],
         });
     };
 
@@ -1166,6 +1170,16 @@ fn plan_particle_item(
             .start_time
             .unwrap_or(0.0)
             .max(0.0),
+        sign: emitter
+            .and_then(|emitter| emitter.sign)
+            .unwrap_or(1.0),
+        spawn_radius: emitter
+            .map(|emitter| {
+                let min = emitter.distance_min.unwrap_or(0.0).max(0.0);
+                let max = emitter.distance_max.unwrap_or(min).max(min);
+                [min, max]
+            })
+            .unwrap_or([0.0, 0.0]),
     })
 }
 
@@ -3225,6 +3239,51 @@ mod tests {
         assert!(!report.is_blocked());
         assert_eq!(report.plan.particles.len(), 1);
         assert_eq!(report.plan.particles[0].start_time_ms, 0.0);
+    }
+
+    #[test]
+    fn render_plan_passes_emitter_sign_and_distance_to_particle_item() {
+        let mut scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+        let mut runtime = supported_particle_runtime(
+            4,
+            SceneParticleKind::LineTrail,
+            SceneParticleScheduleMode::Autonomous,
+        );
+        runtime.system.emitters[0].sign = Some(-1.0);
+        runtime.system.emitters[0].distance_min = Some(50.0);
+        runtime.system.emitters[0].distance_max = Some(120.0);
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(report.plan.particles[0].sign, -1.0);
+        assert_eq!(report.plan.particles[0].spawn_radius, [50.0, 120.0]);
+    }
+
+    #[test]
+    fn render_plan_defaults_sign_and_distance_for_missing_emitter_fields() {
+        let mut scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+        let runtime = supported_particle_runtime(
+            4,
+            SceneParticleKind::LineTrail,
+            SceneParticleScheduleMode::Autonomous,
+        );
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(report.plan.particles[0].sign, 1.0);
+        assert_eq!(report.plan.particles[0].spawn_radius, [0.0, 0.0]);
     }
 
     #[test]

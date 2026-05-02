@@ -394,19 +394,28 @@ fn emit_autonomous_particles(
     emit_count: usize,
     now_ms: f64,
 ) {
+    let spread = if item.spawn_radius[1] > 0.0 {
+        item.spawn_radius
+    } else {
+        let fallback = item.size.max(1.0) * 2.0;
+        [0.0, fallback]
+    };
+    let sign = item.sign;
     for _ in 0..emit_count {
         let angle = random.range(0.0, std::f64::consts::TAU);
         let speed = random.range(item.speed_range[0], item.speed_range[1]);
-        let spread = item.size.max(1.0) * 2.0;
+        let radius = random.range(spread[0], spread[1]);
+        let offset_x = angle.cos() * radius;
+        let offset_y = angle.sin() * radius;
         let size = match item.particle_kind {
             SceneParticleKind::LineTrail => item.size.max(1.0) * random.range(1.0, 2.4),
             SceneParticleKind::PetalTrail => 9.0 + item.size.max(0.5) * random.range(8.0, 18.0),
         };
         state.particles.push(SceneParticle {
-            x: item.spawn_origin[0] + random.centered() * spread,
-            y: item.spawn_origin[1] + random.centered() * spread,
-            vx: angle.cos() * speed,
-            vy: angle.sin() * speed,
+            x: item.spawn_origin[0] + offset_x,
+            y: item.spawn_origin[1] + offset_y,
+            vx: angle.cos() * speed * sign,
+            vy: angle.sin() * speed * sign,
             rotation: random.range(0.0, 360.0),
             spin: random.range(-90.0, 90.0),
             size,
@@ -516,6 +525,8 @@ mod tests {
             speed_range: [24.0, 48.0],
             instantaneous: false,
             start_time_ms: 0.0,
+            sign: 1.0,
+            spawn_radius: [0.0, 0.0],
         }
     }
 
@@ -539,6 +550,8 @@ mod tests {
             speed_range: [20.0, 64.0],
             instantaneous: false,
             start_time_ms: 0.0,
+            sign: 1.0,
+            spawn_radius: [0.0, 0.0],
         }
     }
 
@@ -562,6 +575,8 @@ mod tests {
             speed_range: [12.0, 24.0],
             instantaneous: false,
             start_time_ms: 0.0,
+            sign: 1.0,
+            spawn_radius: [0.0, 0.0],
         }
     }
 
@@ -744,5 +759,85 @@ mod tests {
             primitives_second.is_empty(),
             "start_time restarts when item re-enters after removal"
         );
+    }
+
+    #[test]
+    fn sign_flips_autonomous_particle_velocity_direction() {
+        let mut item = autonomous_item();
+        item.sign = -1.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1200.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1200.0);
+        assert!(!primitives.is_empty(), "should emit particles with negative sign");
+
+        let state = scheduler.autonomous_states.get(&item.object_id).unwrap();
+        let all_zero = state
+            .particles
+            .iter()
+            .all(|p| p.vx.abs() < 0.01 && p.vy.abs() < 0.01);
+        assert!(
+            !all_zero,
+            "sign=-1.0 should be consumed; velocities should be non-zero for moving particles"
+        );
+    }
+
+    #[test]
+    fn sign_default_positive_does_not_flip_velocity() {
+        let mut item = autonomous_item();
+        item.sign = 1.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1200.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1200.0);
+        assert!(!primitives.is_empty());
+
+        let state = scheduler.autonomous_states.get(&item.object_id).unwrap();
+        let has_positive = state.particles.iter().any(|p| p.vx > 0.0 || p.vy > 0.0);
+        assert!(
+            has_positive,
+            "sign=1.0 should produce bidirectional velocity"
+        );
+    }
+
+    #[test]
+    fn spawn_radius_ring_when_set() {
+        let mut item = autonomous_item();
+        item.spawn_radius = [80.0, 100.0];
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1200.0);
+
+        let state = scheduler.autonomous_states.get(&item.object_id).unwrap();
+        assert!(!state.particles.is_empty());
+
+        for particle in &state.particles {
+            let dx = particle.x - item.spawn_origin[0];
+            let dy = particle.y - item.spawn_origin[1];
+            let dist = (dx * dx + dy * dy).sqrt();
+            assert!(
+                dist <= 100.0,
+                "particle spawn distance {} exceeds max radius 100.0",
+                dist
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_radius_zero_falls_back_to_size_based_spread() {
+        let mut item = autonomous_item();
+        item.spawn_radius = [0.0, 0.0];
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1200.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1200.0);
+        assert!(!primitives.is_empty(), "fallback spread should still emit");
     }
 }
