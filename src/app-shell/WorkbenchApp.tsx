@@ -291,7 +291,6 @@ function SettingsPopover({
       <div className="settings-popover-header">
         <div className="settings-popover-copy">
           <strong>{copy.settingsAction}</strong>
-          <span>{copy.scopeNote}</span>
         </div>
       </div>
 
