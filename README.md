@@ -41,7 +41,8 @@ This project is under active development.
 | Video wallpapers | Supported |
 | Web wallpapers | Supported |
 | Audio input | Supported |
-| Multi-display | Untested |
+| Fullscreen auto-pause | Supported |
+| Multi-display | Not yet tested |
 | Workshop wallpaper download | Not supported |
 
 ## Platform and Stack
