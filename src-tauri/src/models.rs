@@ -272,6 +272,16 @@ pub enum SceneParticleChildKind {
 pub struct SceneParticleRuntimeDiagnostic {
     pub code: String,
     pub message: String,
+    #[serde(default)]
+    pub diagnostic_kind: SceneParticleDiagnosticKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SceneParticleDiagnosticKind {
+    #[default]
+    Blocking,
+    SemiAdapted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

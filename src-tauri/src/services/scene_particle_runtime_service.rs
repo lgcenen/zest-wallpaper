@@ -4,10 +4,11 @@ use serde_json::Value;
 
 use crate::models::{
     SceneParticleChildKind, SceneParticleChildRuntime, SceneParticleControlPointOverride,
-    SceneParticleControlPointRuntime, SceneParticleEmitterRuntime, SceneParticleInstanceOverride,
-    SceneParticleKind, SceneParticleRendererFamily, SceneParticleRendererRuntime,
-    SceneParticleRuntime, SceneParticleRuntimeAdapter, SceneParticleRuntimeDiagnostic,
-    SceneParticleScheduleMode, SceneParticleStageRuntime, SceneParticleSystemRuntime,
+    SceneParticleControlPointRuntime, SceneParticleDiagnosticKind, SceneParticleEmitterRuntime,
+    SceneParticleInstanceOverride, SceneParticleKind, SceneParticleRendererFamily,
+    SceneParticleRendererRuntime, SceneParticleRuntime, SceneParticleRuntimeAdapter,
+    SceneParticleRuntimeDiagnostic, SceneParticleScheduleMode, SceneParticleStageRuntime,
+    SceneParticleSystemRuntime,
 };
 
 pub fn build_scene_particle_runtime(
@@ -311,6 +312,53 @@ fn classify_particle_runtime(
         let schedule_mode = emitter
             .map(|emitter| emitter.schedule_mode)
             .unwrap_or(SceneParticleScheduleMode::InputDriven);
+
+        if renderer_family != Some(SceneParticleRendererFamily::Sprite) {
+            if let Some(renderer) = renderer {
+                if renderer.min_length.is_some() {
+                    diagnostics.push(semi_adapted_diagnostic(
+                        "particle-renderer-field-semi-adapted",
+                        "Renderer minLength is parsed but not consumed in the trail adapter.",
+                    ));
+                }
+                if renderer.segments.is_some() {
+                    diagnostics.push(semi_adapted_diagnostic(
+                        "particle-renderer-field-semi-adapted",
+                        "Renderer segments is parsed but not consumed in the trail adapter.",
+                    ));
+                }
+                if renderer.axis.is_some() {
+                    diagnostics.push(semi_adapted_diagnostic(
+                        "particle-renderer-field-semi-adapted",
+                        "Renderer axis is parsed but not consumed in the trail adapter.",
+                    ));
+                }
+                if renderer.orientation.is_some() {
+                    diagnostics.push(semi_adapted_diagnostic(
+                        "particle-renderer-field-semi-adapted",
+                        "Renderer orientation is parsed but not consumed in the trail adapter.",
+                    ));
+                }
+                if renderer.uv_smoothing.is_some() {
+                    diagnostics.push(semi_adapted_diagnostic(
+                        "particle-renderer-field-semi-adapted",
+                        "Renderer uvSmoothing is parsed but not consumed in the trail adapter.",
+                    ));
+                }
+            }
+        }
+
+        if renderer_family == Some(SceneParticleRendererFamily::Sprite) {
+            if let Some(emitter) = emitter {
+                if emitter.control_point.is_some() {
+                    diagnostics.push(semi_adapted_diagnostic(
+                        "particle-emitter-field-semi-adapted",
+                        "Emitter controlPoint is parsed but not consumed in the sprite runtime.",
+                    ));
+                }
+            }
+        }
+
         (
             SceneParticleRuntimeAdapter {
                 supported: true,
@@ -524,6 +572,18 @@ fn runtime_diagnostic(
     SceneParticleRuntimeDiagnostic {
         code: code.into(),
         message: message.into(),
+        diagnostic_kind: SceneParticleDiagnosticKind::Blocking,
+    }
+}
+
+fn semi_adapted_diagnostic(
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> SceneParticleRuntimeDiagnostic {
+    SceneParticleRuntimeDiagnostic {
+        code: code.into(),
+        message: message.into(),
+        diagnostic_kind: SceneParticleDiagnosticKind::SemiAdapted,
     }
 }
 
@@ -986,5 +1046,97 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"));
+    }
+
+    #[test]
+    fn trail_adapter_produces_semi_adapted_diagnostics_for_unconsumed_renderer_fields() {
+        let particle = json!({
+            "emitter": [{"name": "root", "rate": 16}],
+            "renderer": [{
+                "name": "rope",
+                "minlength": 1.5,
+                "axis": "x",
+                "orientation": "billboard",
+                "segments": 32,
+                "uvsmoothing": 0.5
+            }]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/renderer-fields.json".to_string(),
+            &particle,
+        );
+
+        assert!(
+            runtime.adapter.supported,
+            "adapter should stay supported with semi-adapted diagnostics"
+        );
+        let codes: Vec<&str> = runtime
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"particle-renderer-field-semi-adapted"),
+            "should produce semi-adapted diagnostics for minlength/axis/orientation/segments/uvsmoothing"
+        );
+        let all_semi_adapted = runtime
+            .diagnostics
+            .iter()
+            .all(|d| d.diagnostic_kind == crate::models::SceneParticleDiagnosticKind::SemiAdapted);
+        assert!(
+            all_semi_adapted,
+            "renderer field diagnostics should be SemiAdapted kind"
+        );
+    }
+
+    #[test]
+    fn clean_renderer_without_unconsumed_fields_produces_no_semi_adapted_diagnostics() {
+        let particle = json!({
+            "emitter": [{"name": "root", "rate": 16}],
+            "renderer": [{"name": "rope", "length": 8, "maxlength": 32, "subdivision": 4}]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/clean-renderer.json".to_string(),
+            &particle,
+        );
+
+        assert!(runtime.adapter.supported);
+        let has_semi = runtime
+            .diagnostics
+            .iter()
+            .any(|d| d.diagnostic_kind == crate::models::SceneParticleDiagnosticKind::SemiAdapted);
+        assert!(
+            !has_semi,
+            "clean renderer should not produce semi-adapted diagnostics"
+        );
+    }
+
+    #[test]
+    fn sprite_runtime_produces_semi_adapted_diagnostic_for_unconsumed_emitter_controlpoint() {
+        let particle = json!({
+            "material": "materials/genericparticle.json",
+            "emitter": [{
+                "name": "sphererandom",
+                "rate": 20,
+                "controlpoint": 0
+            }],
+            "renderer": [{"name": "sprite"}]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/sprite-controlpoint.json".to_string(),
+            &particle,
+        );
+
+        assert!(
+            runtime.adapter.supported,
+            "sprite adapter should stay supported"
+        );
+        assert!(runtime.diagnostics.iter().any(|d| {
+            d.code == "particle-emitter-field-semi-adapted"
+                && d.diagnostic_kind == crate::models::SceneParticleDiagnosticKind::SemiAdapted
+        }));
     }
 }
