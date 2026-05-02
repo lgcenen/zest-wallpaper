@@ -3646,4 +3646,87 @@ mod tests {
             .any(|issue| issue.code == super::SceneGraphIssueCode::InvalidEffect
                 || issue.code == super::SceneGraphIssueCode::GraphConstructionIncomplete));
     }
+
+    #[test]
+    fn phase10d_graph_copybackground_effect_enters_phase10d_scope_with_copied_background_source() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":98,
+                  "name":"CopyBG",
+                  "image":"models/copybg.model.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/copybg/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/copybg.model.json"),
+            br#"{"width":256,"height":256}"#,
+        );
+        write(
+            &extracted.join("effects/copybg/effect.json"),
+            br#"{
+              "copybackground": true,
+              "passes":[{"material":"materials/effects/pulse.json","bind":[{"name":"copybackground","index":1}]}]
+            }"#,
+        );
+        write(
+            &extracted.join("effects/copybg/materials/effects/pulse.json"),
+            br#"{"passes":[{"shader":"effects/pulse"}]}"#,
+        );
+        write(
+            &extracted.join("effects/copybg/shaders/effects/pulse.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/copybg/shaders/effects/pulse.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.graph.visuals.len(), 1);
+        assert!(report.graph.visuals[0].effect_chain.len() >= 1);
+        let effect_node = &report.graph.visuals[0].effect_chain[0];
+        assert!(effect_node.passes.iter().any(|pass| pass.copy_background));
+        assert!(effect_node.passes.iter().any(|pass| {
+            pass.input_bindings.iter().any(|binding| {
+                matches!(
+                    binding.source,
+                    super::ScenePhase10InputSource::CopiedBackground
+                )
+            })
+        }));
+    }
 }
