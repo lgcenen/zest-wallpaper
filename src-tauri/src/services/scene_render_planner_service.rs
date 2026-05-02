@@ -1315,7 +1315,17 @@ fn plan_sprite_particle_child(
         parent.object_scale[1] * child_scale[1],
         parent.object_scale[2] * child_scale[2],
     ];
-    child_runtime.object_angles = child.angles.or(parent.object_angles);
+    child_runtime.object_angles = child
+        .angles
+        .map(|child_angles| {
+            let parent_angles = parent.object_angles.unwrap_or([0.0, 0.0, 0.0]);
+            [
+                parent_angles[0] + child_angles[0],
+                parent_angles[1] + child_angles[1],
+                parent_angles[2] + child_angles[2],
+            ]
+        })
+        .or(parent.object_angles);
     if let Some(max_count) = child.max_count {
         child_runtime.system.max_count = Some(max_count);
     }
@@ -3763,6 +3773,38 @@ mod tests {
         assert!(!report.is_blocked());
         let child = &report.plan.sprite_particles[0].children[0];
         assert_eq!(child.control_point_start_index, None);
+    }
+
+    #[test]
+    fn sprite_child_angle_adds_to_parent_angle() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(
+                4,
+                particle_object(4, "Sprite", SceneParticleKind::PetalTrail),
+            )],
+            vec![4],
+        );
+        let mut runtime = supported_sprite_particle_runtime(4);
+        runtime.object_angles = Some([0.0, 0.0, 90.0]);
+        runtime.system.children[0].angles = Some([0.0, 0.0, 45.0]);
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        let child_ori = report.plan.sprite_particles[0].children[0].config.orientation;
+        let parent_ori = report.plan.sprite_particles[0].config.orientation;
+        assert!(
+            child_ori > parent_ori,
+            "child orientation {child_ori} should be greater than parent {parent_ori}"
+        );
     }
 
     #[test]
