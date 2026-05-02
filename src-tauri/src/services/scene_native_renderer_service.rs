@@ -2349,6 +2349,18 @@ impl NativeSceneMetalRenderer {
         required_output_keys.insert(output_key.clone());
         let output_texture = self.ensure_phase10_output_target(&output_key, width, height)?;
 
+        if phase10_visual_first_pass_is_mask_alpha(visual) && passes.len() == 1 {
+            return self.render_phase10_mask_chain(
+                command_buffer,
+                visual,
+                &base_texture,
+                &passes[0],
+                width,
+                height,
+                required_scratch_keys,
+            );
+        }
+
         for (index, resolved_pass) in passes.iter().enumerate() {
             let target_name = phase10_resolved_pass_target_name(resolved_pass);
             let is_last = index + 1 == passes.len();
@@ -2402,6 +2414,101 @@ impl NativeSceneMetalRenderer {
         }
 
         Some(previous_texture.texture)
+    }
+
+    fn render_phase10_mask_chain(
+        &mut self,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        visual: &ScenePhase10VisualPlan,
+        base_texture: &Phase10TextureHandle,
+        resolved_pass: &Phase10ResolvedPass<'_>,
+        width: usize,
+        height: usize,
+        required_scratch_keys: &mut BTreeSet<String>,
+    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
+        let output_key = phase10_output_texture_key(visual.object_id, width, height);
+        let output_texture = self.ensure_phase10_output_target(&output_key, width, height)?;
+
+        let scratch_key = phase10_scratch_texture_key(width, height, 0);
+        required_scratch_keys.insert(scratch_key.clone());
+        let scratch_texture = self.ensure_phase10_scratch_target(&scratch_key, width, height)?;
+
+        let input_scope = Phase10PassInputScope {
+            local_current: Some(base_texture),
+            previous_pass: Some(base_texture),
+            background: None,
+            copied_background: None,
+            named_targets: &BTreeMap::new(),
+        };
+        let mask_alpha_pass_textures =
+            self.phase10_pass_textures_for(visual, resolved_pass, &input_scope);
+        let mask_alpha_defines = phase10_pass_shader_defines(resolved_pass);
+        let mask_alpha_uniforms = self.phase10_effect_uniforms_for_pass(
+            resolved_pass,
+            &mask_alpha_pass_textures,
+            width,
+            height,
+            0.0,
+        );
+
+        if !self.encode_phase10_pass(
+            command_buffer,
+            &scratch_texture.texture,
+            resolved_pass.pass,
+            &mask_alpha_defines,
+            &mask_alpha_pass_textures,
+            &mask_alpha_uniforms,
+            None,
+        ) {
+            return None;
+        }
+
+        let mask_apply_program = phase10_mask_apply_shader_program();
+        let mask_apply_key = phase10_shader_variant_key(
+            &mask_apply_program,
+            &BTreeMap::new(),
+            visual.blend_mode,
+        );
+        let Some(mask_apply_pipeline) = self.compiled_shader_variants.get(&mask_apply_key) else {
+            return None;
+        };
+
+        let mask_apply_pass_textures = Phase10PassTextures {
+            slots: vec![
+                Some(base_texture.clone()),
+                Some(scratch_texture),
+                None,
+                None,
+            ],
+        };
+
+        let descriptor = MTLRenderPassDescriptor::new();
+        unsafe {
+            let attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
+            attachment.setTexture(Some(output_texture.texture.as_ref()));
+            attachment.setLoadAction(MTLLoadAction::Clear);
+            attachment.setStoreAction(MTLStoreAction::Store);
+            attachment.setClearColor(objc2_metal::MTLClearColor {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 0.0,
+            });
+        }
+        let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(&descriptor) else {
+            return None;
+        };
+
+        self.draw_phase10_fullscreen_pass(
+            &encoder,
+            mask_apply_pipeline.as_ref(),
+            &mask_apply_pass_textures,
+            &Phase10EffectUniforms::default(),
+            visual.base_color,
+        );
+        encoder.endEncoding();
+
+        Some(output_texture.texture)
     }
 
     fn phase10_background_layer_for_visual_item(
@@ -2577,6 +2684,34 @@ impl NativeSceneMetalRenderer {
                 }
                 if shader_failed {
                     continue;
+                }
+            }
+
+            if phase10_visual_first_pass_is_mask_alpha(visual) {
+                let mask_apply_program = phase10_mask_apply_shader_program();
+                let mask_apply_key = phase10_shader_variant_key(
+                    &mask_apply_program,
+                    &BTreeMap::new(),
+                    visual.blend_mode,
+                );
+                if !self.compiled_shader_variants.contains_key(&mask_apply_key) {
+                    match self.compile_phase10_shader_variant(
+                        &mask_apply_program,
+                        &BTreeMap::new(),
+                        visual.blend_mode,
+                    ) {
+                        Ok(pipeline) => {
+                            self.compiled_shader_variants
+                                .insert(mask_apply_key, pipeline);
+                        }
+                        Err(error) => {
+                            warnings.push(NativeSceneWarning::phase10_draw(
+                                &visual.object_name,
+                                error,
+                            ));
+                            continue;
+                        }
+                    }
                 }
             }
 
@@ -3883,6 +4018,28 @@ fn phase10_base_passes(visual: &ScenePhase10VisualPlan) -> &[SceneMaterialPassPl
 fn phase10_visual_requires_offscreen_chain(visual: &ScenePhase10VisualPlan) -> bool {
     visual.puppet_path.is_none()
         && (!phase10_base_passes(visual).is_empty() || !visual.effect_chain.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_visual_first_pass_is_mask_alpha(visual: &ScenePhase10VisualPlan) -> bool {
+    phase10_base_passes(visual)
+        .first()
+        .map(|pass| pass.program.kind == SceneShaderProgramKind::MaskAlpha)
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_mask_apply_shader_program() -> SceneShaderProgram {
+    use crate::services::scene_shader_material_service::SceneShaderProgramKind;
+    SceneShaderProgram {
+        key: "clippingmaskimage4-apply".to_string(),
+        kind: SceneShaderProgramKind::MaskApply,
+        metal_source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-mask-apply.metal"),
+        vertex_entry: "compat_mask_apply_vertex",
+        fragment_entry: "compat_mask_apply_fragment",
+        variant_defines: BTreeMap::new(),
+    }
 }
 
 #[cfg(target_os = "macos")]
