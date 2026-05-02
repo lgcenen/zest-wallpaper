@@ -16,7 +16,7 @@ use commands::{
         get_player_input_snapshot, get_player_state, pause_resume_dynamic,
         set_scene_audio_interest,
     },
-    settings_commands::{get_scene_runtime_settings, set_scene_external_assets_path},
+    settings_commands::{get_scene_runtime_settings, open_external_url, set_scene_external_assets_path},
     wallpaper_commands::{
         get_wallpaper_details, import_wallpaper, list_wallpapers, remove_wallpaper,
         set_wallpaper_properties,
@@ -47,6 +47,7 @@ pub fn run() {
             get_player_audio_snapshot,
             get_player_diagnostics,
             set_scene_external_assets_path,
+            open_external_url,
             set_scene_audio_interest,
         ])
         .build(tauri::generate_context!())

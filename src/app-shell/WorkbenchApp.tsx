@@ -6,6 +6,7 @@ import {
   chooseSceneAssetsDirectory,
   importWallpaper,
   listWallpapers,
+  openExternalUrl,
   pauseResumeDynamic,
   removeWallpaper,
   setWallpaperProperties,
@@ -144,10 +145,15 @@ function revealWithinScrollContainer(
     return;
   }
 
-  container.scrollTo({
-    top: Math.max(0, nextTop),
-    behavior: options.behavior ?? "smooth",
-  });
+  const nextScrollTop = Math.max(0, nextTop);
+  if (typeof container.scrollTo === "function") {
+    container.scrollTo({
+      top: nextScrollTop,
+      behavior: options.behavior ?? "smooth",
+    });
+  } else {
+    container.scrollTop = nextScrollTop;
+  }
 }
 
 function extractMarkupImageSource(markup?: string | null) {
@@ -198,6 +204,10 @@ function resolveAssetReference(reference?: string | null, baseFilePath?: string 
       })();
 
   return sourcePath ? toAssetUrl(sourcePath) : null;
+}
+
+function isExternalHttpUrl(reference?: string | null) {
+  return /^(https?:)/i.test(reference ?? "");
 }
 
 function feedbackToneClass(tone: WorkbenchBannerState["tone"]) {
@@ -628,9 +638,10 @@ function PropertiesPanel({
                     extractMarkupImageSource(item.markup),
                     wallpaper.entryPath,
                   );
+                  const rawLinkTarget = extractMarkupHref(item.markup);
                   const linkTarget =
-                    resolveAssetReference(extractMarkupHref(item.markup), wallpaper.entryPath)
-                    ?? extractMarkupHref(item.markup);
+                    resolveAssetReference(rawLinkTarget, wallpaper.entryPath) ?? rawLinkTarget;
+                  const externalLinkTarget = isExternalHttpUrl(linkTarget) ? linkTarget : null;
                   if (!item.text?.trim() && !imageSource) {
                     return null;
                   }
@@ -641,8 +652,16 @@ function PropertiesPanel({
                           <a
                             className="property-description-link"
                             href={linkTarget}
-                            target="_blank"
-                            rel="noreferrer"
+                            target={externalLinkTarget ? "_blank" : undefined}
+                            rel={externalLinkTarget ? "noreferrer" : undefined}
+                            onClick={
+                              externalLinkTarget
+                                ? (event) => {
+                                    event.preventDefault();
+                                    void openExternalUrl(externalLinkTarget);
+                                  }
+                                : undefined
+                            }
                             title={item.text}
                           >
                             {item.text}

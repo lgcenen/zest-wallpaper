@@ -118,6 +118,7 @@ const mocks = vi.hoisted(() => {
         return { ...sceneRuntimeSettings };
       }),
       toAssetUrl: vi.fn((path?: string | null) => (path ? `asset://${path}` : null)),
+      openExternalUrl: vi.fn(async () => undefined),
       getPlayerState: vi.fn(async () => ({ active: restoredWallpaper, paused: false })),
       onPlayerLoad: vi.fn(async () => () => undefined),
       onPlayerPause: vi.fn(async () => () => undefined),
@@ -149,16 +150,27 @@ describe("phase-06 workbench gui", () => {
   beforeEach(() => {
     window.localStorage.clear();
     document.documentElement.style.removeProperty("--wb-gui-opacity");
-    mocks.gateway.listWallpapers.mockClear();
-    mocks.gateway.applyDynamicWallpaper.mockClear();
+    mocks.gateway.listWallpapers.mockReset();
+    mocks.gateway.listWallpapers.mockResolvedValue([
+      mocks.wallpaper,
+      mocks.fallbackWallpaper,
+      mocks.restoredWallpaper,
+    ]);
+    mocks.gateway.applyDynamicWallpaper.mockReset();
+    mocks.gateway.applyDynamicWallpaper.mockResolvedValue(mocks.wallpaper);
     mocks.gateway.chooseSceneAssetsDirectory.mockClear();
-    mocks.gateway.getSceneRuntimeSettings.mockClear();
-    mocks.gateway.setSceneExternalAssetsPath.mockClear();
+    mocks.gateway.getSceneRuntimeSettings.mockReset();
     mocks.gateway.getSceneRuntimeSettings.mockResolvedValue({
       externalAssetsPath: null,
       externalAssetsExists: false,
     });
-    mocks.gateway.applyDynamicWallpaper.mockImplementation(async () => mocks.wallpaper);
+    mocks.gateway.setSceneExternalAssetsPath.mockClear();
+    mocks.gateway.openExternalUrl.mockClear();
+    mocks.gateway.getPlayerState.mockReset();
+    mocks.gateway.getPlayerState.mockResolvedValue({
+      active: mocks.restoredWallpaper,
+      paused: false,
+    });
     mocks.usePlayerController.mockReturnValue({
       active: mocks.restoredWallpaper,
       paused: false,
@@ -260,6 +272,52 @@ describe("phase-06 workbench gui", () => {
     );
     expect(card.querySelector(".library-card-fallback-mark")?.textContent).toBe("S");
     expect(container.querySelector(".library-card-copy")).toBeNull();
+  });
+
+  it("opens external property links in the system browser", async () => {
+    const user = userEvent.setup();
+    const externalLinkWallpaper = {
+      ...mocks.wallpaper,
+      id: "wallpaper-external-link",
+      title: "External Link Wallpaper",
+      propertySections: [
+        {
+          key: "general",
+          label: "General",
+          order: 0,
+          condition: null,
+          items: [
+            {
+              kind: "description" as const,
+              key: null,
+              text: "bai22331的B站空间(点击跳转)",
+              markup:
+                '<center><b>壁纸全凭个人兴趣制作</b><br/><a href="https://space.bilibili.com/425570450">bai22331的B站空间(点击跳转)</a></center>',
+              order: 0,
+              condition: null,
+            },
+          ],
+        },
+      ],
+    };
+    mocks.gateway.listWallpapers.mockResolvedValue([externalLinkWallpaper]);
+    mocks.gateway.getPlayerState.mockResolvedValue({
+      active: externalLinkWallpaper,
+      paused: false,
+    });
+    mocks.usePlayerController.mockReturnValue({
+      active: externalLinkWallpaper,
+      paused: false,
+    });
+
+    render(<WorkbenchApp />);
+
+    await screen.findByRole("heading", { name: "External Link Wallpaper" });
+    await user.click(screen.getByRole("link", { name: "bai22331的B站空间(点击跳转)" }));
+
+    expect(mocks.gateway.openExternalUrl).toHaveBeenCalledWith(
+      "https://space.bilibili.com/425570450",
+    );
   });
 
   it("clears scene apply loading when the native apply chain does not return", async () => {

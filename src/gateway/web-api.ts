@@ -1,4 +1,4 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 async function chooseDirectory(title: string) {
@@ -19,6 +19,10 @@ export function chooseImportDirectory(title?: string) {
 
 export function chooseSceneAssetsDirectory(title?: string) {
   return chooseDirectory(title ?? "选择 Scene 外部 assets 目录");
+}
+
+export function openExternalUrl(url: string) {
+  return invoke<void>("open_external_url", { url });
 }
 
 export function toAssetUrl(path?: string | null) {
