@@ -53,6 +53,7 @@ struct SceneSpriteEmitterState {
 #[derive(Debug, Clone)]
 struct SceneSpriteParticle {
     texture_path: PathBuf,
+    texture_frames: Vec<SceneSpriteParticleFrame>,
     uv_rect: [f32; 4],
     aspect_ratio: f64,
     blend_mode: SceneRenderBlendMode,
@@ -71,6 +72,7 @@ struct SceneSpriteParticle {
     born_at_ms: f64,
     life_ms: f64,
     color: SceneRenderColor,
+    sequence_multiplier: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -337,6 +339,7 @@ fn spawn_particle(
 
     SceneSpriteParticle {
         texture_path: config.texture_path.clone(),
+        texture_frames: config.texture_frames.clone(),
         uv_rect: frame.uv_rect,
         aspect_ratio: frame.aspect_ratio,
         blend_mode: config.blend_mode,
@@ -362,6 +365,7 @@ fn spawn_particle(
             .range(config.lifetime_ms_range[0], config.lifetime_ms_range[1])
             .max(16.0),
         color,
+        sequence_multiplier: config.sequence_multiplier,
     }
 }
 
@@ -458,8 +462,21 @@ fn primitive_from_particle(
         .map(|range| range[0] + (range[1] - range[0]) * age)
         .unwrap_or(1.0)
         .max(0.0);
+    let (uv_rect, aspect_ratio) = if particle.sequence_multiplier > 0.0
+        && particle.texture_frames.len() > 1
+    {
+        let elapsed_s = age_ms / 1000.0;
+        let frame_idx = (elapsed_s * particle.sequence_multiplier
+            * particle.texture_frames.len() as f64)
+            .floor() as usize
+            % particle.texture_frames.len();
+        let frame = &particle.texture_frames[frame_idx];
+        (frame.uv_rect, frame.aspect_ratio)
+    } else {
+        (particle.uv_rect, particle.aspect_ratio)
+    };
     let height = (particle.size * size_factor).max(0.5);
-    let width = (height * particle.aspect_ratio).max(0.5);
+    let width = (height * aspect_ratio).max(0.5);
     let render_position = oscillated_position(particle, age_ms / 1000.0);
     let top = canvas_height - render_position[1] - height / 2.0;
     Some(SceneSpriteParticlePrimitive {
@@ -469,7 +486,7 @@ fn primitive_from_particle(
         top,
         width,
         height,
-        uv_rect: particle.uv_rect,
+        uv_rect,
         rotation: particle.rotation_degrees.to_radians(),
         opacity,
         color: SceneRenderColor {
@@ -594,6 +611,7 @@ mod tests {
             max_count: 24,
             start_time_ms: 0.0,
             instantaneous: false,
+            sequence_multiplier: 0.0,
         }
     }
 
@@ -788,5 +806,93 @@ mod tests {
         assert!(primitives
             .iter()
             .any(|primitive| primitive.texture_path == PathBuf::from("/tmp/child.png")));
+    }
+
+    #[test]
+    fn sprite_sequence_multiplier_zero_does_not_cycle_frames() {
+        let c = SceneSpriteParticleConfig {
+            texture_frames: vec![
+                SceneSpriteParticleFrame {
+                    uv_rect: [0.0, 0.0, 0.5, 0.5],
+                    aspect_ratio: 1.0,
+                },
+                SceneSpriteParticleFrame {
+                    uv_rect: [0.5, 0.0, 1.0, 0.5],
+                    aspect_ratio: 2.0,
+                },
+            ],
+            sequence_multiplier: 0.0,
+            ..config()
+        };
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 9,
+            object_name: "Multi".to_string(),
+            schedule_mode: SceneParticleScheduleMode::Autonomous,
+            config: c.clone(),
+            children: vec![],
+        };
+
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance(&[item.clone()], 0.0);
+        scheduler.advance(&[item.clone()], 50.0);
+        let p1 = scheduler.primitives(&item, 400.0, 50.0);
+
+        scheduler.advance(&[item.clone()], 400.0);
+        let p2 = scheduler.primitives(&item, 400.0, 400.0);
+
+        assert!(!p1.is_empty());
+        assert!(!p2.is_empty());
+        let no_cycle = p1.iter().all(|primitive| {
+            let matching = p2.iter().find(|p2| primitive.uv_rect == p2.uv_rect);
+            matching.is_some()
+        });
+        assert!(
+            no_cycle,
+            "sequence_multiplier=0 should not cause frame UV to cycle beyond spawn-time random choice"
+        );
+    }
+
+    #[test]
+    fn sprite_sequence_multiplier_cycles_frames_over_time() {
+        let c = SceneSpriteParticleConfig {
+            texture_frames: vec![
+                SceneSpriteParticleFrame {
+                    uv_rect: [0.0, 0.0, 0.5, 0.5],
+                    aspect_ratio: 1.0,
+                },
+                SceneSpriteParticleFrame {
+                    uv_rect: [0.5, 0.0, 1.0, 0.5],
+                    aspect_ratio: 2.0,
+                },
+            ],
+            sequence_multiplier: 3.0,
+            lifetime_ms_range: [2000.0, 2000.0],
+            emission_rate: 600.0,
+            max_count: 60,
+            ..config()
+        };
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 10,
+            object_name: "Cycle".to_string(),
+            schedule_mode: SceneParticleScheduleMode::Autonomous,
+            config: c.clone(),
+            children: vec![],
+        };
+
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance(&[item.clone()], 0.0);
+        scheduler.advance(&[item.clone()], 16.0);
+        let p1 = scheduler.primitives(&item, 400.0, 16.0);
+
+        scheduler.advance(&[item.clone()], 500.0);
+        let p2 = scheduler.primitives(&item, 400.0, 500.0);
+
+        assert!(!p1.is_empty());
+        assert!(!p2.is_empty());
+        let has_uv_change = p1.iter().zip(p2.iter()).any(|(a, b)| a.uv_rect != b.uv_rect);
+        assert!(
+            has_uv_change,
+            "sequence_multiplier should cycle frame UV over time"
+        );
     }
 }

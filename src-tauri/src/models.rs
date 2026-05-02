@@ -460,6 +460,8 @@ pub struct SceneParticleSystemRuntime {
     pub initializers: Vec<SceneParticleStageRuntime>,
     #[serde(default)]
     pub operators: Vec<SceneParticleStageRuntime>,
+    #[serde(default)]
+    pub sequence_multiplier: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

@@ -256,6 +256,7 @@ pub struct SceneSpriteParticleConfig {
     pub max_count: usize,
     pub start_time_ms: f64,
     pub instantaneous: bool,
+    pub sequence_multiplier: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1598,6 +1599,11 @@ fn plan_sprite_particle_config(
         instantaneous: emitter
             .map(|emitter| emitter.instantaneous)
             .unwrap_or(false),
+        sequence_multiplier: runtime
+            .system
+            .sequence_multiplier
+            .unwrap_or(0.0)
+            .max(0.0),
     })
 }
 
@@ -3667,6 +3673,32 @@ mod tests {
         let config = &report.plan.sprite_particles[0].config;
         assert_eq!(config.fade_in_ms, 100.0);
         assert_eq!(config.fade_out_ms, 900.0);
+    }
+
+    #[test]
+    fn sprite_system_sequence_multiplier_enters_config() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut particle = particle_object(4, "Sprite", SceneParticleKind::PetalTrail);
+        if let EvaluatedSceneObject::Particle { base, .. } = &mut particle {
+            base.transform.position = [0.0, 0.0, 0.0];
+            base.transform.rotation = 0.0;
+        }
+        let mut scene = runtime_scene_with_objects(vec![(4, particle)], vec![4]);
+        let mut runtime = supported_sprite_particle_runtime(4);
+        runtime.system.sequence_multiplier = Some(2.5);
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        let config = &report.plan.sprite_particles[0].config;
+        assert!((config.sequence_multiplier - 2.5).abs() < 0.001);
     }
 
     #[test]

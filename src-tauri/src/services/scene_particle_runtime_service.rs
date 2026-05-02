@@ -107,6 +107,8 @@ fn parse_particle_system(root: &Value) -> SceneParticleSystemRuntime {
             .into_iter()
             .filter_map(parse_stage)
             .collect(),
+        sequence_multiplier: f64_field(root, "sequencemultiplier")
+            .or_else(|| f64_field(root, "sequenceMultiplier")),
     }
 }
 
@@ -554,7 +556,6 @@ fn sprite_stage_name_is_unsupported(name: &str) -> bool {
         "vortex",
         "remap",
         "inherit",
-        "sequence",
         "layerimage",
         "maintain",
         "oscillate",
@@ -1138,5 +1139,32 @@ mod tests {
             d.code == "particle-emitter-field-semi-adapted"
                 && d.diagnostic_kind == crate::models::SceneParticleDiagnosticKind::SemiAdapted
         }));
+    }
+
+    #[test]
+    fn sprite_runtime_allows_sequence_operator_without_blocking_adapter() {
+        let particle = json!({
+            "material": "materials/genericparticle.json",
+            "emitter": [{"name": "sphererandom", "rate": 20}],
+            "renderer": [{"name": "sprite"}],
+            "operator": [{"name": "sequence"}]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/sprite-sequence.json".to_string(),
+            &particle,
+        );
+
+        assert!(
+            runtime.adapter.supported,
+            "sprite adapter should remain supported when sequence is authored"
+        );
+        assert!(
+            !runtime
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"),
+            "sequence should no longer block the sprite adapter"
+        );
     }
 }

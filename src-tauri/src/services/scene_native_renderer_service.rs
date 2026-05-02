@@ -4585,6 +4585,7 @@ fn hash_sprite_particle_config(
     config.max_count.hash(hasher);
     config.start_time_ms.to_bits().hash(hasher);
     config.instantaneous.hash(hasher);
+    config.sequence_multiplier.to_bits().hash(hasher);
 }
 
 #[cfg(target_os = "macos")]
