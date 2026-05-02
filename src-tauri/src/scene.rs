@@ -2453,11 +2453,10 @@ mod tests {
         assert!(manifest.particle_layers.is_empty());
         assert_eq!(manifest.particle_runtimes.len(), 1);
         assert_eq!(manifest.particle_runtimes[0].system.children.len(), 3);
-        assert!(!manifest.particle_runtimes[0].adapter.supported);
-        assert!(manifest.particle_runtimes[0]
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "particle-child-hierarchy-deferred"));
+        assert!(
+            manifest.particle_runtimes[0].adapter.supported,
+            "SpriteTrail with children should be supported in the first-class sprite path"
+        );
         assert!(manifest.render_graph.is_empty());
 
         let _ = fs::remove_dir_all(root);

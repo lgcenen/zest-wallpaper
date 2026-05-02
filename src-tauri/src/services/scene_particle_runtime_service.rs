@@ -262,7 +262,9 @@ fn classify_particle_runtime(
         | Some(SceneParticleRendererFamily::RopeTrail) => {}
     }
 
-    if renderer_family == Some(SceneParticleRendererFamily::Sprite) {
+    if renderer_family == Some(SceneParticleRendererFamily::Sprite)
+        || renderer_family == Some(SceneParticleRendererFamily::SpriteTrail)
+    {
         diagnostics.extend(sprite_particle_runtime_diagnostics(system));
     } else if !system.children.is_empty() {
         let unsupported_child = system
@@ -292,7 +294,10 @@ fn classify_particle_runtime(
         ));
     }
 
-    if renderer_family != Some(SceneParticleRendererFamily::Sprite) {
+    if !matches!(
+        renderer_family,
+        Some(SceneParticleRendererFamily::Sprite | SceneParticleRendererFamily::SpriteTrail)
+    ) {
         for stage_name in system
             .initializer_names
             .iter()
@@ -315,7 +320,14 @@ fn classify_particle_runtime(
             .map(|emitter| emitter.schedule_mode)
             .unwrap_or(SceneParticleScheduleMode::InputDriven);
 
-        if renderer_family != Some(SceneParticleRendererFamily::Sprite) {
+        let is_sprite_family = matches!(
+            renderer_family,
+            Some(
+                SceneParticleRendererFamily::Sprite | SceneParticleRendererFamily::SpriteTrail
+            )
+        );
+
+        if !is_sprite_family {
             if let Some(renderer) = renderer {
                 if renderer.min_length.is_some() {
                     diagnostics.push(semi_adapted_diagnostic(
@@ -350,7 +362,7 @@ fn classify_particle_runtime(
             }
         }
 
-        if renderer_family == Some(SceneParticleRendererFamily::Sprite) {
+        if is_sprite_family {
             if let Some(emitter) = emitter {
                 if emitter.control_point.is_some() {
                     diagnostics.push(semi_adapted_diagnostic(
@@ -470,8 +482,9 @@ fn particle_draw_kind(family: SceneParticleRendererFamily) -> Option<ScenePartic
         SceneParticleRendererFamily::Rope | SceneParticleRendererFamily::RopeTrail => {
             Some(SceneParticleKind::LineTrail)
         }
-        SceneParticleRendererFamily::SpriteTrail => Some(SceneParticleKind::PetalTrail),
-        SceneParticleRendererFamily::Sprite | SceneParticleRendererFamily::Unsupported => None,
+        SceneParticleRendererFamily::SpriteTrail
+        | SceneParticleRendererFamily::Sprite
+        | SceneParticleRendererFamily::Unsupported => None,
     }
 }
 
@@ -1185,6 +1198,26 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"),
             "sequence should no longer block the sprite adapter"
+        );
+    }
+
+    #[test]
+    fn spritetrail_has_no_trail_draw_kind_and_is_sprite_family() {
+        let particle = json!({
+            "emitter": [{"name": "root", "rate": 24}],
+            "renderer": [{"name": "spritetrail", "length": 12}],
+            "material": "materials/genericparticle.json"
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/spritetrail.json".to_string(),
+            &particle,
+        );
+
+        assert!(runtime.adapter.supported);
+        assert!(
+            runtime.adapter.draw_kind.is_none(),
+            "SpriteTrail should not produce a narrow trail draw_kind"
         );
     }
 }
