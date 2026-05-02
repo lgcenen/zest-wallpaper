@@ -371,6 +371,7 @@ fn classify_particle_runtime(
                     ));
                 }
             }
+            diagnostics.extend(sprite_stage_semi_adapted_diagnostics(system));
         }
 
         (
@@ -437,6 +438,40 @@ fn sprite_particle_runtime_diagnostics(
         }
     }
 
+    diagnostics
+}
+
+fn sprite_stage_semi_adapted_diagnostics(
+    system: &SceneParticleSystemRuntime,
+) -> Vec<SceneParticleRuntimeDiagnostic> {
+    let mut diagnostics = Vec::new();
+    for stage_name in system
+        .initializer_names
+        .iter()
+        .chain(system.operator_names.iter())
+    {
+        let lower = stage_name.to_ascii_lowercase();
+        let compact: String = lower
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if compact.contains("colorchange") || compact.contains("colourchange") {
+            diagnostics.push(semi_adapted_diagnostic(
+                "particle-stage-semi-adapted",
+                format!(
+                    "Sprite particle stage {stage_name:?} is whitelisted but not yet consumed by the runtime."
+                ),
+            ));
+        }
+        if compact.contains("controlpointattract") {
+            diagnostics.push(semi_adapted_diagnostic(
+                "particle-stage-semi-adapted",
+                format!(
+                    "Sprite particle stage {stage_name:?} is whitelisted but not yet consumed by the runtime."
+                ),
+            ));
+        }
+    }
     diagnostics
 }
 
@@ -572,6 +607,20 @@ fn sprite_stage_name_is_unsupported(name: &str) -> bool {
     {
         return false;
     }
+    if compact == "colorchange"
+        || compact.ends_with("colorchange")
+        || compact == "colourchange"
+        || compact.ends_with("colourchange")
+    {
+        return false;
+    }
+    if compact == "controlpointattract"
+        || compact.ends_with("controlpointattract")
+        || compact == "attractcontrolpoint"
+        || compact.ends_with("attractcontrolpoint")
+    {
+        return false;
+    }
 
     let unsupported_tokens = [
         "collision",
@@ -586,9 +635,6 @@ fn sprite_stage_name_is_unsupported(name: &str) -> bool {
         "layerimage",
         "maintain",
         "oscillate",
-        "colorchange",
-        "colourchange",
-        "controlpointattract",
     ];
     unsupported_tokens.iter().any(|token| lower.contains(token))
 }
@@ -1219,5 +1265,63 @@ mod tests {
             runtime.adapter.draw_kind.is_none(),
             "SpriteTrail should not produce a narrow trail draw_kind"
         );
+    }
+
+    #[test]
+    fn colorchange_produces_semi_adapted_diagnostic_not_blocking() {
+        let particle = json!({
+            "material": "materials/genericparticle.json",
+            "emitter": [{"name": "sphererandom", "rate": 20}],
+            "renderer": [{"name": "sprite"}],
+            "operator": [{"name": "colorchange"}]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/colorchange.json".to_string(),
+            &particle,
+        );
+
+        assert!(runtime.adapter.supported);
+        assert!(
+            !runtime
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "particle-stage-unsupported"),
+            "colorchange should not block the sprite adapter"
+        );
+        assert!(runtime
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "particle-stage-semi-adapted"
+                && d.diagnostic_kind == crate::models::SceneParticleDiagnosticKind::SemiAdapted));
+    }
+
+    #[test]
+    fn controlpointattract_produces_semi_adapted_diagnostic_not_blocking() {
+        let particle = json!({
+            "material": "materials/genericparticle.json",
+            "emitter": [{"name": "sphererandom", "rate": 20}],
+            "renderer": [{"name": "sprite"}],
+            "operator": [{"name": "controlpointattract"}]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/controlpointattract.json".to_string(),
+            &particle,
+        );
+
+        assert!(runtime.adapter.supported);
+        assert!(
+            !runtime
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "particle-stage-unsupported"),
+            "controlpointattract should not block the sprite adapter"
+        );
+        assert!(runtime
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "particle-stage-semi-adapted"
+                && d.diagnostic_kind == crate::models::SceneParticleDiagnosticKind::SemiAdapted));
     }
 }
