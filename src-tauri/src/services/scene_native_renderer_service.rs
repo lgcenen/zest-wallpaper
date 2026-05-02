@@ -4511,6 +4511,7 @@ fn hash_sprite_particle_item(
     for child in &item.children {
         child.child_type.hash(hasher);
         child.probability.to_bits().hash(hasher);
+        child.control_point_start_index.hash(hasher);
         hash_sprite_particle_config(hasher, &child.config);
     }
 }

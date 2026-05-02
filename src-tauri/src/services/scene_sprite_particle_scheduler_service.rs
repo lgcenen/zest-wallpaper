@@ -818,6 +818,7 @@ mod tests {
                 child_type: SceneParticleChildKind::EventDeath,
                 config: child_config,
                 probability: 1.0,
+                control_point_start_index: None,
             }],
         };
         let mut scheduler = SceneSpriteParticleScheduler::default();

@@ -266,6 +266,7 @@ pub struct SceneSpriteParticleChildItem {
     pub child_type: SceneParticleChildKind,
     pub config: SceneSpriteParticleConfig,
     pub probability: f64,
+    pub control_point_start_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1345,12 +1346,27 @@ fn plan_sprite_particle_child(
         return None;
     }
 
+    if let Some(cp_start) = child.control_point_start_index {
+        let cp_index = cp_start as usize;
+        if cp_index < parent.system.control_points.len() {
+            let cp_offset = parent.system.control_points[cp_index]
+                .offset
+                .unwrap_or([0.0, 0.0, 0.0]);
+            child_runtime.object_origin = [
+                child_runtime.object_origin[0] + cp_offset[0],
+                child_runtime.object_origin[1] + cp_offset[1],
+                child_runtime.object_origin[2] + cp_offset[2],
+            ];
+        }
+    }
+
     let config =
         plan_sprite_particle_config(base.id, &base.name, base, &child_runtime, resolver, issues)?;
     Some(SceneSpriteParticleChildItem {
         child_type: child.child_type,
         config,
         probability: child.probability.unwrap_or(1.0).clamp(0.0, 1.0),
+        control_point_start_index: child.control_point_start_index,
     })
 }
 
@@ -3651,6 +3667,102 @@ mod tests {
         assert_eq!(child.max_count, 4);
         assert_eq!(child.size_range, [2.0, 4.0]);
         assert_eq!(child.lifetime_ms_range, [600.0, 1200.0]);
+    }
+
+    #[test]
+    fn sprite_child_control_point_start_index_offsets_spawn_origin() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(
+                4,
+                particle_object(4, "Sprite", SceneParticleKind::PetalTrail),
+            )],
+            vec![4],
+        );
+        let mut runtime = supported_sprite_particle_runtime(4);
+        runtime.system.control_points = vec![
+            SceneParticleControlPointRuntime {
+                id: Some(0),
+                offset: Some([0.0, 0.0, 0.0]),
+                ..SceneParticleControlPointRuntime::default()
+            },
+            SceneParticleControlPointRuntime {
+                id: Some(1),
+                offset: Some([50.0, -30.0, 0.0]),
+                ..SceneParticleControlPointRuntime::default()
+            },
+        ];
+        runtime.system.children[0].control_point_start_index = Some(1);
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        let child = &report.plan.sprite_particles[0].children[0];
+        assert_eq!(child.control_point_start_index, Some(1));
+
+        let mut no_offset = scene.clone();
+        let mut runtime_no = supported_sprite_particle_runtime(4);
+        runtime_no.system.control_points = vec![
+            SceneParticleControlPointRuntime {
+                id: Some(0),
+                offset: Some([0.0, 0.0, 0.0]),
+                ..SceneParticleControlPointRuntime::default()
+            },
+            SceneParticleControlPointRuntime {
+                id: Some(1),
+                offset: Some([50.0, -30.0, 0.0]),
+                ..SceneParticleControlPointRuntime::default()
+            },
+        ];
+        no_offset.source.particle_runtimes = vec![runtime_no];
+        let report_no = build_scene_render_plan_with_resolver(&no_offset, Some(&resolver));
+
+        let child_no = &report_no.plan.sprite_particles[0].children[0];
+        assert_eq!(child_no.control_point_start_index, None);
+
+        let dx = child.config.spawn_origin[0] - child_no.config.spawn_origin[0];
+        let dy = child.config.spawn_origin[1] - child_no.config.spawn_origin[1];
+        assert!(
+            dx > 30.0,
+            "control_point offset [50,-30] should shift spawn_origin x rightward, got dx={dx}"
+        );
+        assert!(
+            dy < -10.0,
+            "control_point offset [50,-30] should shift spawn_origin y upward, got dy={dy}"
+        );
+    }
+
+    #[test]
+    fn sprite_child_control_point_start_index_none_when_missing() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(
+                4,
+                particle_object(4, "Sprite", SceneParticleKind::PetalTrail),
+            )],
+            vec![4],
+        );
+        let runtime = supported_sprite_particle_runtime(4);
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        let child = &report.plan.sprite_particles[0].children[0];
+        assert_eq!(child.control_point_start_index, None);
     }
 
     #[test]
