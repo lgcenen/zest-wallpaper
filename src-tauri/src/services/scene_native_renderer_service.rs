@@ -4485,6 +4485,9 @@ fn particle_plan_signature(plan: &SceneRenderPlan) -> Option<u64> {
         item.sign.to_bits().hash(&mut hasher);
         item.spawn_radius[0].to_bits().hash(&mut hasher);
         item.spawn_radius[1].to_bits().hash(&mut hasher);
+        item.uv_scrolling[0].to_bits().hash(&mut hasher);
+        item.uv_scrolling[1].to_bits().hash(&mut hasher);
+        item.fade_alpha.to_bits().hash(&mut hasher);
     }
     for item in &plan.sprite_particles {
         2_u8.hash(&mut hasher);
@@ -5582,6 +5585,13 @@ fn quad_primitive_from_render_quad(
 
 #[cfg(target_os = "macos")]
 fn quad_primitive_from_particle(primitive: SceneParticlePrimitive) -> SceneQuadPrimitive {
+    let uv = full_quad_uv_rect();
+    let uv_rect = [
+        uv[0] + primitive.uv_offset[0] as f32,
+        uv[1] + primitive.uv_offset[1] as f32,
+        uv[2],
+        uv[3],
+    ];
     SceneQuadPrimitive {
         left: primitive.left,
         top: primitive.top,
@@ -5591,7 +5601,7 @@ fn quad_primitive_from_particle(primitive: SceneParticlePrimitive) -> SceneQuadP
         opacity: primitive.opacity,
         flip_x: false,
         flip_y: false,
-        uv_rect: full_quad_uv_rect(),
+        uv_rect,
         color: primitive.color,
         transform_origin_x: primitive.transform_origin_x,
         transform_origin_y: primitive.transform_origin_y,
@@ -6106,6 +6116,8 @@ mod tests {
                 start_time_ms: 0.0,
                 sign: 1.0,
                 spawn_radius: [0.0, 0.0],
+                uv_scrolling: [0.0, 0.0],
+                fade_alpha: 0.0,
             }],
             sprite_particles: Vec::new(),
             sounds: Vec::new(),
@@ -6771,6 +6783,8 @@ mod tests {
                 start_time_ms: 0.0,
                 sign: 1.0,
                 spawn_radius: [0.0, 0.0],
+                uv_scrolling: [0.0, 0.0],
+                fade_alpha: 0.0,
             },
         ];
         let signature = particle_plan_signature(&plan);

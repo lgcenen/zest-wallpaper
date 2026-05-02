@@ -208,6 +208,8 @@ pub struct SceneRenderParticleItem {
     pub start_time_ms: f64,
     pub sign: f64,
     pub spawn_radius: [f64; 2],
+    pub uv_scrolling: [f64; 2],
+    pub fade_alpha: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1081,6 +1083,8 @@ fn plan_particle_item(
             start_time_ms: 0.0,
             sign: 1.0,
             spawn_radius: [0.0, 0.0],
+            uv_scrolling: [0.0, 0.0],
+            fade_alpha: 0.0,
         });
     };
 
@@ -1180,6 +1184,19 @@ fn plan_particle_item(
                 [min, max]
             })
             .unwrap_or([0.0, 0.0]),
+        uv_scrolling: runtime
+            .system
+            .renderers
+            .first()
+            .and_then(|renderer| renderer.uv_scrolling)
+            .unwrap_or([0.0, 0.0]),
+        fade_alpha: runtime
+            .system
+            .renderers
+            .first()
+            .and_then(|renderer| renderer.fade_alpha)
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0),
     })
 }
 
@@ -3284,6 +3301,47 @@ mod tests {
         assert_eq!(report.plan.particles.len(), 1);
         assert_eq!(report.plan.particles[0].sign, 1.0);
         assert_eq!(report.plan.particles[0].spawn_radius, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn render_plan_passes_renderer_uv_scrolling_and_fade_alpha_to_particle_item() {
+        let mut scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+        let mut runtime = supported_particle_runtime(
+            4,
+            SceneParticleKind::LineTrail,
+            SceneParticleScheduleMode::Autonomous,
+        );
+        runtime.system.renderers = vec![SceneParticleRendererRuntime {
+            uv_scrolling: Some([0.5, -0.25]),
+            fade_alpha: Some(0.3),
+            ..SceneParticleRendererRuntime::default()
+        }];
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(report.plan.particles[0].uv_scrolling, [0.5, -0.25]);
+        assert!((report.plan.particles[0].fade_alpha - 0.3).abs() < 0.001);
+    }
+
+    #[test]
+    fn render_plan_defaults_uv_scrolling_and_fade_alpha_for_missing_renderer_fields() {
+        let scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(report.plan.particles[0].uv_scrolling, [0.0, 0.0]);
+        assert_eq!(report.plan.particles[0].fade_alpha, 0.0);
     }
 
     #[test]

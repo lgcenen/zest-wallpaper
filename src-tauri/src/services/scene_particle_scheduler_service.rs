@@ -24,6 +24,7 @@ pub struct SceneParticlePrimitive {
     pub color: SceneRenderColor,
     pub transform_origin_x: f64,
     pub transform_origin_y: f64,
+    pub uv_offset: [f64; 2],
 }
 
 #[derive(Debug, Default)]
@@ -167,8 +168,13 @@ impl SceneParticleScheduler {
                 let length = (dx * dx + dy * dy).sqrt().max(1.0);
                 let center_x = (start.x + end.x) / 2.0;
                 let center_y_bottom = (start.y + end.y) / 2.0;
-                let age = clamp_f64((now_ms - end.created_at_ms) / item.lifetime_ms, 0.0, 1.0);
-                let alpha = 1.0 - age;
+                let point_age = now_ms - end.created_at_ms;
+                let age = clamp_f64(point_age / item.lifetime_ms, 0.0, 1.0);
+                let alpha = (1.0 - age) * (1.0 - item.fade_alpha);
+                let uv_offset = [
+                    (point_age / 1000.0 * item.uv_scrolling[0]) % 1.0,
+                    (point_age / 1000.0 * item.uv_scrolling[1]) % 1.0,
+                ];
                 for width_factor in [3.4, 1.6] {
                     let thickness = (item.size * width_factor).max(1.0);
                     let color = SceneRenderColor {
@@ -193,6 +199,7 @@ impl SceneParticleScheduler {
                         color,
                         transform_origin_x: center_x,
                         transform_origin_y: top + thickness / 2.0,
+                        uv_offset,
                     });
                 }
             }
@@ -455,8 +462,13 @@ fn primitive_from_particle(
     if now_ms - particle.born_at_ms >= particle.life_ms {
         return None;
     }
-    let age = clamp_f64((now_ms - particle.born_at_ms) / particle.life_ms, 0.0, 1.0);
-    let opacity = 1.0 - age;
+    let particle_age = now_ms - particle.born_at_ms;
+    let age = clamp_f64(particle_age / particle.life_ms, 0.0, 1.0);
+    let opacity = (1.0 - age) * (1.0 - item.fade_alpha);
+    let uv_offset = [
+        (particle_age / 1000.0 * item.uv_scrolling[0]) % 1.0,
+        (particle_age / 1000.0 * item.uv_scrolling[1]) % 1.0,
+    ];
     let width = if streak {
         (particle.size * 3.0).max(2.0)
     } else {
@@ -481,6 +493,7 @@ fn primitive_from_particle(
         },
         transform_origin_x: particle.x,
         transform_origin_y: top + height / 2.0,
+        uv_offset,
     })
 }
 
@@ -527,6 +540,8 @@ mod tests {
             start_time_ms: 0.0,
             sign: 1.0,
             spawn_radius: [0.0, 0.0],
+            uv_scrolling: [0.0, 0.0],
+            fade_alpha: 0.0,
         }
     }
 
@@ -552,6 +567,8 @@ mod tests {
             start_time_ms: 0.0,
             sign: 1.0,
             spawn_radius: [0.0, 0.0],
+            uv_scrolling: [0.0, 0.0],
+            fade_alpha: 0.0,
         }
     }
 
@@ -577,6 +594,8 @@ mod tests {
             start_time_ms: 0.0,
             sign: 1.0,
             spawn_radius: [0.0, 0.0],
+            uv_scrolling: [0.0, 0.0],
+            fade_alpha: 0.0,
         }
     }
 
@@ -839,5 +858,84 @@ mod tests {
 
         let primitives = scheduler.petal_primitives(&item, 1080.0, 1200.0);
         assert!(!primitives.is_empty(), "fallback spread should still emit");
+    }
+
+    #[test]
+    fn fade_alpha_reduces_primitive_opacity() {
+        let mut item = autonomous_item();
+        item.fade_alpha = 0.5;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1200.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1200.0);
+        assert!(!primitives.is_empty());
+
+        for primitive in &primitives {
+            assert!(
+                primitive.opacity <= 0.5 + 0.001,
+                "fade_alpha=0.5 should halve effective opacity; got {}",
+                primitive.opacity
+            );
+        }
+    }
+
+    #[test]
+    fn fade_alpha_zero_has_no_effect_on_opacity() {
+        let mut item = autonomous_item();
+        item.fade_alpha = 0.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1200.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1200.0);
+        assert!(!primitives.is_empty());
+        for primitive in &primitives {
+            assert!(
+                primitive.opacity > 0.5,
+                "fade_alpha=0.0 should not reduce opacity; got {}",
+                primitive.opacity
+            );
+        }
+    }
+
+    #[test]
+    fn uv_offset_is_zero_when_uv_scrolling_is_zero() {
+        let mut item = autonomous_item();
+        item.uv_scrolling = [0.0, 0.0];
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1200.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1200.0);
+        for primitive in &primitives {
+            assert_eq!(primitive.uv_offset, [0.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn uv_offset_tracks_uv_scrolling_over_time() {
+        let mut item = autonomous_item();
+        item.uv_scrolling = [0.5, -0.25];
+        item.emission_rate = 600.0;
+        item.max_count = 200;
+        item.lifetime_ms = 5000.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 0.0);
+        scheduler.advance(None, &[item.clone()], 16.0);
+        scheduler.advance(None, &[item.clone()], 1000.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1000.0);
+        let has_offset = primitives.iter().any(|p| {
+            (p.uv_offset[0] - 0.0).abs() > 0.01 || (p.uv_offset[1] - 0.0).abs() > 0.01
+        });
+        assert!(
+            has_offset,
+            "uv_scrolling should produce non-zero uv_offset after elapsed time"
+        );
     }
 }
