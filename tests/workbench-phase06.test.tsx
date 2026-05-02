@@ -227,6 +227,7 @@ describe("phase-06 workbench gui", () => {
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe("light");
       expect(document.documentElement.dataset.workbenchTheme).toBe("light");
+      expect(document.documentElement.dataset.workbenchTransparency).toBe("translucent");
       expect(document.documentElement.style.getPropertyValue("--wb-gui-opacity")).toBe("0.70");
     });
     expect(
@@ -251,6 +252,7 @@ describe("phase-06 workbench gui", () => {
     expect((screen.getByLabelText("GUI Opacity") as HTMLInputElement).value).toBe("70");
     fireEvent.input(screen.getByLabelText("GUI Opacity"), { target: { value: "100" } });
     await waitFor(() => {
+      expect(document.documentElement.dataset.workbenchTransparency).toBe("opaque");
       expect(document.documentElement.style.getPropertyValue("--wb-gui-opacity")).toBe("1.00");
     });
     expect(
@@ -372,6 +374,162 @@ describe("phase-06 workbench gui", () => {
       expect(screen.queryByRole("listbox", { name: "排序" })).toBeNull();
     });
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "下一个控件" }));
+  });
+
+  it("applies the clicked custom select option before the menu closes", async () => {
+    const user = userEvent.setup();
+
+    function SelectHarness() {
+      const [value, setValue] = useState("recent");
+      return (
+        <WorkbenchSelect
+          ariaLabel="排序"
+          value={value}
+          options={[
+            { value: "recent", label: "最近导入" },
+            { value: "title", label: "名称" },
+          ]}
+          onChange={setValue}
+        />
+      );
+    }
+
+    render(<SelectHarness />);
+
+    await user.click(screen.getByLabelText("排序"));
+    await user.click(await screen.findByRole("option", { name: "名称" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("listbox", { name: "排序" })).toBeNull();
+    });
+    expect(screen.getByLabelText("排序").textContent).toContain("名称");
+  });
+
+  it("keeps manually opened property sections expanded after a successful property write", async () => {
+    const user = userEvent.setup();
+    const multiSectionWallpaper = {
+      ...mocks.wallpaper,
+      id: "wallpaper-multi-section",
+      title: "Multi Section Wallpaper",
+      propertySchema: [
+        {
+          key: "speed",
+          label: "Speed",
+          markup: null,
+          kind: "slider" as const,
+          value: 1,
+          defaultValue: 1,
+          min: 0,
+          max: 5,
+          step: 0.5,
+          condition: null,
+          order: 0,
+          presentation: "control" as const,
+          options: [],
+        },
+        {
+          key: "toggleNight",
+          label: "Night Mode",
+          markup: null,
+          kind: "bool" as const,
+          value: false,
+          defaultValue: false,
+          min: null,
+          max: null,
+          step: null,
+          condition: null,
+          order: 1,
+          presentation: "control" as const,
+          options: [],
+        },
+      ],
+      propertySections: [
+        {
+          key: "general",
+          label: "General",
+          order: 0,
+          condition: null,
+          items: [
+            {
+              kind: "property" as const,
+              key: "speed",
+              text: null,
+              markup: null,
+              order: 0,
+              condition: null,
+            },
+          ],
+        },
+        {
+          key: "appearance",
+          label: "Appearance",
+          order: 1,
+          condition: null,
+          items: [
+            {
+              kind: "property" as const,
+              key: "toggleNight",
+              text: null,
+              markup: null,
+              order: 0,
+              condition: null,
+            },
+          ],
+        },
+      ],
+    };
+    const persistedWallpaper = {
+      ...multiSectionWallpaper,
+      propertySchema: multiSectionWallpaper.propertySchema.map((property) =>
+        property.key === "toggleNight"
+          ? { ...property, value: true }
+          : property,
+      ),
+      propertySections: multiSectionWallpaper.propertySections.map((section) => ({
+        ...section,
+        items: section.items.map((item) => ({ ...item })),
+      })),
+    };
+
+    mocks.gateway.listWallpapers.mockResolvedValue([multiSectionWallpaper]);
+    mocks.gateway.getPlayerState.mockResolvedValue({
+      active: multiSectionWallpaper,
+      paused: false,
+    });
+    mocks.usePlayerController.mockReturnValue({
+      active: multiSectionWallpaper,
+      paused: false,
+    });
+    mocks.gateway.setWallpaperProperties.mockResolvedValue(persistedWallpaper);
+
+    const { container } = render(<WorkbenchApp />);
+
+    await screen.findByRole("heading", { name: "Multi Section Wallpaper" });
+
+    const appearanceTrigger = screen.getByRole("button", { name: /Appearance/ });
+    await user.click(appearanceTrigger);
+
+    expect(
+      container
+        .querySelector('[data-property-section="appearance"]')
+        ?.classList.contains("open"),
+    ).toBe(true);
+
+    await user.click(screen.getByLabelText("Night Mode"));
+
+    await waitFor(() => {
+      expect(mocks.gateway.setWallpaperProperties).toHaveBeenCalledWith(
+        "wallpaper-multi-section",
+        { toggleNight: true },
+      );
+    });
+
+    expect(
+      container
+        .querySelector('[data-property-section="appearance"]')
+        ?.classList.contains("open"),
+    ).toBe(true);
+    expect((screen.getByLabelText("Night Mode") as HTMLInputElement).checked).toBe(true);
   });
 
   it("trims unused phase-06 shell copy fields while preserving active labels", () => {

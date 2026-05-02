@@ -63,7 +63,6 @@ export interface WorkbenchCopy {
   applyReady: string;
   applyLive: string;
   applyFailed: string;
-  scopeNote: string;
   sceneAssetsLabel: string;
   sceneAssetsBrowseAction: string;
   sceneAssetsClearAction: string;
@@ -117,8 +116,6 @@ const zhCnCopy: WorkbenchCopy = {
   applyReady: "等待应用",
   applyLive: "动态播放已在桌面生效；静态快照同步只跟随当前活动壁纸。",
   applyFailed: "应用失败",
-  scopeNote:
-    "GUI 偏好保存在本地；静态快照同步只服务当前活动动态壁纸，不提供独立静态壁纸模式；Scene 外部 assets 挂载仅影响 Scene 资源查找。",
   sceneAssetsLabel: "Scene 外部 assets",
   sceneAssetsBrowseAction: "挂载目录",
   sceneAssetsClearAction: "清除",
@@ -242,8 +239,6 @@ const englishCopy: WorkbenchCopy = {
   applyReady: "Waiting to apply",
   applyLive: "Dynamic playback is live; static snapshot sync follows only the active wallpaper.",
   applyFailed: "Apply failed",
-  scopeNote:
-    "GUI preferences stay local. Static snapshot sync serves only the active dynamic wallpaper and does not create an independent static wallpaper mode. The Scene external assets mount only affects Scene resource lookup.",
   sceneAssetsLabel: "Scene External Assets",
   sceneAssetsBrowseAction: "Mount Folder",
   sceneAssetsClearAction: "Clear",
