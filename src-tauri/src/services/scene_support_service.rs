@@ -427,6 +427,24 @@ fn support_error_from_graph_issue(issue: SceneGraphIssue) -> SceneSupportError {
             SceneDiagnosticDomain::Visual,
         ),
         SceneGraphIssueCode::InvalidEffect => ("effect-invalid", SceneDiagnosticDomain::Visual),
+        SceneGraphIssueCode::GraphTargetMissing => {
+            ("graph-target-missing", SceneDiagnosticDomain::Visual)
+        }
+        SceneGraphIssueCode::GraphInputMissing => {
+            ("graph-input-missing", SceneDiagnosticDomain::Visual)
+        }
+        SceneGraphIssueCode::GraphCycleOrOrderInvalid => {
+            ("graph-cycle-or-order-invalid", SceneDiagnosticDomain::Visual)
+        }
+        SceneGraphIssueCode::GraphCopybackgroundUnavailable => {
+            ("graph-copybackground-unavailable", SceneDiagnosticDomain::Visual)
+        }
+        SceneGraphIssueCode::GraphMaskTargetMissing => {
+            ("graph-mask-target-missing", SceneDiagnosticDomain::Visual)
+        }
+        SceneGraphIssueCode::GraphConstructionIncomplete => {
+            ("graph-construction-incomplete", SceneDiagnosticDomain::Visual)
+        }
     };
     let code = issue.diagnostic_code.unwrap_or(default_code);
 

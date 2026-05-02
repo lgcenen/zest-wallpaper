@@ -49,6 +49,12 @@ pub enum SceneGraphIssueCode {
     InvalidMaterial,
     MissingTextureBinding,
     InvalidEffect,
+    GraphTargetMissing,
+    GraphInputMissing,
+    GraphCycleOrOrderInvalid,
+    GraphCopybackgroundUnavailable,
+    GraphMaskTargetMissing,
+    GraphConstructionIncomplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -673,14 +679,21 @@ fn build_effect_node(
                     validate_phase10_effect_contract(effect, pass, &effect_material, runtime_pass)
                 {
                     let graph_blocker = effect_pass_requires_phase10d_graph(effect, pass);
+                    let (code, diagnostic_code) = if graph_blocker {
+                        (
+                            phase10d_error_code(&error),
+                            Some("effect-graph-scope-blocked"),
+                        )
+                    } else {
+                        (
+                            SceneGraphIssueCode::InvalidEffect,
+                            Some("effect-unsupported"),
+                        )
+                    };
                     issues.push(SceneGraphIssue {
                         severity,
-                        code: SceneGraphIssueCode::InvalidEffect,
-                        diagnostic_code: Some(if graph_blocker {
-                            "effect-graph-scope-blocked"
-                        } else {
-                            "effect-unsupported"
-                        }),
+                        code,
+                        diagnostic_code,
                         message: format!(
                             "\"{}\" resolved effect material {}, but {} does not support that authored effect contract.",
                             object_name,
@@ -881,7 +894,60 @@ fn validate_phase10d_graph_contract(
         }
     }
 
+    validate_phase10d_pass_target_ordering(effect)?;
+
     Ok(())
+}
+
+fn validate_phase10d_pass_target_ordering(effect: &SceneEffectPlan) -> Result<(), String> {
+    let mut written_targets: BTreeSet<String> = BTreeSet::new();
+
+    for pass in &effect.passes {
+        let target_name = pass.target_name.as_deref().unwrap_or("");
+
+        for binding in &pass.bindings {
+            let Some(ScenePhase10InputSource::NamedTarget(target_ref)) = effect_binding_input_source(
+                effect,
+                pass,
+                binding,
+                ScenePhase10InputSource::LocalCurrentVisual,
+            ) else {
+                continue;
+            };
+            if !written_targets.contains(&target_ref) {
+                return Err(format!(
+                    "phase-10d graph-cycle-or-order-invalid: pass {} binds named target {target_ref} at g_Texture{}, but no earlier pass writes to that target. Currently written targets: {:?}.",
+                    pass.index,
+                    binding.index,
+                    written_targets
+                ));
+            }
+        }
+
+        if !target_name.is_empty() {
+            written_targets.insert(target_name.to_string());
+        }
+    }
+
+    Ok(())
+}
+
+fn phase10d_error_code(error: &str) -> SceneGraphIssueCode {
+    if error.contains("target lifecycle blocker") {
+        SceneGraphIssueCode::GraphTargetMissing
+    } else if error.contains("input scope blocker") {
+        SceneGraphIssueCode::GraphInputMissing
+    } else if error.contains("graph-cycle-or-order-invalid") {
+        SceneGraphIssueCode::GraphCycleOrOrderInvalid
+    } else if error.contains("graph/source scope blocker") {
+        SceneGraphIssueCode::GraphConstructionIncomplete
+    } else if error.contains("copybackground") {
+        SceneGraphIssueCode::GraphCopybackgroundUnavailable
+    } else if error.contains("mask") && error.contains("target") {
+        SceneGraphIssueCode::GraphMaskTargetMissing
+    } else {
+        SceneGraphIssueCode::InvalidEffect
+    }
 }
 
 fn validate_phase10_effect_material_contract(
@@ -2659,9 +2725,13 @@ mod tests {
         let issue = report
             .issues
             .iter()
-            .find(|issue| issue.diagnostic_code == Some("effect-graph-scope-blocked"))
-            .expect("graph scope blocker");
+            .find(|issue| issue.code == super::SceneGraphIssueCode::GraphTargetMissing)
+            .expect("graph target missing");
         assert_eq!(issue.severity, super::SceneGraphIssueSeverity::Fatal);
+        assert_eq!(
+            issue.diagnostic_code,
+            Some("effect-graph-scope-blocked")
+        );
         assert!(issue
             .detail
             .as_deref()
@@ -3086,5 +3156,494 @@ mod tests {
         assert!(report.issues.iter().all(|issue| {
             issue.diagnostic_code != Some("effect-dependency-reference-unresolved")
         }));
+    }
+
+    #[test]
+    fn phase10d_graph_reports_input_scope_blocker_diagnostic() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":92,
+                  "name":"InputScopeFail",
+                  "image":"models/inputscope.model.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/bad-input/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/inputscope.model.json"),
+            br#"{"width":256,"height":256}"#,
+        );
+        write(
+            &extracted.join("effects/bad-input/effect.json"),
+            br#"{
+              "fbos":[{"name":"scratch"}],
+              "passes":[{"material":"materials/effects/pulse.json","bind":[{"name":"nonexistent","index":2}]}]
+            }"#,
+        );
+        write(
+            &extracted.join("effects/bad-input/materials/effects/pulse.json"),
+            br#"{"passes":[{"shader":"effects/pulse"}]}"#,
+        );
+        write(
+            &extracted.join("effects/bad-input/shaders/effects/pulse.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/bad-input/shaders/effects/pulse.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        assert!(report.is_blocked());
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.code == super::SceneGraphIssueCode::InvalidEffect
+                && issue.diagnostic_code == Some("effect-graph-scope-blocked")
+                && matches!(issue.severity, super::SceneGraphIssueSeverity::Fatal))
+            .expect("fatal graph-scope-blocked issue");
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("binding nonexistent"));
+    }
+
+    #[test]
+    fn phase10d_graph_reports_cycle_order_invalid_for_unwritten_named_target() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":93,
+                  "name":"CycleOrder",
+                  "image":"models/cycleorder.model.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/order-cycle/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/cycleorder.model.json"),
+            br#"{"width":256,"height":256}"#,
+        );
+        write(
+            &extracted.join("effects/order-cycle/effect.json"),
+            br#"{
+              "fbos":[{"name":"scratch"}],
+              "passes":[
+                {"material":"materials/effects/pulse.json","bind":[{"name":"scratch","index":1}]},
+                {"material":"materials/effects/pulse.json","target":"scratch"}
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("effects/order-cycle/materials/effects/pulse.json"),
+            br#"{"passes":[{"shader":"effects/pulse"}]}"#,
+        );
+        write(
+            &extracted.join("effects/order-cycle/shaders/effects/pulse.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/order-cycle/shaders/effects/pulse.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        assert!(report.is_blocked());
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| {
+                issue.code == super::SceneGraphIssueCode::GraphCycleOrOrderInvalid
+            })
+            .expect("graph cycle or order invalid");
+        assert_eq!(issue.severity, super::SceneGraphIssueSeverity::Fatal);
+        assert_eq!(
+            issue.diagnostic_code,
+            Some("effect-graph-scope-blocked")
+        );
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("graph-cycle-or-order-invalid"));
+    }
+
+    #[test]
+    fn phase10d_graph_reports_construction_incomplete_for_unsupported_shader_in_graph_scope() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":94,
+                  "name":"GraphIncomplete",
+                  "image":"models/graphincomplete.model.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/graph-incomplete/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/graphincomplete.model.json"),
+            br#"{"width":256,"height":256}"#,
+        );
+        write(
+            &extracted.join("effects/graph-incomplete/effect.json"),
+            br#"{
+              "fbos":[{"name":"scratch"}],
+              "passes":[{"target":"scratch","material":"materials/effects/pulse.json"}]
+            }"#,
+        );
+        write(
+            &extracted.join("effects/graph-incomplete/materials/effects/pulse.json"),
+            br#"{"passes":[{"shader":"effects/pulse"}]}"#,
+        );
+        write(
+            &extracted.join("effects/graph-incomplete/shaders/effects/pulse.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/graph-incomplete/shaders/effects/pulse.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.graph.visuals.len(), 1);
+        assert!(report.graph.visuals[0].effect_chain.len() >= 1);
+        assert!(report.issues.iter().all(|issue| {
+            issue.code != super::SceneGraphIssueCode::GraphCycleOrOrderInvalid
+        }));
+    }
+
+    #[test]
+    fn phase10d_graph_accepts_valid_named_target_write_then_read_order() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":95,
+                  "name":"ValidChain",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/valid-chain/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/valid-chain/effect.json"),
+            br#"{
+              "fbos":[{"name":"scratch"}],
+              "passes":[
+                {"target":"scratch","material":"materials/effects/pulse.json"},
+                {"bind":[{"name":"scratch","index":1}],"material":"materials/effects/pulse.json"}
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("effects/valid-chain/materials/effects/pulse.json"),
+            br#"{"passes":[{"shader":"effects/pulse"}]}"#,
+        );
+        write(
+            &extracted.join("effects/valid-chain/shaders/effects/pulse.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/valid-chain/shaders/effects/pulse.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.graph.visuals.len(), 1);
+        assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
+        assert!(report.issues.iter().all(|issue| {
+            issue.code != super::SceneGraphIssueCode::GraphCycleOrOrderInvalid
+        }));
+        assert!(report.issues.iter().all(|issue| {
+            issue.code != super::SceneGraphIssueCode::GraphTargetMissing
+        }));
+    }
+
+    #[test]
+    fn phase10d_graph_reports_target_missing_diagnostic_code_as_string_in_diagnostic_entry() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":96,
+                  "name":"MissingTarget",
+                  "image":"models/missingtarget.model.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/diag-target/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/missingtarget.model.json"),
+            br#"{"width":256,"height":256}"#,
+        );
+        write(
+            &extracted.join("effects/diag-target/effect.json"),
+            br#"{
+              "passes":[{"target":"ghost","material":"materials/effects/pulse.json"}]
+            }"#,
+        );
+        write(
+            &extracted.join("effects/diag-target/materials/effects/pulse.json"),
+            br#"{"passes":[{"shader":"effects/pulse"}]}"#,
+        );
+        write(
+            &extracted.join("effects/diag-target/shaders/effects/pulse.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/diag-target/shaders/effects/pulse.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        assert!(report.is_blocked());
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == super::SceneGraphIssueCode::GraphTargetMissing));
+    }
+
+    #[test]
+    fn phase10d_graph_unsupported_diagnostic_uses_graph_construction_code_not_generic_invalid() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":97,
+                  "name":"GraphOnly",
+                  "image":"models/graphonly.model.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/graph-only/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/graphonly.model.json"),
+            br#"{"width":256,"height":256}"#,
+        );
+        write(
+            &extracted.join("effects/graph-only/effect.json"),
+            br#"{
+              "fbos":[{"name":"blur_out"}],
+              "passes":[{"target":"blur_out","material":"materials/effects/blur.json"}]
+            }"#,
+        );
+        write(
+            &extracted.join("effects/graph-only/materials/effects/blur.json"),
+            br#"{"passes":[{"shader":"effects/blur"}]}"#,
+        );
+        write(
+            &extracted.join("effects/graph-only/shaders/effects/blur.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/graph-only/shaders/effects/blur.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        assert!(report.is_blocked());
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| {
+                issue.diagnostic_code == Some("effect-unsupported")
+                    && issue.resource_present_but_unsupported
+            }));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == super::SceneGraphIssueCode::InvalidEffect
+                || issue.code == super::SceneGraphIssueCode::GraphConstructionIncomplete));
     }
 }
