@@ -227,6 +227,7 @@ describe("phase-06 workbench gui", () => {
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe("light");
       expect(document.documentElement.dataset.workbenchTheme).toBe("light");
+      expect(document.documentElement.dataset.workbenchTransparency).toBe("translucent");
       expect(document.documentElement.style.getPropertyValue("--wb-gui-opacity")).toBe("0.70");
     });
     expect(
@@ -251,6 +252,7 @@ describe("phase-06 workbench gui", () => {
     expect((screen.getByLabelText("GUI Opacity") as HTMLInputElement).value).toBe("70");
     fireEvent.input(screen.getByLabelText("GUI Opacity"), { target: { value: "100" } });
     await waitFor(() => {
+      expect(document.documentElement.dataset.workbenchTransparency).toBe("opaque");
       expect(document.documentElement.style.getPropertyValue("--wb-gui-opacity")).toBe("1.00");
     });
     expect(

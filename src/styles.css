@@ -1170,7 +1170,7 @@ html[data-workbench-theme] body {
   transition:
     background 220ms ease,
     color 220ms ease;
-  background: transparent;
+  background: rgba(10, 12, 14, 0.001);
 }
 
 html[data-workbench-theme][data-theme="dark"] body {
@@ -1178,6 +1178,7 @@ html[data-workbench-theme][data-theme="dark"] body {
 }
 
 html[data-workbench-theme][data-theme="light"] body {
+  background: rgba(248, 245, 238, 0.001);
   color: #1f2220;
 }
 
@@ -1207,9 +1208,10 @@ html[data-workbench-theme][data-theme="light"] body {
   padding: 0;
   overflow: hidden;
   color: var(--wb-text);
-  background: transparent;
+  background: rgba(8, 10, 12, 0.001);
   backdrop-filter: none;
   isolation: isolate;
+  contain: paint;
 }
 
 html[data-workbench-theme][data-theme="light"] .workbench-shell {
@@ -1228,6 +1230,7 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell {
   --wb-warning: #9a6e3d;
   --wb-danger: #9f5a51;
   --wb-shadow: 0 18px 34px rgba(69, 57, 36, calc(0.04 + (0.08 * var(--wb-gui-opacity))));
+  background: rgba(248, 245, 238, 0.001);
 }
 
 .workbench-shell h1,
@@ -1260,41 +1263,42 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell {
   backdrop-filter: none;
   overflow: hidden;
   box-shadow: none;
+  contain: paint;
 }
 
 .workbench-shell .library-pane {
   position: relative;
   border-right: 1px solid color-mix(in srgb, var(--wb-text) 7%, transparent);
   background:
-    radial-gradient(circle at 0% 0%, rgba(116, 130, 78, calc(0.1 + (0.04 * var(--wb-gui-opacity)))), transparent 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, calc(0.018 + (0.022 * var(--wb-gui-opacity)))) 0%, transparent 22%),
+    radial-gradient(circle at 0% 0%, rgba(116, 130, 78, calc(0.08 + (0.04 * var(--wb-gui-opacity)))), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.03 + (0.02 * var(--wb-gui-opacity)))) 0%, transparent 22%),
     rgba(14, 15, 17, var(--wb-gui-opacity));
-  backdrop-filter: blur(20px) saturate(115%);
+  backdrop-filter: none;
 }
 
 html[data-workbench-theme][data-theme="light"] .workbench-shell .library-pane {
   background:
-    radial-gradient(circle at 0% 0%, rgba(138, 150, 104, calc(0.1 + (0.08 * var(--wb-gui-opacity)))), transparent 22%),
-    linear-gradient(180deg, rgba(255, 255, 255, calc(0.18 + (0.18 * var(--wb-gui-opacity)))) 0%, rgba(255, 255, 255, calc(0.08 + (0.08 * var(--wb-gui-opacity)))) 26%),
+    radial-gradient(circle at 0% 0%, rgba(138, 150, 104, calc(0.08 + (0.06 * var(--wb-gui-opacity)))), transparent 22%),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.22 + (0.12 * var(--wb-gui-opacity)))) 0%, rgba(255, 255, 255, calc(0.1 + (0.06 * var(--wb-gui-opacity)))) 26%),
     rgba(247, 244, 237, var(--wb-gui-opacity));
-  backdrop-filter: blur(18px) saturate(112%);
+  backdrop-filter: none;
 }
 
 .workbench-shell .detail-panel {
   position: relative;
   background:
-    radial-gradient(circle at 0% 0%, rgba(108, 126, 74, calc(0.1 + (0.04 * var(--wb-gui-opacity)))), transparent 22%),
-    linear-gradient(180deg, rgba(30, 32, 36, calc(0.06 + (0.1 * var(--wb-gui-opacity)))) 0%, rgba(17, 19, 22, calc(0.12 + (0.16 * var(--wb-gui-opacity)))) 100%),
+    radial-gradient(circle at 0% 0%, rgba(108, 126, 74, calc(0.08 + (0.04 * var(--wb-gui-opacity)))), transparent 22%),
+    linear-gradient(180deg, rgba(30, 32, 36, calc(0.1 + (0.08 * var(--wb-gui-opacity)))) 0%, rgba(17, 19, 22, calc(0.16 + (0.12 * var(--wb-gui-opacity)))) 100%),
     rgba(16, 18, 20, var(--wb-gui-opacity));
-  backdrop-filter: blur(24px) saturate(130%);
+  backdrop-filter: none;
 }
 
 html[data-workbench-theme][data-theme="light"] .workbench-shell .detail-panel {
   background:
-    radial-gradient(circle at 0% 0%, rgba(134, 152, 96, calc(0.1 + (0.04 * var(--wb-gui-opacity)))), transparent 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, calc(0.1 + (0.12 * var(--wb-gui-opacity)))) 0%, rgba(247, 243, 235, calc(0.16 + (0.18 * var(--wb-gui-opacity)))) 100%),
+    radial-gradient(circle at 0% 0%, rgba(134, 152, 96, calc(0.08 + (0.04 * var(--wb-gui-opacity)))), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.15 + (0.1 * var(--wb-gui-opacity)))) 0%, rgba(247, 243, 235, calc(0.2 + (0.12 * var(--wb-gui-opacity)))) 100%),
     rgba(248, 245, 238, var(--wb-gui-opacity));
-  backdrop-filter: blur(22px) saturate(124%);
+  backdrop-filter: none;
 }
 
 .workbench-shell .detail-panel::before {
@@ -1314,6 +1318,47 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .detail-panel {
     radial-gradient(circle at 0% 0%, rgba(123, 139, 78, calc(0.16 * var(--wb-gui-opacity))), transparent 26%),
     linear-gradient(180deg, rgba(255, 255, 255, calc(0.022 * var(--wb-gui-opacity))) 0%, rgba(255, 255, 255, calc(0.01 * var(--wb-gui-opacity))) 100%);
   pointer-events: none;
+}
+
+html[data-workbench-transparency="translucent"] .workbench-shell {
+  --wb-shadow: 0 14px 34px rgba(0, 0, 0, 0.14);
+}
+
+html[data-workbench-transparency="translucent"] .workbench-shell .library-pane::before {
+  background: transparent;
+}
+
+html[data-workbench-transparency="translucent"] .workbench-shell .primary-button:hover,
+html[data-workbench-transparency="translucent"] .workbench-shell .ghost-button:hover,
+html[data-workbench-transparency="translucent"] .workbench-shell .workbench-select-button:hover,
+html[data-workbench-transparency="translucent"] .workbench-shell .library-card:hover .library-card-thumb {
+  transform: none;
+}
+
+html[data-workbench-transparency="translucent"] .workbench-shell .library-card:hover .library-card-thumb,
+html[data-workbench-transparency="translucent"] .workbench-shell .library-card.active .library-card-thumb,
+html[data-workbench-transparency="translucent"] .workbench-shell .library-card.desktop-active .library-card-thumb {
+  box-shadow: none;
+}
+
+html[data-workbench-transparency="translucent"] .workbench-shell .library-card.active .library-card-thumb {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wb-accent) 38%, transparent);
+}
+
+html[data-workbench-transparency="translucent"] .workbench-shell .library-card.desktop-active .library-card-thumb {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wb-success) 42%, transparent);
+}
+
+html[data-workbench-transparency="translucent"] .workbench-shell .workbench-select-menu,
+html[data-workbench-transparency="translucent"] .workbench-shell .settings-popover {
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.16);
+}
+
+html[data-workbench-transparency="translucent"][data-theme="light"] .workbench-shell .library-pane,
+html[data-workbench-transparency="translucent"][data-theme="light"] .workbench-shell .detail-panel {
+  background:
+    linear-gradient(180deg, rgba(32, 35, 31, 0.055) 0%, rgba(32, 35, 31, 0.025) 100%),
+    rgba(248, 245, 238, var(--wb-gui-opacity));
 }
 
 .workbench-shell .workbench-toolbar,
@@ -1516,6 +1561,7 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .primary-button 
   border: 1px solid var(--wb-line-strong);
   background: var(--wb-popover);
   box-shadow: var(--wb-shadow);
+  contain: paint;
 }
 
 .workbench-shell .workbench-select-shell.align-end .workbench-select-menu {
@@ -1567,6 +1613,7 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .primary-button 
   background: var(--wb-popover);
   box-shadow: var(--wb-shadow);
   z-index: 20;
+  contain: paint;
 }
 
 .workbench-shell .settings-popover-header,
@@ -1830,7 +1877,8 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .library-card-fa
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: linear-gradient(180deg, rgba(12, 13, 14, 0.34) 0%, rgba(12, 13, 14, 0.58) 100%);
-  backdrop-filter: blur(12px);
+  backdrop-filter: none;
+  contain: paint;
 }
 
 html[data-workbench-theme][data-theme="light"] .workbench-shell .library-card-overlay {

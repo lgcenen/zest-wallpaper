@@ -10,13 +10,17 @@ use tauri::{
 };
 
 #[cfg(target_os = "macos")]
-use objc2::MainThreadMarker;
+use objc2::{msg_send, MainThreadMarker};
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
     NSColor, NSWindow, NSWindowCollectionBehavior, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 #[cfg(target_os = "macos")]
 use objc2_core_graphics::kCGDesktopWindowLevel;
+#[cfg(target_os = "macos")]
+use objc2_foundation::{ns_string, NSNumber, NSObjectNSKeyValueCoding};
+#[cfg(target_os = "macos")]
+use objc2_web_kit::WKWebView;
 
 const PRIMARY_PLAYER_LABEL: &str = "player";
 const SECONDARY_PLAYER_PREFIX: &str = "player-screen-";
@@ -71,14 +75,23 @@ pub fn configure_workbench_window<R: Runtime>(window: &tauri::WebviewWindow<R>) 
         let _marker = MainThreadMarker::new()
             .expect("workbench window configuration must run on the main thread");
         let ns_window: &NSWindow = &*webview.ns_window().cast();
+        let webview_view: &WKWebView = &*webview.inner().cast();
         let clear = NSColor::clearColor();
+        let no = NSNumber::numberWithBool(false);
+
         ns_window.setOpaque(false);
+        ns_window.setHasShadow(false);
         ns_window.setBackgroundColor(Some(&clear));
         ns_window.setTitlebarAppearsTransparent(true);
         ns_window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         ns_window.setToolbarStyle(NSWindowToolbarStyle::UnifiedCompact);
         ns_window.setMovable(true);
         ns_window.setMovableByWindowBackground(true);
+        ns_window.invalidateShadow();
+
+        webview_view.setValue_forKey(Some(&no), ns_string!("drawsBackground"));
+        let _: () = msg_send![webview_view, setOpaque: false];
+        webview_view.setUnderPageBackgroundColor(Some(&clear));
     });
 }
 

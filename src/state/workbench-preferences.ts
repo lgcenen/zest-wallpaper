@@ -108,6 +108,8 @@ export function applyWorkbenchDocumentPreferences(
 
   document.documentElement.dataset.theme = resolvedTheme;
   document.documentElement.dataset.workbenchTheme = preferences.themeMode;
+  document.documentElement.dataset.workbenchTransparency =
+    preferences.guiOpacity < WORKBENCH_GUI_OPACITY_MAX ? "translucent" : "opaque";
   document.documentElement.lang = preferences.language;
   document.documentElement.style.colorScheme = resolvedTheme;
   document.documentElement.style.setProperty(

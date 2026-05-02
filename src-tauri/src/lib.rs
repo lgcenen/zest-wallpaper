@@ -420,7 +420,10 @@ mod tests {
         assert!(!workbench.contains("data-tauri-drag-region"));
         assert!(!workbench.contains("@tauri-apps/api/window"));
         assert!(window_service.contains("ns_window.setOpaque(false)"));
+        assert!(window_service.contains("ns_window.setHasShadow(false)"));
         assert!(window_service.contains("ns_window.setBackgroundColor(Some(&clear))"));
+        assert!(window_service.contains("drawsBackground"));
+        assert!(window_service.contains("setUnderPageBackgroundColor(Some(&clear))"));
         assert!(window_service.contains("setTitlebarAppearsTransparent(true)"));
         assert!(window_service.contains("setTitleVisibility(NSWindowTitleVisibility::Hidden)"));
         assert!(window_service.contains("setMovableByWindowBackground(true)"));
