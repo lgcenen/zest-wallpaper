@@ -552,14 +552,37 @@ function PropertiesPanel({
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
   const propertiesByKey = useMemo(() => buildPropertyMapByKey(properties), [properties]);
   const effectivePropertyValues = useMemo(() => propertyMap(wallpaper), [wallpaper]);
+  const sectionKeysSignature = useMemo(
+    () => sections.map((section) => section.key).join("|"),
+    [sections],
+  );
+  const previousWallpaperIdRef = useRef(wallpaper.id);
 
   useEffect(() => {
-    const next: Record<string, boolean> = {};
-    sections.forEach((section, index) => {
-      next[section.key] = index === 0;
+    const wallpaperChanged = previousWallpaperIdRef.current !== wallpaper.id;
+    previousWallpaperIdRef.current = wallpaper.id;
+
+    setOpenSections((current) => {
+      const next: Record<string, boolean> = {};
+      sections.forEach((section, index) => {
+        next[section.key] =
+          wallpaperChanged
+            ? index === 0
+            : current[section.key] ?? index === 0;
+      });
+
+      const currentKeys = Object.keys(current);
+      const nextKeys = Object.keys(next);
+      if (
+        currentKeys.length === nextKeys.length
+        && nextKeys.every((key) => current[key] === next[key])
+      ) {
+        return current;
+      }
+
+      return next;
     });
-    setOpenSections(next);
-  }, [sections, wallpaper.id]);
+  }, [sectionKeysSignature, sections, wallpaper.id]);
 
   function revealProperty(target: EventTarget | null, behavior: ScrollBehavior) {
     if (!(target instanceof HTMLElement)) {
