@@ -205,6 +205,7 @@ pub struct SceneRenderParticleItem {
     pub lifetime_ms: f64,
     pub speed_range: [f64; 2],
     pub instantaneous: bool,
+    pub start_time_ms: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1075,6 +1076,7 @@ fn plan_particle_item(
             lifetime_ms: default_particle_lifetime_ms(particle_kind),
             speed_range: default_particle_speed_range(particle_kind),
             instantaneous: false,
+            start_time_ms: 0.0,
         });
     };
 
@@ -1159,6 +1161,11 @@ fn plan_particle_item(
         instantaneous: emitter
             .map(|emitter| emitter.instantaneous)
             .unwrap_or(false),
+        start_time_ms: runtime
+            .system
+            .start_time
+            .unwrap_or(0.0)
+            .max(0.0),
     })
 }
 
@@ -3183,6 +3190,41 @@ mod tests {
             report.plan.particles[0].schedule_mode,
             SceneParticleScheduleMode::InputDriven
         );
+    }
+
+    #[test]
+    fn render_plan_passes_start_time_from_runtime_to_particle_item() {
+        let mut scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+        let mut runtime = supported_particle_runtime(
+            4,
+            SceneParticleKind::LineTrail,
+            SceneParticleScheduleMode::Autonomous,
+        );
+        runtime.system.start_time = Some(1500.0);
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(report.plan.particles[0].start_time_ms, 1500.0);
+    }
+
+    #[test]
+    fn render_plan_defaults_start_time_to_zero_when_not_in_runtime() {
+        let scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert_eq!(report.plan.particles.len(), 1);
+        assert_eq!(report.plan.particles[0].start_time_ms, 0.0);
     }
 
     #[test]

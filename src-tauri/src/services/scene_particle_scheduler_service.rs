@@ -45,6 +45,7 @@ struct SceneInputParticleState {
 
 #[derive(Debug, Default)]
 struct SceneAutonomousParticleState {
+    started_at_ms: Option<f64>,
     emission_credit: f64,
     instantaneous_emitted: bool,
     particles: Vec<SceneParticle>,
@@ -271,6 +272,12 @@ fn advance_autonomous_item(
     delta_ms: f64,
     now_ms: f64,
 ) {
+    let started_at_ms = *state.started_at_ms.get_or_insert(now_ms);
+    if now_ms - started_at_ms < item.start_time_ms {
+        advance_particles(&mut state.particles, delta_ms, now_ms);
+        return;
+    }
+
     if item.instantaneous && !state.instantaneous_emitted {
         let emit_count = item.max_count.min(64);
         emit_autonomous_particles(random, state, item, emit_count, now_ms);
@@ -508,6 +515,7 @@ mod tests {
             lifetime_ms: 520.0,
             speed_range: [24.0, 48.0],
             instantaneous: false,
+            start_time_ms: 0.0,
         }
     }
 
@@ -530,6 +538,7 @@ mod tests {
             lifetime_ms: 1500.0,
             speed_range: [20.0, 64.0],
             instantaneous: false,
+            start_time_ms: 0.0,
         }
     }
 
@@ -552,6 +561,7 @@ mod tests {
             lifetime_ms: 1200.0,
             speed_range: [12.0, 24.0],
             instantaneous: false,
+            start_time_ms: 0.0,
         }
     }
 
@@ -627,5 +637,112 @@ mod tests {
         assert!(scheduler
             .petal_primitives(&autonomous_item(), 1080.0, 1000.0)
             .is_empty());
+    }
+
+    #[test]
+    fn autonomous_scheduler_defers_emission_until_start_time_elapses() {
+        let mut item = autonomous_item();
+        item.start_time_ms = 500.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1300.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1300.0);
+        assert!(
+            primitives.is_empty(),
+            "no particles emitted before start_time_ms (300ms elapsed < 500ms delay)"
+        );
+    }
+
+    #[test]
+    fn autonomous_scheduler_emits_after_start_time_passes() {
+        let mut item = autonomous_item();
+        item.start_time_ms = 500.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1700.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1700.0);
+        assert!(
+            !primitives.is_empty(),
+            "particles emitted after start_time_ms (700ms elapsed > 500ms delay)"
+        );
+    }
+
+    #[test]
+    fn autonomous_instantaneous_burst_waits_for_start_time() {
+        let mut item = autonomous_item();
+        item.instantaneous = true;
+        item.start_time_ms = 600.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 2000.0);
+        scheduler.advance(None, &[item.clone()], 2400.0);
+
+        let primitives_before = scheduler.petal_primitives(&item, 1080.0, 2400.0);
+        assert!(
+            primitives_before.is_empty(),
+            "instantaneous burst deferred before start_time_ms"
+        );
+
+        scheduler.advance(None, &[item.clone()], 2800.0);
+        let primitives_after = scheduler.petal_primitives(&item, 1080.0, 2800.0);
+        assert!(
+            !primitives_after.is_empty(),
+            "instantaneous burst fires once after start_time_ms"
+        );
+        assert!(
+            primitives_after.len() <= item.max_count,
+            "instantaneous burst respects max_count"
+        );
+
+        scheduler.advance(None, &[item.clone()], 3200.0);
+        let primitives_later = scheduler.petal_primitives(&item, 1080.0, 3200.0);
+        assert!(
+            primitives_later.len() <= primitives_after.len(),
+            "no additional particles after instantaneous burst"
+        );
+    }
+
+    #[test]
+    fn autonomous_scheduler_without_start_time_emits_immediately() {
+        let mut item = autonomous_item();
+        item.start_time_ms = 0.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1100.0);
+
+        let primitives = scheduler.petal_primitives(&item, 1080.0, 1100.0);
+        assert!(
+            !primitives.is_empty(),
+            "zero start_time_ms emits immediately"
+        );
+    }
+
+    #[test]
+    fn autonomous_start_time_resets_when_item_disappears() {
+        let mut item = autonomous_item();
+        item.start_time_ms = 500.0;
+
+        let mut scheduler = SceneParticleScheduler::default();
+        scheduler.advance(None, &[item.clone()], 1000.0);
+        scheduler.advance(None, &[item.clone()], 1800.0);
+
+        let primitives_first = scheduler.petal_primitives(&item, 1080.0, 1800.0);
+        assert!(!primitives_first.is_empty());
+
+        scheduler.advance(None, &[], 1900.0);
+
+        scheduler.advance(None, &[item.clone()], 2000.0);
+        scheduler.advance(None, &[item.clone()], 2200.0);
+
+        let primitives_second = scheduler.petal_primitives(&item, 1080.0, 2200.0);
+        assert!(
+            primitives_second.is_empty(),
+            "start_time restarts when item re-enters after removal"
+        );
     }
 }

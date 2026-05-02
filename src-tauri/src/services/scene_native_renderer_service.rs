@@ -4481,6 +4481,7 @@ fn particle_plan_signature(plan: &SceneRenderPlan) -> Option<u64> {
         item.speed_range[0].to_bits().hash(&mut hasher);
         item.speed_range[1].to_bits().hash(&mut hasher);
         item.instantaneous.hash(&mut hasher);
+        item.start_time_ms.to_bits().hash(&mut hasher);
     }
     for item in &plan.sprite_particles {
         2_u8.hash(&mut hasher);
@@ -6099,6 +6100,7 @@ mod tests {
                 lifetime_ms: 520.0,
                 speed_range: [24.0, 48.0],
                 instantaneous: false,
+                start_time_ms: 0.0,
             }],
             sprite_particles: Vec::new(),
             sounds: Vec::new(),
@@ -6761,6 +6763,7 @@ mod tests {
                 lifetime_ms: 520.0,
                 speed_range: [24.0, 48.0],
                 instantaneous: false,
+                start_time_ms: 0.0,
             },
         ];
         let signature = particle_plan_signature(&plan);
