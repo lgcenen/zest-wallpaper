@@ -2939,11 +2939,12 @@ impl NativeSceneMetalRenderer {
                 return;
             }
             let base_texture = self.phase10_base_texture_for_visual(visual);
-            let named_targets = BTreeMap::new();
+            let mut previous_texture = base_texture.clone();
+            let named_targets = BTreeMap::<String, Phase10TextureHandle>::new();
             for resolved_pass in &passes {
                 let input_scope = Phase10PassInputScope {
                     local_current: base_texture.as_ref(),
-                    previous_pass: base_texture.as_ref(),
+                    previous_pass: previous_texture.as_ref(),
                     background: None,
                     copied_background: None,
                     named_targets: &named_targets,
@@ -2976,6 +2977,12 @@ impl NativeSceneMetalRenderer {
                     &pass_textures,
                     &uniforms,
                 );
+
+                previous_texture = pass_textures
+                    .slots
+                    .first()
+                    .and_then(|slot| slot.as_ref())
+                    .cloned();
             }
         } else {
             let Some(texture) = self.phase10_base_texture_for_visual(visual) else {
