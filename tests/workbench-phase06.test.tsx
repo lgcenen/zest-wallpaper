@@ -376,6 +376,35 @@ describe("phase-06 workbench gui", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "下一个控件" }));
   });
 
+  it("applies the clicked custom select option before the menu closes", async () => {
+    const user = userEvent.setup();
+
+    function SelectHarness() {
+      const [value, setValue] = useState("recent");
+      return (
+        <WorkbenchSelect
+          ariaLabel="排序"
+          value={value}
+          options={[
+            { value: "recent", label: "最近导入" },
+            { value: "title", label: "名称" },
+          ]}
+          onChange={setValue}
+        />
+      );
+    }
+
+    render(<SelectHarness />);
+
+    await user.click(screen.getByLabelText("排序"));
+    await user.click(await screen.findByRole("option", { name: "名称" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("listbox", { name: "排序" })).toBeNull();
+    });
+    expect(screen.getByLabelText("排序").textContent).toContain("名称");
+  });
+
   it("trims unused phase-06 shell copy fields while preserving active labels", () => {
     const zhCopy = getWorkbenchCopy("zh-CN") as Record<string, unknown>;
     const enCopy = getWorkbenchCopy("en") as Record<string, unknown>;

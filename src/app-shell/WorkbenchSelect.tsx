@@ -142,7 +142,13 @@ export function WorkbenchSelect({
                 type="button"
                 role="option"
                 aria-selected={selected}
-                onClick={() => commitSelection(index)}
+                onMouseDown={(event) => {
+                  if (event.button !== 0) {
+                    return;
+                  }
+                  event.preventDefault();
+                  commitSelection(index);
+                }}
                 onMouseEnter={() => setActiveIndex(index)}
                 onKeyDown={(event) => {
                   if (event.key === "ArrowDown") {
@@ -163,6 +169,11 @@ export function WorkbenchSelect({
                   if (event.key === "End") {
                     event.preventDefault();
                     setActiveIndex(options.length - 1);
+                    return;
+                  }
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    commitSelection(index);
                     return;
                   }
                   if (event.key === "Escape") {
