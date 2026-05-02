@@ -4565,20 +4565,9 @@ fn hash_sprite_particle_config(
         size_change[0].to_bits().hash(hasher);
         size_change[1].to_bits().hash(hasher);
     }
-    if let Some(position_oscillation) = config.position_oscillation {
-        true.hash(hasher);
-        for value in position_oscillation
-            .amplitude_range
-            .iter()
-            .chain(position_oscillation.frequency_range.iter())
-            .chain(position_oscillation.phase_range.iter())
-            .chain(position_oscillation.axis_scale.iter())
-        {
-            value.to_bits().hash(hasher);
-        }
-    } else {
-        false.hash(hasher);
-    }
+    hash_optional_oscillation(hasher, &config.position_oscillation);
+    hash_optional_oscillation(hasher, &config.alpha_oscillation);
+    hash_optional_oscillation(hasher, &config.size_oscillation);
     config.fade_in_ms.to_bits().hash(hasher);
     config.fade_out_ms.to_bits().hash(hasher);
     config.emission_rate.to_bits().hash(hasher);
@@ -4586,6 +4575,29 @@ fn hash_sprite_particle_config(
     config.start_time_ms.to_bits().hash(hasher);
     config.instantaneous.hash(hasher);
     config.sequence_multiplier.to_bits().hash(hasher);
+}
+
+#[cfg(target_os = "macos")]
+fn hash_optional_oscillation(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    oscillation: &Option<
+        crate::services::scene_render_planner_service::SceneSpriteParticleOscillationConfig,
+    >,
+) {
+    if let Some(oscillation) = oscillation {
+        true.hash(hasher);
+        for value in oscillation
+            .amplitude_range
+            .iter()
+            .chain(oscillation.frequency_range.iter())
+            .chain(oscillation.phase_range.iter())
+            .chain(oscillation.axis_scale.iter())
+        {
+            value.to_bits().hash(hasher);
+        }
+    } else {
+        false.hash(hasher);
+    }
 }
 
 #[cfg(target_os = "macos")]

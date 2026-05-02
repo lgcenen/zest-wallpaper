@@ -67,6 +67,8 @@ struct SceneSpriteParticle {
     size: f64,
     size_change: Option<[f64; 2]>,
     position_oscillation: Option<SceneSpriteParticleOscillation>,
+    alpha_oscillation: Option<SceneSpriteParticleOscillation>,
+    size_oscillation: Option<SceneSpriteParticleOscillation>,
     fade_in_ms: f64,
     fade_out_ms: f64,
     born_at_ms: f64,
@@ -358,6 +360,8 @@ fn spawn_particle(
             .max(0.5),
         size_change: config.size_change,
         position_oscillation: spawn_position_oscillation(random, config.position_oscillation),
+        alpha_oscillation: spawn_position_oscillation(random, config.alpha_oscillation),
+        size_oscillation: spawn_position_oscillation(random, config.size_oscillation),
         fade_in_ms: config.fade_in_ms.max(0.0),
         fade_out_ms: config.fade_out_ms.max(0.0),
         born_at_ms: now_ms,
@@ -476,8 +480,20 @@ fn primitive_from_particle(
         (particle.uv_rect, particle.aspect_ratio)
     };
     let height = (particle.size * size_factor).max(0.5);
+    let height = if let Some(ref osc) = particle.size_oscillation {
+        let wave = oscillation_wave(osc, age_ms / 1000.0);
+        (height * (1.0 + wave)).max(0.5)
+    } else {
+        height
+    };
     let width = (height * aspect_ratio).max(0.5);
     let render_position = oscillated_position(particle, age_ms / 1000.0);
+    let opacity = if let Some(ref osc) = particle.alpha_oscillation {
+        let wave = oscillation_wave(osc, age_ms / 1000.0);
+        (opacity * (1.0 + wave)).clamp(0.0, 1.0)
+    } else {
+        opacity
+    };
     let top = canvas_height - render_position[1] - height / 2.0;
     Some(SceneSpriteParticlePrimitive {
         texture_path: particle.texture_path.clone(),
@@ -502,14 +518,18 @@ fn oscillated_position(particle: &SceneSpriteParticle, age_seconds: f64) -> [f64
     let Some(oscillation) = particle.position_oscillation else {
         return [particle.x, particle.y];
     };
-    let wave = (oscillation.phase_radians
-        + age_seconds.max(0.0) * oscillation.frequency_hz * std::f64::consts::TAU)
-        .sin()
-        * oscillation.amplitude;
+    let wave = oscillation_wave(&oscillation, age_seconds);
     [
         particle.x + wave * oscillation.axis_scale[0],
         particle.y + wave * oscillation.axis_scale[1],
     ]
+}
+
+fn oscillation_wave(oscillation: &SceneSpriteParticleOscillation, age_seconds: f64) -> f64 {
+    (oscillation.phase_radians
+        + age_seconds.max(0.0) * oscillation.frequency_hz * std::f64::consts::TAU)
+        .sin()
+        * oscillation.amplitude
 }
 
 fn particle_alpha(particle: &SceneSpriteParticle, age_ms: f64) -> f64 {
@@ -605,6 +625,8 @@ mod tests {
             turbulence: 8.0,
             size_change: Some([1.0, 0.5]),
             position_oscillation: None,
+            alpha_oscillation: None,
+            size_oscillation: None,
             fade_in_ms: 0.0,
             fade_out_ms: 0.0,
             emission_rate: 120.0,

@@ -250,6 +250,8 @@ pub struct SceneSpriteParticleConfig {
     pub turbulence: f64,
     pub size_change: Option<[f64; 2]>,
     pub position_oscillation: Option<SceneSpriteParticleOscillationConfig>,
+    pub alpha_oscillation: Option<SceneSpriteParticleOscillationConfig>,
+    pub size_oscillation: Option<SceneSpriteParticleOscillationConfig>,
     pub fade_in_ms: f64,
     pub fade_out_ms: f64,
     pub emission_rate: f64,
@@ -1524,6 +1526,14 @@ fn plan_sprite_particle_config(
     );
     let position_oscillation =
         sprite_position_oscillation(&runtime.system.operators, scale_x, scale_y);
+    let alpha_oscillation = sprite_scalar_oscillation(
+        &runtime.system.operators,
+        &["oscillatealpha", "oscillate alpha", "oscillate_alpha"],
+    );
+    let size_oscillation = sprite_scalar_oscillation(
+        &runtime.system.operators,
+        &["oscillatesize", "oscillate size", "oscillate_size"],
+    );
     let [fade_in_ms, fade_out_ms] = stage_range(
         &runtime.system.operators,
         &["alphafade"],
@@ -1578,6 +1588,8 @@ fn plan_sprite_particle_config(
         turbulence,
         size_change,
         position_oscillation,
+        alpha_oscillation,
+        size_oscillation,
         fade_in_ms,
         fade_out_ms,
         emission_rate: sprite_override_scalar(
@@ -2233,6 +2245,40 @@ fn ordered_range(range: [f64; 2]) -> [f64; 2] {
     let min = if range[0].is_finite() { range[0] } else { 0.0 };
     let max = if range[1].is_finite() { range[1] } else { min };
     [min.min(max), min.max(max)]
+}
+
+fn sprite_scalar_oscillation(
+    operators: &[SceneParticleStageRuntime],
+    stage_names: &[&str],
+) -> Option<SceneSpriteParticleOscillationConfig> {
+    let stage = find_stage(operators, stage_names)?;
+    let amplitude_range = stage_range(
+        std::slice::from_ref(stage),
+        stage_names,
+        &["scalemin", "minscale", "scale", "amplitude", "min"],
+        &["scalemax", "maxscale", "scale", "amplitude", "max"],
+        [0.0, 0.0],
+    );
+    let frequency_range = stage_range(
+        std::slice::from_ref(stage),
+        stage_names,
+        &["frequencymin", "minfrequency", "frequency", "min"],
+        &["frequencymax", "maxfrequency", "frequency", "max"],
+        [1.0, 1.0],
+    );
+    let phase_range = stage_range(
+        std::slice::from_ref(stage),
+        stage_names,
+        &["phasemin", "minphase", "phase", "min"],
+        &["phasemax", "maxphase", "phase", "max"],
+        [0.0, 0.0],
+    );
+    Some(SceneSpriteParticleOscillationConfig {
+        amplitude_range: ordered_range(amplitude_range),
+        frequency_range: ordered_range(frequency_range),
+        phase_range: ordered_range(phase_range),
+        axis_scale: [1.0, 1.0],
+    })
 }
 
 fn stage_color_range(

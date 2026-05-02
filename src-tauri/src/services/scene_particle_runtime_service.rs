@@ -545,6 +545,20 @@ fn sprite_stage_name_is_unsupported(name: &str) -> bool {
     {
         return false;
     }
+    if compact == "oscillatealpha"
+        || compact.ends_with("oscillatealpha")
+        || compact == "alphaoscillate"
+        || compact.ends_with("alphaoscillate")
+    {
+        return false;
+    }
+    if compact == "oscillatesize"
+        || compact.ends_with("oscillatesize")
+        || compact == "sizeoscillate"
+        || compact.ends_with("sizeoscillate")
+    {
+        return false;
+    }
 
     let unsupported_tokens = [
         "collision",
@@ -990,11 +1004,17 @@ mod tests {
             &particle,
         );
 
-        assert!(!runtime.adapter.supported);
-        assert!(runtime
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"));
+        assert!(
+            runtime.adapter.supported,
+            "oscillatealpha should be accepted in the sprite runtime"
+        );
+        assert!(
+            !runtime
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"),
+            "oscillatealpha should not produce unsupported stage diagnostic"
+        );
     }
 
     #[test]
