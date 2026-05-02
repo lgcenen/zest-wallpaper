@@ -2710,7 +2710,6 @@ impl NativeSceneMetalRenderer {
         self.texture_cache.insert(key, texture);
         Ok(())
     }
-
     fn compile_phase10_shader_variant(
         &self,
         program: &SceneShaderProgram,
@@ -3806,6 +3805,47 @@ fn should_retain_visual_in_draw_plan(
     phase10_consumed_ids.contains(&item.object_id)
         || matches!(item.source_kind, SceneRenderSourceKind::Video)
         || image_texture_loaded
+}
+
+#[cfg(target_os = "macos")]
+fn compile_scene_shader_program_pipeline(
+    device: &ProtocolObject<dyn MTLDevice>,
+    program: &SceneShaderProgram,
+    defines: &BTreeMap<String, i32>,
+    blend_mode: SceneRenderBlendMode,
+) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>, String> {
+    let source = load_shader_program_source(program, defines)?;
+    let source = NSString::from_str(source.as_str());
+    let library = device
+        .newLibraryWithSource_options_error(&source, None)
+        .map_err(|error| {
+            format!(
+                "failed to compile phase-10 Scene shader {}: {error:?}",
+                program.metal_source_path.display()
+            )
+        })?;
+    let vertex_name = NSString::from_str(program.vertex_entry);
+    let fragment_name = NSString::from_str(program.fragment_entry);
+    let vertex_function = library.newFunctionWithName(&vertex_name).ok_or_else(|| {
+        format!(
+            "phase-10 shader {} is missing vertex entry {}",
+            program.metal_source_path.display(),
+            program.vertex_entry
+        )
+    })?;
+    let fragment_function = library.newFunctionWithName(&fragment_name).ok_or_else(|| {
+        format!(
+            "phase-10 shader {} is missing fragment entry {}",
+            program.metal_source_path.display(),
+            program.fragment_entry
+        )
+    })?;
+    build_pipeline_state(
+        device,
+        vertex_function.as_ref(),
+        fragment_function.as_ref(),
+        blend_mode,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -7828,5 +7868,112 @@ mod tests {
         assert!(shader.contains("fract((primary_uv + signed_scroll) * repeat)"));
         assert!(shader
             .contains("sign(scroll_speed) * pow(abs(scroll_speed), float2(2.0)) * uniforms.time"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_mask_alpha_shader_compiles_to_pipeline_state() {
+        use crate::services::scene_shader_material_service::SceneShaderProgramKind;
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let program = super::SceneShaderProgram {
+            key: "clippingmaskimage4".to_string(),
+            kind: SceneShaderProgramKind::MaskAlpha,
+            metal_source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/scene/assets/shaders/compat/scene-mask-alpha.metal"),
+            vertex_entry: "compat_mask_vertex",
+            fragment_entry: "compat_mask_alpha_fragment",
+            variant_defines: BTreeMap::new(),
+        };
+        let pipeline = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::new(),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("mask-alpha shader compile");
+        let _ = pipeline;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_mask_apply_shader_compiles_to_pipeline_state() {
+        use crate::services::scene_shader_material_service::SceneShaderProgramKind;
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let program = super::SceneShaderProgram {
+            key: "clippingmaskimage4-apply".to_string(),
+            kind: SceneShaderProgramKind::MaskApply,
+            metal_source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/scene/assets/shaders/compat/scene-mask-apply.metal"),
+            vertex_entry: "compat_mask_apply_vertex",
+            fragment_entry: "compat_mask_apply_fragment",
+            variant_defines: BTreeMap::new(),
+        };
+        let pipeline = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::new(),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("mask-apply shader compile");
+        let _ = pipeline;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_copy_shader_compiles_to_pipeline_state() {
+        use crate::services::scene_shader_material_service::SceneShaderProgramKind;
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let program = super::SceneShaderProgram {
+            key: "copy".to_string(),
+            kind: SceneShaderProgramKind::Copy,
+            metal_source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/scene/assets/shaders/compat/scene-copy.metal"),
+            vertex_entry: "compat_copy_vertex",
+            fragment_entry: "compat_copy_fragment",
+            variant_defines: BTreeMap::new(),
+        };
+        let pipeline = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::new(),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("copy shader compile");
+        let _ = pipeline;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_non_effect_shader_variant_key_includes_program_kind() {
+        use crate::services::scene_shader_material_service::SceneShaderProgramKind;
+        let mask_alpha = super::SceneShaderProgram {
+            key: "mask-a".to_string(),
+            kind: SceneShaderProgramKind::MaskAlpha,
+            metal_source_path: PathBuf::from("/tmp/mask-alpha.metal"),
+            vertex_entry: "vert_main",
+            fragment_entry: "frag_main",
+            variant_defines: BTreeMap::new(),
+        };
+        let mask_apply = super::SceneShaderProgram {
+            key: "mask-b".to_string(),
+            kind: SceneShaderProgramKind::MaskApply,
+            metal_source_path: PathBuf::from("/tmp/mask-apply.metal"),
+            vertex_entry: "vert_main",
+            fragment_entry: "frag_main",
+            variant_defines: BTreeMap::new(),
+        };
+        let key_a = super::phase10_shader_variant_key(
+            &mask_alpha,
+            &BTreeMap::new(),
+            super::SceneRenderBlendMode::Normal,
+        );
+        let key_b = super::phase10_shader_variant_key(
+            &mask_apply,
+            &BTreeMap::new(),
+            super::SceneRenderBlendMode::Normal,
+        );
+        assert!(!key_a.is_empty());
+        assert!(!key_b.is_empty());
+        assert_ne!(key_a, key_b, "MaskAlpha and MaskApply variant keys must be distinct");
     }
 }
