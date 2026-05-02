@@ -8,6 +8,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 const MAX_PACKAGE_ENTRIES: usize = 65_536;
+const MAX_PACKAGE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_PACKAGE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const MIN_ENTRY_RECORD_SIZE: usize = 12;
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +104,15 @@ pub fn parse_pkg(bytes: &[u8]) -> Result<Package> {
 }
 
 pub fn extract_pkg(pkg_path: &Path, output_dir: &Path) -> Result<Package> {
+    let metadata =
+        fs::metadata(pkg_path).with_context(|| format!("Unable to stat {}", pkg_path.display()))?;
+    let file_size = metadata.len();
+    if file_size > MAX_PACKAGE_FILE_BYTES {
+        bail!(
+            "Package file size {} exceeds limit of {MAX_PACKAGE_FILE_BYTES} bytes",
+            file_size
+        );
+    }
     let bytes =
         fs::read(pkg_path).with_context(|| format!("Unable to read {}", pkg_path.display()))?;
     let package = parse_pkg(&bytes)?;
@@ -110,6 +121,8 @@ pub fn extract_pkg(pkg_path: &Path, output_dir: &Path) -> Result<Package> {
         .with_context(|| format!("Unable to canonicalize {}", output_dir.display()))?;
     let header_size = usize::try_from(package.header_size)
         .context("Package header size exceeds supported platform address space")?;
+
+    let mut total_extracted: u64 = 0;
 
     for entry in &package.entries {
         let relative_path = normalize_entry_path(&entry.full_path)?;
@@ -128,6 +141,14 @@ pub fn extract_pkg(pkg_path: &Path, output_dir: &Path) -> Result<Package> {
             .context("Package entry length overflows address space")?;
         if end > bytes.len() {
             continue;
+        }
+        total_extracted = total_extracted
+            .checked_add(entry.length as u64)
+            .context("Package extraction total size overflows address space")?;
+        if total_extracted > MAX_PACKAGE_TOTAL_BYTES {
+            bail!(
+                "Package extraction total size exceeds limit of {MAX_PACKAGE_TOTAL_BYTES} bytes"
+            );
         }
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;

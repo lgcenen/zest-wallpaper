@@ -165,10 +165,7 @@ fn record_needs_metadata_refresh(record: &WallpaperRecord) -> bool {
         return true;
     }
 
-    match record.wallpaper_type {
-        crate::models::WallpaperType::Scene => false,
-        _ => false,
-    }
+    false
 }
 
 pub fn save_library(store: &LibraryStore) -> Result<()> {
