@@ -1172,6 +1172,22 @@ pub struct SceneEvaluatedDocument {
     pub objects: BTreeMap<u32, EvaluatedSceneObject>,
     pub render_list: Vec<u32>,
     pub evaluated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<SceneEvaluationDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneEvaluationDiagnostic {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub property_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
 }
 
 impl Default for SceneEvaluatedDocument {
@@ -1192,6 +1208,7 @@ impl Default for SceneEvaluatedDocument {
             objects: BTreeMap::new(),
             render_list: Vec::new(),
             evaluated_at: Utc::now(),
+            diagnostics: Vec::new(),
         }
     }
 }

@@ -472,6 +472,16 @@ export interface SceneEvaluatedDocument {
   objects: Record<string, EvaluatedSceneObject>;
   renderList: number[];
   evaluatedAt: string;
+  diagnostics?: SceneEvaluationDiagnostic[];
+}
+
+export interface SceneEvaluationDiagnostic {
+  severity: "warning" | "fatal";
+  code: string;
+  message: string;
+  objectId?: number | null;
+  propertyKey?: string | null;
+  expression?: string | null;
 }
 
 export interface SceneRuntimeDocument {

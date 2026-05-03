@@ -1740,6 +1740,7 @@ mod tests {
                 objects,
                 render_list: vec![7],
                 evaluated_at,
+                diagnostics: Vec::new(),
             },
             now_playing: Default::default(),
         }

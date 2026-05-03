@@ -632,6 +632,7 @@ mod tests {
                 objects: objects.into_iter().collect::<BTreeMap<_, _>>(),
                 render_list,
                 evaluated_at: Utc::now(),
+                diagnostics: Vec::new(),
             },
             now_playing: Default::default(),
         }

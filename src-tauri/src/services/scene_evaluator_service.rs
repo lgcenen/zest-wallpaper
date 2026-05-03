@@ -6,9 +6,9 @@ use serde_json::Value;
 use crate::models::{
     EvaluatedAudioState, EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
     EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
-    SceneAxisBindings, SceneBinding, SceneCamera, SceneManifest, SceneNowPlayingSnapshot,
-    SceneParticleKind, SceneRenderNodeKind, SceneTextBehavior, SceneTextLayer, SceneVisualLayer,
-    WallpaperProperty,
+    SceneAxisBindings, SceneBinding, SceneCamera, SceneEvaluationDiagnostic, SceneManifest,
+    SceneNowPlayingSnapshot, SceneParticleKind, SceneRenderNodeKind, SceneTextBehavior,
+    SceneTextLayer, SceneVisualLayer, WallpaperProperty,
 };
 
 use super::{scene_text_behavior_service, scene_text_script_runtime_service};
@@ -73,6 +73,7 @@ fn evaluate_scene_with_runtime_key(
     let camera = evaluate_camera(&source.camera, properties);
     let local_now = now.with_timezone(&Local);
     let mut objects = BTreeMap::new();
+    let mut diagnostics = Vec::new();
     let active_script_layer_ids = source
         .text_layers
         .iter()
@@ -87,6 +88,7 @@ fn evaluate_scene_with_runtime_key(
             properties,
             persisted_properties,
             property_definitions,
+            &mut diagnostics,
         );
         let transform = resolve_transform(
             source,
@@ -127,6 +129,7 @@ fn evaluate_scene_with_runtime_key(
             properties,
             persisted_properties,
             property_definitions,
+            &mut diagnostics,
         );
         let resolved_opacity = resolve_bound_number(layer.opacity_binding.as_deref(), properties)
             .unwrap_or(layer.opacity.unwrap_or(1.0))
@@ -201,6 +204,7 @@ fn evaluate_scene_with_runtime_key(
             properties,
             persisted_properties,
             property_definitions,
+            &mut diagnostics,
         );
         let resolved_color = resolve_bound_string(layer.color_binding.as_deref(), properties)
             .or_else(|| layer.color.clone())
@@ -293,6 +297,7 @@ fn evaluate_scene_with_runtime_key(
             properties,
             persisted_properties,
             property_definitions,
+            &mut diagnostics,
         );
         let opacity = layer.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
         let transform = resolve_transform(
@@ -344,6 +349,7 @@ fn evaluate_scene_with_runtime_key(
             properties,
             persisted_properties,
             property_definitions,
+            &mut diagnostics,
         );
         let resolved_color = resolve_bound_string(layer.color_binding.as_deref(), properties)
             .or_else(|| layer.color.clone());
@@ -407,6 +413,7 @@ fn evaluate_scene_with_runtime_key(
             properties,
             persisted_properties,
             property_definitions,
+            &mut diagnostics,
         );
         let transform = resolve_transform(
             source,
@@ -534,6 +541,7 @@ fn evaluate_scene_with_runtime_key(
         objects,
         render_list,
         evaluated_at: now,
+        diagnostics,
     }
 }
 
@@ -595,6 +603,7 @@ fn source_object_visible(
     properties: &BTreeMap<String, Value>,
     persisted_properties: &BTreeMap<String, Value>,
     property_definitions: &BTreeMap<String, WallpaperProperty>,
+    diagnostics: &mut Vec<SceneEvaluationDiagnostic>,
 ) -> bool {
     let Some(object_id) = object_id else {
         return true;
@@ -606,6 +615,7 @@ fn source_object_visible(
         properties,
         persisted_properties,
         property_definitions,
+        diagnostics,
         &mut trail,
     )
 }
@@ -616,6 +626,7 @@ fn evaluate_source_visibility(
     properties: &BTreeMap<String, Value>,
     persisted_properties: &BTreeMap<String, Value>,
     property_definitions: &BTreeMap<String, WallpaperProperty>,
+    diagnostics: &mut Vec<SceneEvaluationDiagnostic>,
     trail: &mut BTreeSet<u32>,
 ) -> bool {
     if !trail.insert(object_id) {
@@ -625,11 +636,13 @@ fn evaluate_source_visibility(
         return true;
     };
     if !binding_visible(
+        object_id,
         visible,
         binding,
         properties,
         persisted_properties,
         property_definitions,
+        diagnostics,
     ) {
         return false;
     }
@@ -642,6 +655,7 @@ fn evaluate_source_visibility(
         properties,
         persisted_properties,
         property_definitions,
+        diagnostics,
         trail,
     )
 }
@@ -705,11 +719,13 @@ fn source_visibility_state<'a>(
 }
 
 fn binding_visible(
+    object_id: u32,
     visible: bool,
     binding: Option<&SceneBinding>,
     properties: &BTreeMap<String, Value>,
     _persisted_properties: &BTreeMap<String, Value>,
     property_definitions: &BTreeMap<String, WallpaperProperty>,
+    diagnostics: &mut Vec<SceneEvaluationDiagnostic>,
 ) -> bool {
     let Some(binding) = binding else {
         return visible;
@@ -720,6 +736,13 @@ fn binding_visible(
 
     if let Some(condition) = binding.condition.as_deref() {
         if looks_like_expression(condition) {
+            record_unknown_condition_identifier_diagnostics(
+                diagnostics,
+                object_id,
+                &binding.property_key,
+                condition,
+                properties,
+            );
             if let Some(evaluated) = evaluate_property_condition(condition, properties) {
                 return evaluated;
             }
@@ -1495,6 +1518,48 @@ fn tokenize_condition(input: &str) -> Option<Vec<ConditionToken>> {
     Some(tokens)
 }
 
+fn record_unknown_condition_identifier_diagnostics(
+    diagnostics: &mut Vec<SceneEvaluationDiagnostic>,
+    object_id: u32,
+    property_key: &str,
+    expression: &str,
+    properties: &BTreeMap<String, Value>,
+) {
+    let Some(tokens) = tokenize_condition(expression) else {
+        return;
+    };
+    let mut unknown = tokens
+        .iter()
+        .filter(|token| token.token_type == ConditionTokenType::Identifier)
+        .filter_map(|token| {
+            let key = token.value.strip_suffix(".value").unwrap_or(&token.value);
+            if properties.contains_key(key) {
+                None
+            } else {
+                Some(key.to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    unknown.sort();
+    unknown.dedup();
+
+    for key in unknown {
+        let diagnostic = SceneEvaluationDiagnostic {
+            severity: "warning".to_string(),
+            code: "condition-property-unresolved".to_string(),
+            message: format!(
+                "Scene object {object_id} visibility condition references unknown property {key:?}."
+            ),
+            object_id: Some(object_id),
+            property_key: Some(property_key.to_string()),
+            expression: Some(expression.to_string()),
+        };
+        if !diagnostics.iter().any(|existing| existing == &diagnostic) {
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
 fn evaluate_property_condition(
     expression: &str,
     properties: &BTreeMap<String, Value>,
@@ -1900,10 +1965,39 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_condition_identifiers_record_diagnostics_without_changing_evaluation() {
+        let properties = BTreeMap::from([("enabled".to_string(), json!(true))]);
+        let mut diagnostics = Vec::new();
+
+        record_unknown_condition_identifier_diagnostics(
+            &mut diagnostics,
+            7,
+            "enabled",
+            "enabled && misspelledFlag.value",
+            &properties,
+        );
+
+        assert_eq!(
+            evaluate_property_condition("enabled && misspelledFlag.value", &properties),
+            Some(false)
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "condition-property-unresolved");
+        assert_eq!(diagnostics[0].object_id, Some(7));
+        assert_eq!(diagnostics[0].property_key.as_deref(), Some("enabled"));
+        assert_eq!(
+            diagnostics[0].expression.as_deref(),
+            Some("enabled && misspelledFlag.value")
+        );
+    }
+
+    #[test]
     fn combo_visibility_uses_option_labels() {
         let properties = BTreeMap::from([("mode".to_string(), Value::String("0".to_string()))]);
         let defs = property_definitions();
+        let mut diagnostics = Vec::new();
         assert!(!binding_visible(
+            1,
             true,
             Some(&SceneBinding {
                 property_key: "mode".to_string(),
@@ -1912,6 +2006,7 @@ mod tests {
             &properties,
             &properties,
             &defs,
+            &mut diagnostics,
         ));
     }
 
@@ -1920,7 +2015,9 @@ mod tests {
         let defs = property_definitions();
 
         let hidden_properties = BTreeMap::from([("prompt".to_string(), Value::Bool(false))]);
+        let mut diagnostics = Vec::new();
         assert!(!binding_visible(
+            1,
             true,
             Some(&SceneBinding {
                 property_key: "prompt".to_string(),
@@ -1929,10 +2026,12 @@ mod tests {
             &hidden_properties,
             &hidden_properties,
             &defs,
+            &mut diagnostics,
         ));
 
         let shown_properties = BTreeMap::from([("prompt".to_string(), Value::Bool(true))]);
         assert!(binding_visible(
+            1,
             true,
             Some(&SceneBinding {
                 property_key: "prompt".to_string(),
@@ -1941,6 +2040,7 @@ mod tests {
             &shown_properties,
             &shown_properties,
             &defs,
+            &mut diagnostics,
         ));
     }
 
@@ -1948,7 +2048,9 @@ mod tests {
     fn direct_bool_visibility_binding_does_not_invert_false_authored_value() {
         let defs = property_definitions();
         let properties = BTreeMap::from([("chineseTime".to_string(), Value::Bool(false))]);
+        let mut diagnostics = Vec::new();
         assert!(!binding_visible(
+            1,
             false,
             Some(&SceneBinding {
                 property_key: "chineseTime".to_string(),
@@ -1957,6 +2059,7 @@ mod tests {
             &properties,
             &properties,
             &defs,
+            &mut diagnostics,
         ));
     }
 
@@ -2192,12 +2295,14 @@ mod tests {
             ..SceneManifest::default()
         };
         let properties = BTreeMap::from([("mode".to_string(), Value::String("1".to_string()))]);
+        let mut diagnostics = Vec::new();
         assert!(!source_object_visible(
             &source,
             Some(10),
             &properties,
             &properties,
             &property_definitions(),
+            &mut diagnostics,
         ));
     }
 
