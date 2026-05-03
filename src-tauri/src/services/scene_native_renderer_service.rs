@@ -2449,11 +2449,26 @@ impl NativeSceneMetalRenderer {
         required_scratch_keys: &mut BTreeSet<String>,
         required_named_target_keys: &mut BTreeSet<String>,
     ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
+        use crate::services::scene_mdl_service::SceneMdlMeshFrame;
+
         let puppet_path = visual.puppet_path.as_ref()?;
         let document = self.mdl_cache.get(puppet_path)?;
         let mesh_frame =
             evaluate_scene_mdl_mesh(document, &visual.animation_layers, elapsed_seconds)?;
         if mesh_frame.positions.is_empty() || mesh_frame.indices.len() < 3 {
+            return None;
+        }
+
+        let submesh_frames: Vec<SceneMdlMeshFrame> = if visual.submeshes.is_empty() {
+            vec![mesh_frame.clone()]
+        } else {
+            visual
+                .submeshes
+                .iter()
+                .filter_map(|submesh| mesh_frame.extract_submesh(submesh))
+                .collect()
+        };
+        if submesh_frames.is_empty() {
             return None;
         }
 
@@ -2502,22 +2517,51 @@ impl NativeSceneMetalRenderer {
             );
             let shader_defines = phase10_pass_shader_defines(resolved_pass);
 
-            if !self.encode_phase10_mesh_pass(
-                command_buffer,
-                &target.texture,
-                &projection,
-                visual,
-                &mesh_frame,
-                resolved_pass.pass,
-                &shader_defines,
-                &pass_textures,
-                &uniforms,
-                input_scope
-                    .previous_pass
-                    .map(|texture| texture.texture.clone()),
-            ) {
-                return None;
+            let descriptor = MTLRenderPassDescriptor::new();
+            unsafe {
+                let attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
+                attachment.setTexture(Some(target.texture.as_ref()));
+                attachment.setLoadAction(MTLLoadAction::Clear);
+                attachment.setStoreAction(MTLStoreAction::Store);
+                attachment.setClearColor(objc2_metal::MTLClearColor {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 0.0,
+                    alpha: 0.0,
+                });
             }
+            let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(&descriptor)
+            else {
+                return None;
+            };
+
+            if phase10_alpha_prefill_required(resolved_pass.pass.blend_mode) {
+                if let Some(previous_texture) = input_scope
+                    .previous_pass
+                    .map(|t| t.texture.clone())
+                {
+                    self.draw_phase10_fullscreen_texture(
+                        &encoder,
+                        previous_texture,
+                        SceneRenderColor::default(),
+                        SceneRenderBlendMode::Normal,
+                    );
+                }
+            }
+
+            for sub_frame in &submesh_frames {
+                self.draw_phase10_mesh(
+                    &encoder,
+                    &projection,
+                    visual,
+                    sub_frame,
+                    resolved_pass.pass,
+                    &shader_defines,
+                    &pass_textures,
+                    &uniforms,
+                );
+            }
+            encoder.endEncoding();
 
             previous_texture = target.clone();
             if let Some(target_name) = target_name {
@@ -7621,6 +7665,7 @@ mod tests {
                 animation_layers: vec![],
                 effect_chain: vec![],
                 submesh_count: 0,
+                submeshes: vec![],
                 mask_binding_count: 0,
                 container_kind: None,
             },
@@ -7645,6 +7690,7 @@ mod tests {
                 animation_layers: vec![],
                 effect_chain: vec![],
                 submesh_count: 0,
+                submeshes: vec![],
                 mask_binding_count: 0,
                 container_kind: None,
             },
@@ -7918,6 +7964,7 @@ mod tests {
             animation_layers: vec![],
             effect_chain: vec![],
             submesh_count: 0,
+            submeshes: vec![],
             mask_binding_count: 0,
             container_kind: None,
         }

@@ -124,6 +124,46 @@ pub struct SceneMdlMeshFrame {
     pub indices: Vec<u16>,
 }
 
+impl SceneMdlMeshFrame {
+    pub fn extract_submesh(&self, submesh: &SceneMdlSubmesh) -> Option<SceneMdlMeshFrame> {
+        if submesh.index_count == 0 {
+            return None;
+        }
+        let end = submesh.index_start.checked_add(submesh.index_count)?;
+        if end > self.indices.len() {
+            return None;
+        }
+        let sub_indices = &self.indices[submesh.index_start..end];
+        let mut index_map = BTreeMap::<u16, u16>::new();
+        let mut local_positions = Vec::<Vec3>::new();
+        let mut local_uvs = Vec::<Vec2>::new();
+        let mut local_indices = Vec::<u16>::with_capacity(sub_indices.len());
+        for &global_index in sub_indices {
+            let local_index = *index_map.entry(global_index).or_insert_with(|| {
+                let idx = local_positions.len() as u16;
+                let pos = self
+                    .positions
+                    .get(global_index as usize)
+                    .copied()
+                    .unwrap_or(Vec3::ZERO);
+                let uv = self.uvs.get(global_index as usize).copied().unwrap_or(Vec2::ZERO);
+                local_positions.push(pos);
+                local_uvs.push(uv);
+                idx
+            });
+            local_indices.push(local_index);
+        }
+        if local_indices.len() < 3 {
+            return None;
+        }
+        Some(SceneMdlMeshFrame {
+            positions: local_positions,
+            uvs: local_uvs,
+            indices: local_indices,
+        })
+    }
+}
+
 pub fn parse_scene_mdl_file(path: impl AsRef<Path>) -> Result<SceneMdlDocument, String> {
     let path = path.as_ref();
     let bytes =

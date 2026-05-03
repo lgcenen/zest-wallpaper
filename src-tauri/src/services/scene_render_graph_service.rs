@@ -12,7 +12,7 @@ use crate::{
         SceneVisualEffect, SceneVisualLayer,
     },
     services::{
-        scene_mdl_service::{parse_scene_mdl_file, SceneMdlContainerKind},
+        scene_mdl_service::parse_scene_mdl_file,
         scene_render_planner_service::{
             parse_scene_color, parse_visual_blend_mode, SceneRenderBlendMode, SceneRenderColor,
             SceneRenderQuad, SceneRenderSourceKind,
@@ -122,6 +122,7 @@ pub struct ScenePhase10VisualPlan {
     pub animation_layers: Vec<SceneAnimationLayer>,
     pub effect_chain: Vec<ScenePhase10EffectNode>,
     pub submesh_count: usize,
+    pub submeshes: Vec<crate::services::scene_mdl_service::SceneMdlSubmesh>,
     pub mask_binding_count: usize,
     pub container_kind: Option<crate::services::scene_mdl_service::SceneMdlContainerKind>,
 }
@@ -365,6 +366,7 @@ pub fn build_scene_phase10_graph(
 
         let mut puppet_path = None;
         let mut submesh_count = 0;
+        let mut submeshes = Vec::new();
         let mut mask_binding_count = 0;
         let mut container_kind = None;
         if let Some(raw_puppet_path) = source.puppet_path.as_deref() {
@@ -389,6 +391,7 @@ pub fn build_scene_phase10_graph(
             match parse_scene_mdl_file(&resolved_puppet_path) {
                 Ok(document) => {
                     submesh_count = document.submeshes.len();
+                    submeshes = document.submeshes.clone();
                     mask_binding_count = document.mask_bindings.len();
                     container_kind = Some(document.container_kind);
                 }
@@ -450,6 +453,7 @@ pub fn build_scene_phase10_graph(
             animation_layers: animation_layers.clone(),
             effect_chain,
             submesh_count,
+            submeshes,
             mask_binding_count,
             container_kind,
         });
@@ -1607,7 +1611,8 @@ mod tests {
         services::{runtime_document_service, scene_resource_service::SceneResourceResolver},
     };
 
-    use super::{build_scene_phase10_graph, SceneMdlContainerKind};
+    use super::build_scene_phase10_graph;
+    use crate::services::scene_mdl_service::SceneMdlContainerKind;
 
     fn write(path: &std::path::Path, body: &[u8]) {
         if let Some(parent) = path.parent() {
