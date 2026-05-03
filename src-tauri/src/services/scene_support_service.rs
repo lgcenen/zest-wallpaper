@@ -445,6 +445,18 @@ fn support_error_from_graph_issue(issue: SceneGraphIssue) -> SceneSupportError {
         SceneGraphIssueCode::GraphConstructionIncomplete => {
             ("graph-construction-incomplete", SceneDiagnosticDomain::Visual)
         }
+        SceneGraphIssueCode::MorphMetadataNotConsumed => {
+            ("morph-metadata-not-consumed", SceneDiagnosticDomain::Visual)
+        }
+        SceneGraphIssueCode::ClippingMetadataNotConsumed => {
+            ("clipping-metadata-not-consumed", SceneDiagnosticDomain::Visual)
+        }
+        SceneGraphIssueCode::AttachmentMetadataNotConsumed => {
+            ("attachment-metadata-not-consumed", SceneDiagnosticDomain::Visual)
+        }
+        SceneGraphIssueCode::InlineMdlMeshNoBones => {
+            ("inline-mdl-mesh-no-bones", SceneDiagnosticDomain::Visual)
+        }
     };
     let code = issue.diagnostic_code.unwrap_or(default_code);
 

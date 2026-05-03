@@ -7667,6 +7667,9 @@ mod tests {
                 submesh_count: 0,
                 submeshes: vec![],
                 mask_binding_count: 0,
+                mask_bindings: vec![],
+                attachments: vec![],
+                morph_target_count: 0,
                 container_kind: None,
             },
             super::ScenePhase10VisualPlan {
@@ -7692,6 +7695,9 @@ mod tests {
                 submesh_count: 0,
                 submeshes: vec![],
                 mask_binding_count: 0,
+                mask_bindings: vec![],
+                attachments: vec![],
+                morph_target_count: 0,
                 container_kind: None,
             },
         ];
@@ -7966,6 +7972,9 @@ mod tests {
             submesh_count: 0,
             submeshes: vec![],
             mask_binding_count: 0,
+            mask_bindings: vec![],
+            attachments: vec![],
+            morph_target_count: 0,
             container_kind: None,
         }
     }

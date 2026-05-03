@@ -12,7 +12,7 @@ use crate::{
         SceneVisualEffect, SceneVisualLayer,
     },
     services::{
-        scene_mdl_service::parse_scene_mdl_file,
+        scene_mdl_service::{parse_scene_mdl_file, SceneMdlContainerKind},
         scene_render_planner_service::{
             parse_scene_color, parse_visual_blend_mode, SceneRenderBlendMode, SceneRenderColor,
             SceneRenderQuad, SceneRenderSourceKind,
@@ -55,6 +55,10 @@ pub enum SceneGraphIssueCode {
     GraphCopybackgroundUnavailable,
     GraphMaskTargetMissing,
     GraphConstructionIncomplete,
+    MorphMetadataNotConsumed,
+    ClippingMetadataNotConsumed,
+    AttachmentMetadataNotConsumed,
+    InlineMdlMeshNoBones,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +128,9 @@ pub struct ScenePhase10VisualPlan {
     pub submesh_count: usize,
     pub submeshes: Vec<crate::services::scene_mdl_service::SceneMdlSubmesh>,
     pub mask_binding_count: usize,
+    pub mask_bindings: Vec<crate::services::scene_mdl_service::SceneMdlMaskBinding>,
+    pub attachments: Vec<crate::services::scene_mdl_service::SceneMdlAttachment>,
+    pub morph_target_count: usize,
     pub container_kind: Option<crate::services::scene_mdl_service::SceneMdlContainerKind>,
 }
 
@@ -368,6 +375,9 @@ pub fn build_scene_phase10_graph(
         let mut submesh_count = 0;
         let mut submeshes = Vec::new();
         let mut mask_binding_count = 0;
+        let mut mask_bindings = Vec::new();
+        let mut attachments = Vec::new();
+        let mut morph_target_count = 0;
         let mut container_kind = None;
         if let Some(raw_puppet_path) = source.puppet_path.as_deref() {
             let Some(resolved_puppet_path) = resolver.resolve_relative_path(raw_puppet_path) else {
@@ -393,7 +403,99 @@ pub fn build_scene_phase10_graph(
                     submesh_count = document.submeshes.len();
                     submeshes = document.submeshes.clone();
                     mask_binding_count = document.mask_bindings.len();
+                    mask_bindings = document.mask_bindings.clone();
+                    attachments = document.attachments.clone();
+                    morph_target_count = document
+                        .morphs
+                        .as_ref()
+                        .map(|m| m.targets.len())
+                        .unwrap_or(0);
                     container_kind = Some(document.container_kind);
+
+                    if mask_binding_count > 0 {
+                        issues.push(SceneGraphIssue {
+                            severity: SceneGraphIssueSeverity::Warning,
+                            code: SceneGraphIssueCode::ClippingMetadataNotConsumed,
+                            diagnostic_code: Some("phase-10c-clipping-metadata-present"),
+                            message: format!(
+                                "\"{}\" has {} clipping mask binding(s) — alpha compose not yet available (phase-10d).",
+                                base.name, mask_binding_count
+                            ),
+                            object_id: Some(base.id),
+                            object_name: Some(base.name.clone()),
+                            resource_path: Some(resolved_puppet_path.display().to_string()),
+                            detail: Some(
+                                "Clipping mask bindings are parsed but not consumed at render time."
+                                    .to_string(),
+                            ),
+                            resource_lookup: None,
+                            resource_present_but_unsupported: false,
+                        });
+                    }
+                    if morph_target_count > 0 {
+                        issues.push(SceneGraphIssue {
+                            severity: SceneGraphIssueSeverity::Warning,
+                            code: SceneGraphIssueCode::MorphMetadataNotConsumed,
+                            diagnostic_code: Some("phase-10c-morph-metadata-present"),
+                            message: format!(
+                                "\"{}\" has {} morph target(s) — GPU morph execution not yet available.",
+                                base.name, morph_target_count
+                            ),
+                            object_id: Some(base.id),
+                            object_name: Some(base.name.clone()),
+                            resource_path: Some(resolved_puppet_path.display().to_string()),
+                            detail: Some(
+                                "Morph targets are parsed but not evaluated at runtime (phase-10b/10d)."
+                                    .to_string(),
+                            ),
+                            resource_lookup: None,
+                            resource_present_but_unsupported: false,
+                        });
+                    }
+                    if !document.attachments.is_empty() {
+                        issues.push(SceneGraphIssue {
+                            severity: SceneGraphIssueSeverity::Warning,
+                            code: SceneGraphIssueCode::AttachmentMetadataNotConsumed,
+                            diagnostic_code: Some("phase-10c-attachment-metadata-present"),
+                            message: format!(
+                                "\"{}\" has {} attachment(s) — not consumed at render time.",
+                                base.name,
+                                document.attachments.len()
+                            ),
+                            object_id: Some(base.id),
+                            object_name: Some(base.name.clone()),
+                            resource_path: Some(resolved_puppet_path.display().to_string()),
+                            detail: Some(
+                                "Attachments are parsed but not wired into the render path."
+                                    .to_string(),
+                            ),
+                            resource_lookup: None,
+                            resource_present_but_unsupported: false,
+                        });
+                    }
+                    if document.container_kind == SceneMdlContainerKind::InlineMesh
+                        && document.bones.is_empty()
+                        && document.raw_mesh.is_some()
+                    {
+                        issues.push(SceneGraphIssue {
+                            severity: SceneGraphIssueSeverity::Warning,
+                            code: SceneGraphIssueCode::InlineMdlMeshNoBones,
+                            diagnostic_code: Some("phase-10c-inline-mesh-no-bones"),
+                            message: format!(
+                                "\"{}\" is an inline mesh container without skeleton data.",
+                                base.name
+                            ),
+                            object_id: Some(base.id),
+                            object_name: Some(base.name.clone()),
+                            resource_path: Some(resolved_puppet_path.display().to_string()),
+                            detail: Some(
+                                "Inline mesh will render in static bind pose; animation/morph not available."
+                                    .to_string(),
+                            ),
+                            resource_lookup: None,
+                            resource_present_but_unsupported: false,
+                        });
+                    }
                 }
                 Err(error) => {
                     issues.push(SceneGraphIssue {
@@ -455,6 +557,9 @@ pub fn build_scene_phase10_graph(
             submesh_count,
             submeshes,
             mask_binding_count,
+            mask_bindings,
+            attachments,
+            morph_target_count,
             container_kind,
         });
         consumed.insert(base.id);
