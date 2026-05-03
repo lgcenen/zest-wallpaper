@@ -2694,6 +2694,7 @@ impl NativeSceneMetalRenderer {
                     &BTreeMap::new(),
                     visual.blend_mode,
                 );
+                required_shader_variants.insert(mask_apply_key.clone());
                 if !self.compiled_shader_variants.contains_key(&mask_apply_key) {
                     match self.compile_phase10_shader_variant(
                         &mask_apply_program,
@@ -2977,12 +2978,6 @@ impl NativeSceneMetalRenderer {
                     &pass_textures,
                     &uniforms,
                 );
-
-                previous_texture = pass_textures
-                    .slots
-                    .first()
-                    .and_then(|slot| slot.as_ref())
-                    .cloned();
             }
         } else {
             let Some(texture) = self.phase10_base_texture_for_visual(visual) else {

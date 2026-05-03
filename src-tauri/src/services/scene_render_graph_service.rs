@@ -679,16 +679,15 @@ fn build_effect_node(
                     validate_phase10_effect_contract(effect, pass, &effect_material, runtime_pass)
                 {
                     let graph_blocker = effect_pass_requires_phase10d_graph(effect, pass);
-                    let (code, diagnostic_code) = if graph_blocker {
-                        (
-                            phase10d_error_code(&error),
-                            Some("effect-graph-scope-blocked"),
-                        )
+                    let code = if graph_blocker {
+                        phase10d_error_code(&error)
                     } else {
-                        (
-                            SceneGraphIssueCode::InvalidEffect,
-                            Some("effect-unsupported"),
-                        )
+                        SceneGraphIssueCode::InvalidEffect
+                    };
+                    let diagnostic_code = if graph_blocker {
+                        Some(phase10_graph_issue_diagnostic_code(code))
+                    } else {
+                        Some("effect-unsupported")
                     };
                     issues.push(SceneGraphIssue {
                         severity,
@@ -914,7 +913,8 @@ fn validate_phase10d_pass_target_ordering(effect: &SceneEffectPlan) -> Result<()
             ) else {
                 continue;
             };
-            if !written_targets.contains(&target_ref) {
+            let normalized_ref = normalized_contract_key(&target_ref);
+            if !written_targets.contains(&normalized_ref) {
                 return Err(format!(
                     "phase-10d graph-cycle-or-order-invalid: pass {} binds named target {target_ref} at g_Texture{}, but no earlier pass writes to that target. Currently written targets: {:?}.",
                     pass.index,
@@ -925,7 +925,7 @@ fn validate_phase10d_pass_target_ordering(effect: &SceneEffectPlan) -> Result<()
         }
 
         if !target_name.is_empty() {
-            written_targets.insert(target_name.to_string());
+            written_targets.insert(normalized_contract_key(target_name));
         }
     }
 
@@ -947,6 +947,19 @@ fn phase10d_error_code(error: &str) -> SceneGraphIssueCode {
         SceneGraphIssueCode::GraphMaskTargetMissing
     } else {
         SceneGraphIssueCode::InvalidEffect
+    }
+}
+
+fn phase10_graph_issue_diagnostic_code(code: SceneGraphIssueCode) -> &'static str {
+    match code {
+        SceneGraphIssueCode::GraphTargetMissing => "graph-target-missing",
+        SceneGraphIssueCode::GraphInputMissing => "graph-input-missing",
+        SceneGraphIssueCode::GraphCycleOrOrderInvalid => "graph-cycle-or-order-invalid",
+        SceneGraphIssueCode::GraphCopybackgroundUnavailable => "graph-copybackground-unavailable",
+        SceneGraphIssueCode::GraphMaskTargetMissing => "graph-mask-target-missing",
+        SceneGraphIssueCode::GraphConstructionIncomplete => "graph-construction-incomplete",
+        SceneGraphIssueCode::InvalidEffect => "effect-graph-scope-blocked",
+        _ => "effect-graph-scope-blocked",
     }
 }
 
@@ -2730,7 +2743,7 @@ mod tests {
         assert_eq!(issue.severity, super::SceneGraphIssueSeverity::Fatal);
         assert_eq!(
             issue.diagnostic_code,
-            Some("effect-graph-scope-blocked")
+            Some("graph-target-missing")
         );
         assert!(issue
             .detail
@@ -3323,7 +3336,7 @@ mod tests {
         assert_eq!(issue.severity, super::SceneGraphIssueSeverity::Fatal);
         assert_eq!(
             issue.diagnostic_code,
-            Some("effect-graph-scope-blocked")
+            Some("graph-cycle-or-order-invalid")
         );
         assert!(issue
             .detail
