@@ -40,6 +40,10 @@ export interface WorkbenchCopy {
   toolbarSummary: (visible: number, total: number, filtering: boolean) => string;
   importAction: string;
   sortAction: string;
+  filterTypeAction: string;
+  filterTagAction: string;
+  filterAllTypes: string;
+  filterAllTags: string;
   searchAction: string;
   searchPlaceholder: string;
   settingsAction: string;
@@ -88,11 +92,15 @@ export interface WorkbenchCopy {
 
 const zhCnCopy: WorkbenchCopy = {
   toolbarEyebrow: "Workbench",
-  toolbarTitle: "本地壁纸库",
+  toolbarTitle: "Zest Wallpaper",
   toolbarSummary: (visible: number, total: number, filtering: boolean) =>
     filtering ? `显示 ${visible} / ${total} 个壁纸` : `${total} 个本地壁纸`,
   importAction: "导入",
   sortAction: "排序",
+  filterTypeAction: "筛选类型",
+  filterTagAction: "筛选标签",
+  filterAllTypes: "全部类型",
+  filterAllTags: "全部标签",
   searchAction: "搜索",
   searchPlaceholder: "搜索标题、标签或类型",
   settingsAction: "设置",
@@ -210,11 +218,15 @@ const zhCnCopy: WorkbenchCopy = {
 
 const englishCopy: WorkbenchCopy = {
   toolbarEyebrow: "Workbench",
-  toolbarTitle: "Wallpaper Library",
+  toolbarTitle: "Zest Wallpaper",
   toolbarSummary: (visible: number, total: number, filtering: boolean) =>
     filtering ? `Showing ${visible} of ${total} wallpapers` : `${total} wallpapers`,
   importAction: "Import",
   sortAction: "Sort",
+  filterTypeAction: "Filter by Type",
+  filterTagAction: "Filter by Tag",
+  filterAllTypes: "All Types",
+  filterAllTags: "All Tags",
   searchAction: "Search",
   searchPlaceholder: "Search title, tag, or type",
   settingsAction: "Settings",

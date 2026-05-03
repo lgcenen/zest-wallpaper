@@ -19,6 +19,7 @@ import type {
   SceneRuntimeSettingsSnapshot,
   WallpaperProperty,
   WallpaperRuntimeRecord,
+  WallpaperType,
 } from "../types";
 import {
   getWorkbenchCopy,
@@ -354,15 +355,6 @@ function SettingsPopover({
           ]}
           onChange={(value) => onLanguageChange(value as WorkbenchLanguage)}
         />
-        <SelectField
-          label={copy.defaultSortLabel}
-          value={sortKey}
-          options={[
-            { value: "recent", label: copy.sortName("recent") },
-            { value: "title", label: copy.sortName("title") },
-          ]}
-          onChange={(value) => onSortKeyChange(value as WorkbenchSortKey)}
-        />
         <label className="settings-field">
           <span>{copy.guiOpacityLabel}</span>
           <div className="settings-range-row">
@@ -424,7 +416,6 @@ function SettingsPopover({
         </label>
       </div>
 
-      <p className="settings-note">{copy.themeResolved(themeMode, resolvedTheme)}</p>
     </div>
   );
 }
@@ -796,6 +787,9 @@ function LibraryPane({
   activeWallpaperId,
   isApplyingWallpaperId,
   searchQuery,
+  typeFilter,
+  tagFilter,
+  availableTags,
   isImporting,
   copy,
   resolvedTheme,
@@ -804,6 +798,8 @@ function LibraryPane({
   sceneRuntimeSettingsLoading,
   sceneRuntimeSettingsSaving,
   onSearchChange,
+  onTypeFilterChange,
+  onTagFilterChange,
   onSortChange,
   onThemeModeChange,
   onLanguageChange,
@@ -819,6 +815,9 @@ function LibraryPane({
   activeWallpaperId: string | null;
   isApplyingWallpaperId: string | null;
   searchQuery: string;
+  typeFilter: WallpaperType | "all";
+  tagFilter: string;
+  availableTags: string[];
   isImporting: boolean;
   copy: WorkbenchCopy;
   resolvedTheme: "light" | "dark";
@@ -832,6 +831,8 @@ function LibraryPane({
   sceneRuntimeSettingsLoading: boolean;
   sceneRuntimeSettingsSaving: boolean;
   onSearchChange: (value: string) => void;
+  onTypeFilterChange: (value: WallpaperType | "all") => void;
+  onTagFilterChange: (value: string) => void;
   onSortChange: (value: WorkbenchSortKey) => void;
   onThemeModeChange: (value: WorkbenchThemeMode) => void;
   onLanguageChange: (value: WorkbenchLanguage) => void;
@@ -873,7 +874,6 @@ function LibraryPane({
     <section className="library-pane">
       <header className="workbench-toolbar">
         <div className="workbench-toolbar-copy">
-          <p className="eyebrow">{copy.toolbarEyebrow}</p>
           <h1>{copy.toolbarTitle}</h1>
           <span className="workbench-toolbar-meta">
             {copy.toolbarSummary(wallpapers.length, totalCount, searchQuery.trim().length > 0)}
@@ -890,6 +890,17 @@ function LibraryPane({
             {copy.importAction}
           </button>
 
+          <label className="toolbar-search">
+            <span className="sr-only">{copy.searchAction}</span>
+            <input
+              type="search"
+              value={searchQuery}
+              aria-label={copy.searchAction}
+              placeholder={copy.searchPlaceholder}
+              onChange={(event) => onSearchChange(event.target.value)}
+            />
+          </label>
+
           <label className="toolbar-select">
             <span className="sr-only">{copy.sortAction}</span>
             <WorkbenchSelect
@@ -904,14 +915,31 @@ function LibraryPane({
             />
           </label>
 
-          <label className="toolbar-search">
-            <span className="sr-only">{copy.searchAction}</span>
-            <input
-              type="search"
-              value={searchQuery}
-              aria-label={copy.searchAction}
-              placeholder={copy.searchPlaceholder}
-              onChange={(event) => onSearchChange(event.target.value)}
+          <label className="toolbar-select">
+            <span className="sr-only">{copy.filterTypeAction}</span>
+            <WorkbenchSelect
+              ariaLabel={copy.filterTypeAction}
+              value={typeFilter}
+              options={[
+                { value: "all", label: copy.filterAllTypes },
+                { value: "scene", label: copy.typeLabel("scene") },
+                { value: "video", label: copy.typeLabel("video") },
+                { value: "web", label: copy.typeLabel("web") },
+              ]}
+              onChange={(value) => onTypeFilterChange(value as WallpaperType | "all")}
+            />
+          </label>
+
+          <label className="toolbar-select">
+            <span className="sr-only">{copy.filterTagAction}</span>
+            <WorkbenchSelect
+              ariaLabel={copy.filterTagAction}
+              value={tagFilter}
+              options={[
+                { value: "all", label: copy.filterAllTags },
+                ...availableTags.map((tag) => ({ value: tag, label: tag })),
+              ]}
+              onChange={(value) => onTagFilterChange(value)}
             />
           </label>
 
@@ -1154,6 +1182,8 @@ export default function WorkbenchApp() {
   const [isImporting, setIsImporting] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  const [typeFilter, setTypeFilter] = useState<WallpaperType | "all">("all");
+  const [tagFilter, setTagFilter] = useState<string>("all");
   const [isApplyingWallpaperId, setIsApplyingWallpaperId] = useState<string | null>(null);
   const [lastApplyError, setLastApplyError] = useState<ApplyErrorState | null>(null);
   const detailScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1201,21 +1231,42 @@ export default function WorkbenchApp() {
     return next;
   }, [preferences.language, preferences.sortKey, wallpapers]);
 
-  const visibleWallpapers = useMemo(() => {
-    const keyword = deferredSearchQuery.trim().toLocaleLowerCase();
-    if (!keyword) {
-      return orderedWallpapers;
+  const availableTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const record of wallpapers) {
+      for (const tag of record.tags ?? []) {
+        tags.add(tag);
+      }
     }
-    return orderedWallpapers.filter((record) => {
-      const haystacks = [
-        record.title,
-        record.wallpaperType,
-        copy.typeLabel(record.wallpaperType),
-        ...(record.tags ?? []),
-      ];
-      return haystacks.some((value) => value.toLocaleLowerCase().includes(keyword));
-    });
-  }, [copy, deferredSearchQuery, orderedWallpapers]);
+    return [...tags].sort((a, b) => a.localeCompare(b));
+  }, [wallpapers]);
+
+  const visibleWallpapers = useMemo(() => {
+    let result = orderedWallpapers;
+
+    if (typeFilter !== "all") {
+      result = result.filter((record) => record.wallpaperType === typeFilter);
+    }
+
+    if (tagFilter !== "all") {
+      result = result.filter((record) => (record.tags ?? []).includes(tagFilter));
+    }
+
+    const keyword = deferredSearchQuery.trim().toLocaleLowerCase();
+    if (keyword) {
+      result = result.filter((record) => {
+        const haystacks = [
+          record.title,
+          record.wallpaperType,
+          copy.typeLabel(record.wallpaperType),
+          ...(record.tags ?? []),
+        ];
+        return haystacks.some((value) => value.toLocaleLowerCase().includes(keyword));
+      });
+    }
+
+    return result;
+  }, [copy, deferredSearchQuery, orderedWallpapers, typeFilter, tagFilter]);
 
   const selected = useMemo(
     () => wallpapers.find((record) => record.id === selectedId) ?? null,
@@ -1642,6 +1693,9 @@ export default function WorkbenchApp() {
         activeWallpaperId={activeWallpaperId}
         isApplyingWallpaperId={isApplyingWallpaperId}
         searchQuery={searchQuery}
+        typeFilter={typeFilter}
+        tagFilter={tagFilter}
+        availableTags={availableTags}
         isImporting={isImporting}
         copy={copy}
         resolvedTheme={resolvedTheme}
@@ -1650,6 +1704,8 @@ export default function WorkbenchApp() {
         sceneRuntimeSettingsLoading={sceneRuntimeSettingsLoading}
         sceneRuntimeSettingsSaving={sceneRuntimeSettingsSaving}
         onSearchChange={setSearchQuery}
+        onTypeFilterChange={setTypeFilter}
+        onTagFilterChange={setTagFilter}
         onSortChange={(value) => updatePreference("sortKey", value)}
         onThemeModeChange={(value) => updatePreference("themeMode", value)}
         onLanguageChange={(value) => updatePreference("language", value)}
