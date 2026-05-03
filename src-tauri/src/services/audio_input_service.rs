@@ -115,7 +115,9 @@ struct SceneConsumerStatus {
 }
 
 pub fn start_audio_worker(app: AppHandle) {
-    thread::spawn(move || {
+    let spawn_result = thread::Builder::new()
+        .name("wallpaper-shared-audio-worker".to_string())
+        .spawn(move || {
         let Some(state) = app.try_state::<SharedAudioServiceState>() else {
             return;
         };
@@ -187,6 +189,9 @@ pub fn start_audio_worker(app: AppHandle) {
             wait_for_refresh(&state, wait_for);
         }
     });
+    if let Err(error) = spawn_result {
+        eprintln!("failed to start shared audio worker: {error}");
+    }
 }
 
 pub fn current_audio_snapshot(app: &AppHandle) -> Result<AudioSnapshot, String> {
