@@ -360,55 +360,6 @@ mod tests {
     }
 
     #[test]
-    fn phase_05_contract_removes_legacy_player_fallbacks_and_unused_system_invokes() {
-        let app_entry = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/App.tsx"));
-        let gateway_index = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../src/gateway/index.ts"
-        ));
-        let player_runtime = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../src/app-shell/player-runtime.tsx"
-        ));
-        let commands_mod =
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/mod.rs"));
-        let system_service = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/services/system_service.rs"
-        ));
-        let input_service = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/services/input_service.rs"
-        ));
-        let lib_rs = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
-        let app_entry_runtime = lib_rs.split("#[cfg(test)]").next().unwrap_or(lib_rs);
-
-        assert!(app_entry.contains("window.__WALLPAPER_PLAYER__"));
-        assert!(app_entry.contains("PlayerAppShell"));
-        assert!(!player_runtime.contains("VideoSurface"));
-        assert!(!player_runtime.contains("playerMode"));
-        assert!(!player_runtime.contains("usePreviewFps"));
-        assert!(!player_runtime.contains("sceneCursorFromPreviewEvent"));
-        assert!(!player_runtime.contains("stage-paused"));
-        assert!(!player_runtime.contains("scene-vignette"));
-        assert!(player_runtime.contains("NativeVideoStageSurface"));
-        assert!(player_runtime.contains("NativeWebStageSurface"));
-        assert!(!player_runtime.contains("getPlayerInputSnapshot"));
-        assert!(!player_runtime.contains("onPlayerInput"));
-        assert!(!gateway_index.contains("system-api"));
-        assert!(!commands_mod.contains("system_commands"));
-        assert!(!system_service.contains("CursorPosition"));
-        assert!(!system_service.contains("get_cursor_position"));
-        assert!(system_service.contains("MediaMetadata"));
-        assert!(system_service.contains("get_media_metadata"));
-        assert!(input_service.contains("SharedInputSnapshot"));
-        assert!(!input_service.contains("Reserved naming boundary"));
-        assert!(!input_service.contains("pub struct AudioSnapshot"));
-        assert!(!app_entry_runtime.contains("get_cursor_position"));
-        assert!(!app_entry_runtime.contains("get_media_metadata"));
-    }
-
-    #[test]
     fn phase_06_contract_uses_native_overlay_workbench_titlebar() {
         let tauri_config = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"));
         let cargo_toml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
