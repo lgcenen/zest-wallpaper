@@ -151,6 +151,25 @@ export function useWorkbenchPreferences() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const syncStoredPreferences = (event: StorageEvent) => {
+      if (event.storageArea !== window.localStorage) {
+        return;
+      }
+      if (event.key !== null && event.key !== STORAGE_KEY) {
+        return;
+      }
+      setPreferences(readStoredWorkbenchPreferences());
+    };
+
+    window.addEventListener("storage", syncStoredPreferences);
+    return () => window.removeEventListener("storage", syncStoredPreferences);
+  }, []);
+
+  useEffect(() => {
     writeStoredWorkbenchPreferences(preferences);
   }, [preferences]);
 
