@@ -12,7 +12,7 @@ use crate::{
         SceneVisualEffect, SceneVisualLayer,
     },
     services::{
-        scene_mdl_service::parse_scene_mdl_file,
+        scene_mdl_service::{parse_scene_mdl_file, SceneMdlContainerKind},
         scene_render_planner_service::{
             parse_scene_color, parse_visual_blend_mode, SceneRenderBlendMode, SceneRenderColor,
             SceneRenderQuad, SceneRenderSourceKind,
@@ -123,6 +123,7 @@ pub struct ScenePhase10VisualPlan {
     pub effect_chain: Vec<ScenePhase10EffectNode>,
     pub submesh_count: usize,
     pub mask_binding_count: usize,
+    pub container_kind: Option<crate::services::scene_mdl_service::SceneMdlContainerKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -365,6 +366,7 @@ pub fn build_scene_phase10_graph(
         let mut puppet_path = None;
         let mut submesh_count = 0;
         let mut mask_binding_count = 0;
+        let mut container_kind = None;
         if let Some(raw_puppet_path) = source.puppet_path.as_deref() {
             let Some(resolved_puppet_path) = resolver.resolve_relative_path(raw_puppet_path) else {
                 issues.push(SceneGraphIssue {
@@ -388,6 +390,7 @@ pub fn build_scene_phase10_graph(
                 Ok(document) => {
                     submesh_count = document.submeshes.len();
                     mask_binding_count = document.mask_bindings.len();
+                    container_kind = Some(document.container_kind);
                 }
                 Err(error) => {
                     issues.push(SceneGraphIssue {
@@ -448,6 +451,7 @@ pub fn build_scene_phase10_graph(
             effect_chain,
             submesh_count,
             mask_binding_count,
+            container_kind,
         });
         consumed.insert(base.id);
     }
@@ -1603,7 +1607,7 @@ mod tests {
         services::{runtime_document_service, scene_resource_service::SceneResourceResolver},
     };
 
-    use super::build_scene_phase10_graph;
+    use super::{build_scene_phase10_graph, SceneMdlContainerKind};
 
     fn write(path: &std::path::Path, body: &[u8]) {
         if let Some(parent) = path.parent() {
@@ -1778,6 +1782,10 @@ mod tests {
         assert_eq!(report.graph.visuals.len(), 1);
         assert_eq!(report.graph.visuals[0].submesh_count, 1);
         assert!(report.graph.visuals[0].puppet_path.is_some());
+        assert_eq!(
+            report.graph.visuals[0].container_kind,
+            Some(SceneMdlContainerKind::Puppet)
+        );
         assert_eq!(report.graph.consumed_visual_ids, vec![1]);
     }
 

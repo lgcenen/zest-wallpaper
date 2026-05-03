@@ -11,6 +11,12 @@ pub enum SceneMdlVertexEncoding {
     Compact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneMdlContainerKind {
+    InlineMesh,
+    Puppet,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneMdlRawMesh {
     pub positions: Vec<Vec3>,
@@ -20,6 +26,7 @@ pub struct SceneMdlRawMesh {
     pub morph_indices: Option<Vec<i32>>,
     pub indices: Vec<u16>,
     pub encoding: SceneMdlVertexEncoding,
+    pub mdl_flag: i32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +114,7 @@ pub struct SceneMdlDocument {
     pub attachments: Vec<SceneMdlAttachment>,
     pub animations: Vec<SceneMdlAnimation>,
     pub morphs: Option<SceneMdlMorphSet>,
+    pub container_kind: SceneMdlContainerKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,6 +158,17 @@ pub fn parse_scene_mdl(bytes: &[u8]) -> Result<SceneMdlDocument, String> {
         .map(|offset| parse_morphs(bytes, offset))
         .transpose()?;
 
+    let container_kind = if bones.is_empty()
+        && attachments.is_empty()
+        && animations.is_empty()
+        && morphs.is_none()
+        && mask_bindings.is_empty()
+    {
+        SceneMdlContainerKind::InlineMesh
+    } else {
+        SceneMdlContainerKind::Puppet
+    };
+
     Ok(SceneMdlDocument {
         raw_mesh,
         submeshes,
@@ -158,6 +177,7 @@ pub fn parse_scene_mdl(bytes: &[u8]) -> Result<SceneMdlDocument, String> {
         attachments,
         animations,
         morphs,
+        container_kind,
     })
 }
 
@@ -220,9 +240,6 @@ fn parse_mesh(reader: &mut SliceCursor<'_>) -> Result<Option<SceneMdlRawMesh>, S
     let _unk2 = reader.read_i32()?;
     let _material_json = reader.read_cstring()?;
     let _padding = reader.read_i32()?;
-    if mdl_flag == 9 {
-        return Ok(None);
-    }
 
     let header = read_mesh_header(reader)?;
     let vertex_count = header.vertex_size / header.vertex_stride;
@@ -332,6 +349,7 @@ fn parse_mesh(reader: &mut SliceCursor<'_>) -> Result<Option<SceneMdlRawMesh>, S
             morph_indices: (!morph_indices.is_empty()).then_some(morph_indices),
             indices: Vec::new(),
             encoding: header.encoding,
+            mdl_flag,
         }));
     }
     if indices_size % 2 != 0 {
@@ -351,6 +369,7 @@ fn parse_mesh(reader: &mut SliceCursor<'_>) -> Result<Option<SceneMdlRawMesh>, S
         morph_indices: (!morph_indices.is_empty()).then_some(morph_indices),
         indices,
         encoding: header.encoding,
+        mdl_flag,
     }))
 }
 
@@ -1428,6 +1447,7 @@ mod tests {
 
         let raw = document.raw_mesh.as_ref().expect("raw mesh");
         assert_eq!(raw.encoding, SceneMdlVertexEncoding::Standard);
+        assert_eq!(raw.mdl_flag, 1);
         assert_eq!(raw.positions.len(), 3);
         assert_eq!(document.submeshes.len(), 1);
         assert_eq!(document.mask_bindings.len(), 1);
@@ -1435,6 +1455,10 @@ mod tests {
         assert_eq!(document.animations.len(), 1);
         assert_eq!(document.animations[0].mode, SceneMdlPlayMode::Loop);
         assert_eq!(document.morphs.as_ref().expect("morphs").targets.len(), 1);
+        assert_eq!(
+            document.container_kind,
+            super::SceneMdlContainerKind::Puppet
+        );
 
         let frame = evaluate_scene_mdl_mesh(
             &document,
@@ -1460,9 +1484,150 @@ mod tests {
         let document = parse_scene_mdl(&synthetic_compact_fixture()).expect("parse compact mdl");
         let raw = document.raw_mesh.as_ref().expect("raw mesh");
         assert_eq!(raw.encoding, SceneMdlVertexEncoding::Compact);
+        assert_eq!(raw.mdl_flag, 1);
         assert_eq!(raw.positions.len(), 1);
         assert_eq!(raw.blend_indices[0][0], 2);
         assert_eq!(raw.morph_indices.as_ref().expect("morph indices")[0], 3);
         assert_eq!(raw.indices.len(), 0);
+        assert_eq!(
+            document.container_kind,
+            super::SceneMdlContainerKind::InlineMesh
+        );
+    }
+
+    fn synthetic_inline_mesh_flag_9_fixture() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_cstring(&mut bytes, "MDLV0014");
+        push_i32(&mut bytes, 9);
+        push_i32(&mut bytes, 1);
+        push_i32(&mut bytes, 1);
+        push_cstring(&mut bytes, "materials/inline.material");
+        push_i32(&mut bytes, 0);
+        push_u32(&mut bytes, 0x0180_0009);
+        push_u32(&mut bytes, 52 * 2);
+        for (position, uv) in [
+            ([0.0, 0.0, 0.0], [0.0, 0.0]),
+            ([32.0, 32.0, 0.0], [1.0, 1.0]),
+        ] {
+            for value in position {
+                push_f32(&mut bytes, value);
+            }
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+            push_f32(&mut bytes, 1.0);
+            push_f32(&mut bytes, 0.0);
+            push_f32(&mut bytes, 0.0);
+            push_f32(&mut bytes, 0.0);
+            push_f32(&mut bytes, uv[0]);
+            push_f32(&mut bytes, uv[1]);
+        }
+        push_u32(&mut bytes, 6);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 1);
+        push_u16(&mut bytes, 0);
+        bytes
+    }
+
+    #[test]
+    fn parses_inline_mesh_with_flag_9_and_payload() {
+        let document =
+            parse_scene_mdl(&synthetic_inline_mesh_flag_9_fixture()).expect("parse inline mdl");
+        let raw = document.raw_mesh.as_ref().expect("raw mesh");
+        assert_eq!(raw.mdl_flag, 9, "flag 9 must not prevent mesh parsing");
+        assert_eq!(raw.encoding, super::SceneMdlVertexEncoding::Standard);
+        assert_eq!(raw.positions.len(), 2);
+        assert_eq!(raw.indices, vec![0, 1, 0]);
+        assert_eq!(
+            document.container_kind,
+            super::SceneMdlContainerKind::InlineMesh
+        );
+    }
+
+    #[test]
+    fn inline_mesh_without_bones_returns_static_frame() {
+        let document =
+            parse_scene_mdl(&synthetic_inline_mesh_flag_9_fixture()).expect("parse inline mdl");
+        let frame = evaluate_scene_mdl_mesh(&document, &[], 0.0).expect("static frame");
+        assert_eq!(frame.positions.len(), 2);
+        assert!((frame.positions[0].x - 0.0).abs() < 0.001);
+        assert!((frame.positions[1].x - 32.0).abs() < 0.001);
+    }
+
+    fn synthetic_static_inline_fixture() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_cstring(&mut bytes, "MDLV0004");
+        push_i32(&mut bytes, 11);
+        push_i32(&mut bytes, 1);
+        push_i32(&mut bytes, 1);
+        push_cstring(&mut bytes, "materials/static.material");
+        push_i32(&mut bytes, 0);
+        push_u32(&mut bytes, 0x0180_0009);
+        push_u32(&mut bytes, 52 * 3);
+        let vertices = [
+            ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0]),
+            ([16.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 0.0]),
+            ([0.0, 16.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 1.0]),
+        ];
+        for (position, weight, uv) in vertices {
+            for value in position {
+                push_f32(&mut bytes, value);
+            }
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, 0);
+            for value in weight {
+                push_f32(&mut bytes, value);
+            }
+            push_f32(&mut bytes, uv[0]);
+            push_f32(&mut bytes, uv[1]);
+        }
+        push_u32(&mut bytes, 6);
+        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, 1);
+        push_u16(&mut bytes, 2);
+        bytes
+    }
+
+    #[test]
+    fn classifies_container_as_inline_mesh_when_no_optional_sections() {
+        let document =
+            parse_scene_mdl(&synthetic_static_inline_fixture()).expect("parse static mdl");
+        assert!(document.raw_mesh.is_some());
+        assert!(document.bones.is_empty());
+        assert!(document.animations.is_empty());
+        assert!(document.attachments.is_empty());
+        assert!(document.morphs.is_none());
+        assert!(document.mask_bindings.is_empty());
+        assert_eq!(
+            document.container_kind,
+            super::SceneMdlContainerKind::InlineMesh
+        );
+    }
+
+    #[test]
+    fn flag_9_with_optional_sections_is_classified_as_puppet() {
+        let mut bytes = synthetic_inline_mesh_flag_9_fixture();
+        push_cstring(&mut bytes, "MDLS0004");
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 1);
+        push_cstring(&mut bytes, "root");
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, u32::MAX);
+        push_u32(&mut bytes, 64);
+        push_identity_mat4(&mut bytes);
+        push_cstring(&mut bytes, "{}");
+        push_u16(&mut bytes, 0);
+
+        let document = parse_scene_mdl(&bytes).expect("parse flag 9 puppet");
+        let raw = document.raw_mesh.as_ref().expect("raw mesh");
+        assert_eq!(raw.mdl_flag, 9);
+        assert_eq!(document.bones.len(), 1);
+        assert_eq!(
+            document.container_kind,
+            super::SceneMdlContainerKind::Puppet
+        );
     }
 }

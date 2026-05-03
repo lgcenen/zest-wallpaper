@@ -7622,6 +7622,7 @@ mod tests {
                 effect_chain: vec![],
                 submesh_count: 0,
                 mask_binding_count: 0,
+                container_kind: None,
             },
             super::ScenePhase10VisualPlan {
                 object_id: 71,
@@ -7645,6 +7646,7 @@ mod tests {
                 effect_chain: vec![],
                 submesh_count: 0,
                 mask_binding_count: 0,
+                container_kind: None,
             },
         ];
 
@@ -7917,6 +7919,7 @@ mod tests {
             effect_chain: vec![],
             submesh_count: 0,
             mask_binding_count: 0,
+            container_kind: None,
         }
     }
 
