@@ -1546,12 +1546,21 @@ export default function WorkbenchApp() {
     if (!selected) {
       return;
     }
+    const selectedIndex = visibleWallpapers.findIndex((record) => record.id === selected.id);
+    const adjacentSelectionId =
+      (selectedIndex >= 0
+        ? (visibleWallpapers[selectedIndex + 1] ?? visibleWallpapers[selectedIndex - 1])?.id
+        : null) ?? null;
     try {
       await removeWallpaper(selected.id);
       const refreshed = await listWallpapers();
       setWallpapers(refreshed);
       setSelectionMode("manual");
-      setSelectedId(refreshed[0]?.id ?? null);
+      setSelectedId(
+        adjacentSelectionId && refreshed.some((record) => record.id === adjacentSelectionId)
+          ? adjacentSelectionId
+          : refreshed[0]?.id ?? null,
+      );
       setDraftValues({});
       setLastApplyError(null);
       setIsApplyingWallpaperId(null);
