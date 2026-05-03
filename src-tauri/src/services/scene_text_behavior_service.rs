@@ -210,13 +210,14 @@ where
     } else {
         "Night"
     };
-    let has_ascii = content.chars().any(|ch| ch.is_ascii_alphabetic());
-    let has_chinese = content
+    let ascii_count = content.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+    let chinese_count = content
         .chars()
-        .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch));
-    if has_ascii && !has_chinese {
+        .filter(|ch| ('\u{4e00}'..='\u{9fff}').contains(ch))
+        .count();
+    if ascii_count > 0 && chinese_count == 0 {
         en
-    } else if has_ascii && has_chinese {
+    } else if ascii_count > chinese_count && chinese_count > 0 {
         if hour < 2 {
             "凌晨 / Before dawn"
         } else if hour < 6 {
@@ -667,6 +668,16 @@ mod tests {
         assert_eq!(
             evaluate_text_behavior(&day_period, &now, None).value,
             "Evening"
+        );
+        day_period.content = "傍晚 17:00 PM".to_string();
+        assert_eq!(
+            evaluate_text_behavior(&day_period, &now, None).value,
+            "傍晚"
+        );
+        day_period.content = "Evening 傍晚".to_string();
+        assert_eq!(
+            evaluate_text_behavior(&day_period, &now, None).value,
+            "傍晚 / Evening"
         );
 
         assert_eq!(
