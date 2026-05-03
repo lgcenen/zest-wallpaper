@@ -1,7 +1,7 @@
 use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},
-    sync::{MutexGuard, TryLockError},
+    sync::MutexGuard,
     thread,
     time::{Duration, Instant},
 };
@@ -949,7 +949,7 @@ where
 {
     let candidate = build_apply_wallpaper_candidate(previous_player, runtime_record);
 
-    let _runtime_sync = try_lock_runtime_sync_for_apply(state)?;
+    let _runtime_sync = lock_runtime_sync_for_apply(state)?;
     commit_player_state(state, candidate.player_state.clone())?;
     if let Err(error) = sync_static_snapshot() {
         let state_rollback_error = commit_player_state(state, previous_player.clone())
@@ -1023,15 +1023,10 @@ where
     Ok(candidate.effective_paused)
 }
 
-fn try_lock_runtime_sync_for_apply(state: &AppState) -> Result<MutexGuard<'_, ()>, String> {
-    match state.runtime_sync.try_lock() {
-        Ok(guard) => Ok(guard),
-        Err(TryLockError::WouldBlock) => Err(
-            "native runtime sync is busy; apply aborted before snapshot sync to avoid blocking the GUI"
-                .to_string(),
-        ),
-        Err(TryLockError::Poisoned(error)) => Err(error.to_string()),
-    }
+fn lock_runtime_sync_for_apply(state: &AppState) -> Result<MutexGuard<'_, ()>, String> {
+    state.runtime_sync
+        .lock()
+        .map_err(|error| error.to_string())
 }
 
 fn build_apply_wallpaper_candidate(
@@ -1506,7 +1501,12 @@ mod tests {
         cell::{Cell, RefCell},
         collections::{BTreeMap, BTreeSet},
         env, fs,
-        sync::Mutex,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Barrier, Mutex,
+        },
+        thread,
+        time::Duration,
     };
 
     use chrono::{TimeZone, Utc};
@@ -2436,7 +2436,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_transaction_returns_when_runtime_sync_is_busy() {
+    fn apply_transaction_blocks_until_runtime_sync_released() {
         let previous_player = DynamicPlayerState {
             active_id: Some("known-good".to_string()),
             manually_paused: false,
@@ -2444,14 +2444,30 @@ mod tests {
             scene_update_generation: 4,
             last_scene_signature: Some("previous-signature".to_string()),
         };
-        let state = app_state(previous_player.clone());
-        let _busy_runtime_sync = state.runtime_sync.lock().expect("runtime sync lock");
+        let state = Arc::new(app_state(previous_player.clone()));
         let candidate_runtime = runtime_record(
             WallpaperRuntime::Scene {
                 scene: Default::default(),
             },
             WallpaperType::Scene,
         );
+
+        let state_clone = state.clone();
+        let released = Arc::new(AtomicBool::new(false));
+        let released_clone = released.clone();
+        let holder_ready = Arc::new(Barrier::new(2));
+        let holder_ready_clone = holder_ready.clone();
+
+        let handle = thread::spawn(move || {
+            let guard = state_clone.runtime_sync.lock().expect("runtime sync lock");
+            holder_ready_clone.wait();
+            thread::sleep(Duration::from_millis(20));
+            drop(guard);
+            released_clone.store(true, Ordering::SeqCst);
+        });
+
+        holder_ready.wait();
+
         let snapshot_called = RefCell::new(false);
         let windows_called = RefCell::new(false);
         let native_sync_called = RefCell::new(false);
@@ -2482,21 +2498,22 @@ mod tests {
             },
         );
 
-        let error = result.expect_err("busy runtime sync should fail fast");
-        assert!(error.contains("native runtime sync is busy"));
-        assert!(!*snapshot_called.borrow());
-        assert!(!*windows_called.borrow());
-        assert!(!*native_sync_called.borrow());
-        assert!(!*persist_called.borrow());
-        let player = state.player.lock().expect("player lock").clone();
-        assert_eq!(player.active_id, previous_player.active_id);
-        assert_eq!(
-            player.scene_update_generation,
-            previous_player.scene_update_generation
+        handle.join().expect("holder thread should complete");
+
+        assert!(released.load(Ordering::SeqCst));
+        assert!(
+            result.is_ok(),
+            "apply should succeed after lock released: {:?}",
+            result.err()
         );
+        assert!(*snapshot_called.borrow());
+        assert!(*windows_called.borrow());
+        assert!(*native_sync_called.borrow());
+        assert!(*persist_called.borrow());
+        let player = state.player.lock().expect("player lock").clone();
         assert_eq!(
-            player.last_scene_signature,
-            previous_player.last_scene_signature
+            player.active_id.as_deref(),
+            Some(candidate_runtime.id.as_str())
         );
     }
 
