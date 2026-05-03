@@ -4,6 +4,7 @@ import {
   applyDynamicWallpaper,
   chooseImportDirectory,
   chooseSceneAssetsDirectory,
+  fetchExternalImage,
   importWallpaper,
   listWallpapers,
   openExternalUrl,
@@ -208,6 +209,45 @@ function resolveAssetReference(reference?: string | null, baseFilePath?: string 
 
 function isExternalHttpUrl(reference?: string | null) {
   return /^(https?:)/i.test(reference ?? "");
+}
+
+function ExternalImage({
+  src,
+  alt,
+  className,
+  loading,
+}: {
+  src: string;
+  alt: string;
+  className: string;
+  loading?: "lazy";
+}) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDataUrl(null);
+    fetchExternalImage(src)
+      .then((url) => {
+        if (!cancelled) setDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  if (!dataUrl) return null;
+  return (
+    <img
+      className={className}
+      src={dataUrl}
+      alt={alt}
+      loading={loading}
+    />
+  );
 }
 
 function feedbackToneClass(tone: WorkbenchBannerState["tone"]) {
@@ -656,10 +696,12 @@ function PropertiesPanel({
                 }
 
                 if (item.kind === "description") {
+                  const rawImageSrc = extractMarkupImageSource(item.markup);
                   const imageSource = resolveAssetReference(
-                    extractMarkupImageSource(item.markup),
+                    rawImageSrc,
                     wallpaper.entryPath,
                   );
+                  const isImageExternal = isExternalHttpUrl(rawImageSrc);
                   const rawLinkTarget = extractMarkupHref(item.markup);
                   const linkTarget =
                     resolveAssetReference(rawLinkTarget, wallpaper.entryPath) ?? rawLinkTarget;
@@ -693,12 +735,21 @@ function PropertiesPanel({
                         )
                       ) : null}
                       {imageSource ? (
-                        <img
-                          className="property-description-image"
-                          src={imageSource}
-                          alt={item.text ?? section.label}
-                          loading="lazy"
-                        />
+                        isImageExternal ? (
+                          <ExternalImage
+                            className="property-description-image"
+                            src={imageSource}
+                            alt={item.text ?? section.label}
+                            loading="lazy"
+                          />
+                        ) : (
+                          <img
+                            className="property-description-image"
+                            src={imageSource}
+                            alt={item.text ?? section.label}
+                            loading="lazy"
+                          />
+                        )
                       ) : null}
                     </div>
                   );

@@ -15,7 +15,8 @@ use commands::{
         apply_dynamic_wallpaper, get_player_diagnostics, get_player_state, pause_resume_dynamic,
     },
     settings_commands::{
-        get_scene_runtime_settings, open_external_url, set_scene_external_assets_path,
+        fetch_external_image, get_scene_runtime_settings, open_external_url,
+        set_scene_external_assets_path,
     },
     wallpaper_commands::{
         get_wallpaper_details, import_wallpaper, list_wallpapers, remove_wallpaper,
@@ -46,6 +47,7 @@ pub fn run() {
             get_player_diagnostics,
             set_scene_external_assets_path,
             open_external_url,
+            fetch_external_image,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri application");

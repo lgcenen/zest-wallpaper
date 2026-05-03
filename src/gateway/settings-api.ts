@@ -8,3 +8,7 @@ export function getSceneRuntimeSettings() {
 export function setSceneExternalAssetsPath(path: string | null) {
   return invoke<SceneRuntimeSettingsSnapshot>("set_scene_external_assets_path", { path });
 }
+
+export function fetchExternalImage(url: string) {
+  return invoke<string>("fetch_external_image", { url });
+}

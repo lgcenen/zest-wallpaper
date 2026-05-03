@@ -6,6 +6,65 @@ use crate::{
     models::SceneRuntimeSettingsSnapshot, services::scene_runtime_settings_service, store::AppState,
 };
 
+const BASE64_CHARS: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(BASE64_CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(BASE64_CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            BASE64_CHARS[((triple >> 6) & 0x3F) as usize]
+        } else {
+            b'='
+        } as char);
+        out.push(if chunk.len() > 2 {
+            BASE64_CHARS[(triple & 0x3F) as usize]
+        } else {
+            b'='
+        } as char);
+    }
+    out
+}
+
+fn detect_image_mime(data: &[u8]) -> &'static str {
+    if data.len() >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+        "image/jpeg"
+    } else if data.len() >= 4
+        && data[0] == 0x89
+        && data[1] == 0x50
+        && data[2] == 0x4E
+        && data[3] == 0x47
+    {
+        "image/png"
+    } else if data.len() >= 4
+        && data[0] == 0x47
+        && data[1] == 0x49
+        && data[2] == 0x46
+        && data[3] == 0x38
+    {
+        "image/gif"
+    } else if data.len() >= 12
+        && data[0] == 0x52
+        && data[1] == 0x49
+        && data[2] == 0x46
+        && data[3] == 0x46
+        && data[8] == 0x57
+        && data[9] == 0x45
+        && data[10] == 0x42
+        && data[11] == 0x50
+    {
+        "image/webp"
+    } else {
+        "image/png"
+    }
+}
+
 #[tauri::command]
 pub fn get_scene_runtime_settings(
     state: State<'_, AppState>,
@@ -69,4 +128,38 @@ pub fn open_external_url(url: String) -> Result<(), String> {
         let _ = url;
         Err("opening external URLs is not supported on this platform".to_string())
     }
+}
+
+#[tauri::command]
+pub fn fetch_external_image(url: String) -> Result<String, String> {
+    if !matches!(
+        url.split_once(":"),
+        Some((scheme, _)) if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    ) {
+        return Err("only http and https URLs can be proxied".to_string());
+    }
+
+    let output = Command::new("curl")
+        .args([
+            "-sS",
+            "-L",
+            "--max-time",
+            "15",
+            "-A",
+            "Mozilla/5.0 (compatible; ZestWallpaper/1.0)",
+        ])
+        .arg(&url)
+        .output()
+        .map_err(|e| format!("failed to run curl: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "curl request failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let mime = detect_image_mime(&output.stdout);
+    let encoded = base64_encode(&output.stdout);
+    Ok(format!("data:{mime};base64,{encoded}"))
 }
