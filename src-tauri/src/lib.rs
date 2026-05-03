@@ -12,11 +12,11 @@ use store::AppState;
 
 use commands::{
     player_commands::{
-        apply_dynamic_wallpaper, get_player_audio_snapshot, get_player_diagnostics,
-        get_player_input_snapshot, get_player_state, pause_resume_dynamic,
-        set_scene_audio_interest,
+        apply_dynamic_wallpaper, get_player_diagnostics, get_player_state, pause_resume_dynamic,
     },
-    settings_commands::{get_scene_runtime_settings, open_external_url, set_scene_external_assets_path},
+    settings_commands::{
+        get_scene_runtime_settings, open_external_url, set_scene_external_assets_path,
+    },
     wallpaper_commands::{
         get_wallpaper_details, import_wallpaper, list_wallpapers, remove_wallpaper,
         set_wallpaper_properties,
@@ -43,12 +43,9 @@ pub fn run() {
             remove_wallpaper,
             get_scene_runtime_settings,
             get_player_state,
-            get_player_input_snapshot,
-            get_player_audio_snapshot,
             get_player_diagnostics,
             set_scene_external_assets_path,
             open_external_url,
-            set_scene_audio_interest,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri application");
@@ -170,11 +167,15 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/src/services/native_web_service.rs"
         ));
+        let scene_native_renderer_service = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/services/scene_native_renderer_service.rs"
+        ));
 
-        assert!(player_gateway.contains("get_player_input_snapshot"));
-        assert!(player_gateway.contains("\"player:input\""));
-        assert!(player_runtime.contains("getPlayerInputSnapshot"));
-        assert!(player_runtime.contains("onPlayerInput"));
+        assert!(!player_gateway.contains("get_player_input_snapshot"));
+        assert!(!player_gateway.contains("\"player:input\""));
+        assert!(!player_runtime.contains("getPlayerInputSnapshot"));
+        assert!(!player_runtime.contains("onPlayerInput"));
         assert!(!player_runtime.contains("getCursorPosition("));
         assert!(
             !player_runtime.contains("setInterval(() => {\n      void pollCursor();\n    }, 34);")
@@ -182,6 +183,7 @@ mod tests {
         assert!(lifecycle_service.contains("input_service::start_input_worker"));
         assert!(!lifecycle_service.contains("start_cursor_worker"));
         assert!(input_service.contains("SharedInputSnapshot"));
+        assert!(scene_native_renderer_service.contains("input_service::current_input_snapshot"));
         assert!(native_web_service.contains("dispatch_shared_input"));
         assert!(!native_web_service.contains("mouseLocation()"));
     }
@@ -253,17 +255,21 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/src/services/native_web_service.rs"
         ));
+        let scene_native_renderer_service = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/services/scene_native_renderer_service.rs"
+        ));
         let html_bridge = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/services/html_wallpaper_bridge.js"
         ));
 
-        assert!(player_gateway.contains("get_player_audio_snapshot"));
-        assert!(player_gateway.contains("set_scene_audio_interest"));
-        assert!(player_gateway.contains("\"player:audio\""));
-        assert!(player_runtime.contains("getPlayerAudioSnapshot"));
-        assert!(player_runtime.contains("onPlayerAudio"));
-        assert!(player_runtime.contains("setSceneAudioInterest"));
+        assert!(!player_gateway.contains("get_player_audio_snapshot"));
+        assert!(!player_gateway.contains("set_scene_audio_interest"));
+        assert!(!player_gateway.contains("\"player:audio\""));
+        assert!(!player_runtime.contains("getPlayerAudioSnapshot"));
+        assert!(!player_runtime.contains("onPlayerAudio"));
+        assert!(!player_runtime.contains("setSceneAudioInterest"));
         assert!(!player_runtime.contains("Math.sin((now / 420 + index * 0.92) * 1.2)"));
         assert!(lifecycle_service.contains("audio_input_service::start_audio_worker"));
         assert!(audio_input_service.contains("AudioSnapshot"));
@@ -272,6 +278,12 @@ mod tests {
         assert!(audio_input_service.contains("add_output_handler_with_queue"));
         assert!(audio_input_service.contains("remove_output_handler"));
         assert!(audio_input_service.contains("AUDIO_CAPTURE_QUEUE_LABEL"));
+        assert!(
+            scene_native_renderer_service.contains("audio_input_service::current_audio_snapshot")
+        );
+        assert!(
+            scene_native_renderer_service.contains("audio_input_service::set_scene_audio_interest")
+        );
         assert!(native_web_service.contains("dispatch_shared_audio"));
         assert!(native_web_service.contains("audio_consumers_active"));
         assert!(native_web_service.contains("\"wallpaper:audio\""));
@@ -381,8 +393,8 @@ mod tests {
         assert!(!player_runtime.contains("scene-vignette"));
         assert!(player_runtime.contains("NativeVideoStageSurface"));
         assert!(player_runtime.contains("NativeWebStageSurface"));
-        assert!(player_runtime.contains("getPlayerInputSnapshot"));
-        assert!(player_runtime.contains("onPlayerInput"));
+        assert!(!player_runtime.contains("getPlayerInputSnapshot"));
+        assert!(!player_runtime.contains("onPlayerInput"));
         assert!(!gateway_index.contains("system-api"));
         assert!(!commands_mod.contains("system_commands"));
         assert!(!system_service.contains("CursorPosition"));
@@ -628,5 +640,56 @@ mod tests {
         assert!(workbench.contains("chooseSceneAssetsDirectory"));
         assert!(workbench.contains("sceneRuntimeSettings"));
         assert!(scene_shader_material_service.contains("assets/shaders/compat/scene-model.metal"));
+    }
+
+    #[test]
+    fn phase_11_contract_removes_frontend_scene_player_fallback() {
+        let player_runtime = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/app-shell/player-runtime.tsx"
+        ));
+        let player_gateway = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/gateway/player-api.ts"
+        ));
+        let player_commands = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/commands/player_commands.rs"
+        ));
+        let lib_rs = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+        let app_entry_runtime = lib_rs.split("#[cfg(test)]").next().unwrap_or(lib_rs);
+        let scene_native_renderer_service = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/services/scene_native_renderer_service.rs"
+        ));
+        let scene_support_service = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/services/scene_support_service.rs"
+        ));
+
+        assert!(player_runtime.contains("NativeSceneStageSurface"));
+        assert!(!player_runtime.contains("function SceneStageSurface"));
+        assert!(!player_runtime.contains("<SceneStageSurface"));
+        assert!(!player_runtime.contains("SceneVisualNode"));
+        assert!(!player_runtime.contains("SceneTextNode"));
+        assert!(!player_runtime.contains("SceneAudioNode"));
+        assert!(!player_runtime.contains("SceneSoundscape"));
+        assert!(!player_runtime.contains("SceneParticleOverlay"));
+        assert!(!player_runtime.contains("<video"));
+        assert!(!player_runtime.contains("<audio"));
+        assert!(!player_runtime.contains("FontFace"));
+        assert!(!player_gateway.contains("get_player_input_snapshot"));
+        assert!(!player_gateway.contains("get_player_audio_snapshot"));
+        assert!(!player_gateway.contains("set_scene_audio_interest"));
+        assert!(!player_commands.contains("get_player_input_snapshot"));
+        assert!(!player_commands.contains("get_player_audio_snapshot"));
+        assert!(!player_commands.contains("set_scene_audio_interest"));
+        assert!(!app_entry_runtime.contains("get_player_input_snapshot"));
+        assert!(!app_entry_runtime.contains("get_player_audio_snapshot"));
+        assert!(!app_entry_runtime.contains("set_scene_audio_interest"));
+        assert!(scene_native_renderer_service.contains("MTKView"));
+        assert!(scene_support_service.contains("ensure_scene_supported_for_apply"));
+        assert!(scene_support_service
+            .contains("Scene native apply was blocked by support diagnostics."));
     }
 }

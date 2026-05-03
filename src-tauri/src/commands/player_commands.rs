@@ -1,11 +1,9 @@
-use tauri::{AppHandle, State, Window};
+use tauri::{AppHandle, State};
 
 use crate::{
     models::{PlayerRuntimeState, WallpaperRuntimeRecord},
     services::{
-        audio_input_service::{self, AudioSnapshot},
         diagnostic_service::{self, RuntimeDiagnostic},
-        input_service::{self, SharedInputSnapshot},
         player_service,
     },
     store::AppState,
@@ -35,25 +33,6 @@ pub fn get_player_state(state: State<'_, AppState>) -> Result<PlayerRuntimeState
 }
 
 #[tauri::command]
-pub fn get_player_input_snapshot(app: AppHandle) -> Result<SharedInputSnapshot, String> {
-    input_service::current_input_snapshot(&app)
-}
-
-#[tauri::command]
-pub fn get_player_audio_snapshot(app: AppHandle) -> Result<AudioSnapshot, String> {
-    audio_input_service::current_audio_snapshot(&app)
-}
-
-#[tauri::command]
 pub fn get_player_diagnostics(app: AppHandle) -> Result<Vec<RuntimeDiagnostic>, String> {
     diagnostic_service::current_runtime_diagnostics(&app)
-}
-
-#[tauri::command]
-pub fn set_scene_audio_interest(
-    active: bool,
-    window: Window,
-    app: AppHandle,
-) -> Result<(), String> {
-    audio_input_service::set_scene_audio_interest(&app, window.label(), active)
 }
