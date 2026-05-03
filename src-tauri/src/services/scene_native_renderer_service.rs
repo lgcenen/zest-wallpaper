@@ -2257,6 +2257,7 @@ impl NativeSceneMetalRenderer {
                     };
                     if let Some(texture) = self.render_phase10_output_for_visual(
                         command_buffer,
+                        plan.canvas_height,
                         visual,
                         background_snapshot.as_ref(),
                         elapsed_seconds,
@@ -2299,6 +2300,7 @@ impl NativeSceneMetalRenderer {
             };
             if let Some(texture) = self.render_phase10_output_for_visual(
                 command_buffer,
+                plan.canvas_height,
                 visual,
                 background_snapshot.as_ref(),
                 elapsed_seconds,
@@ -2329,6 +2331,7 @@ impl NativeSceneMetalRenderer {
     fn render_phase10_output_for_visual(
         &mut self,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        canvas_height: f64,
         visual: &ScenePhase10VisualPlan,
         background_snapshot: Option<&Phase10TextureHandle>,
         elapsed_seconds: f64,
@@ -2348,6 +2351,22 @@ impl NativeSceneMetalRenderer {
         let output_key = phase10_output_texture_key(visual.object_id, width, height);
         required_output_keys.insert(output_key.clone());
         let output_texture = self.ensure_phase10_output_target(&output_key, width, height)?;
+
+        if visual.puppet_path.is_some() {
+            return self.render_phase10_puppet_output_for_visual(
+                command_buffer,
+                canvas_height,
+                visual,
+                &base_texture,
+                &passes,
+                width,
+                height,
+                output_texture,
+                elapsed_seconds,
+                required_scratch_keys,
+                required_named_target_keys,
+            );
+        }
 
         if phase10_visual_first_pass_is_mask_alpha(visual) && passes.len() == 1 {
             return self.render_phase10_mask_chain(
@@ -2416,6 +2435,99 @@ impl NativeSceneMetalRenderer {
         Some(previous_texture.texture)
     }
 
+    fn render_phase10_puppet_output_for_visual(
+        &mut self,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        canvas_height: f64,
+        visual: &ScenePhase10VisualPlan,
+        base_texture: &Phase10TextureHandle,
+        passes: &[Phase10ResolvedPass<'_>],
+        width: usize,
+        height: usize,
+        output_texture: Phase10TextureHandle,
+        elapsed_seconds: f64,
+        required_scratch_keys: &mut BTreeSet<String>,
+        required_named_target_keys: &mut BTreeSet<String>,
+    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
+        let puppet_path = visual.puppet_path.as_ref()?;
+        let document = self.mdl_cache.get(puppet_path)?;
+        let mesh_frame =
+            evaluate_scene_mdl_mesh(document, &visual.animation_layers, elapsed_seconds)?;
+        if mesh_frame.positions.is_empty() || mesh_frame.indices.len() < 3 {
+            return None;
+        }
+
+        let projection = phase10_puppet_offscreen_projection(visual, canvas_height, width, height);
+        let mut previous_texture = base_texture.clone();
+        let mut named_targets = BTreeMap::<String, Phase10TextureHandle>::new();
+
+        for (index, resolved_pass) in passes.iter().enumerate() {
+            let target_name = phase10_resolved_pass_target_name(resolved_pass);
+            let is_last = index + 1 == passes.len();
+            let target = if let Some(target_name) = target_name {
+                let key =
+                    phase10_named_target_texture_key(visual.object_id, target_name, width, height);
+                required_named_target_keys.insert(key.clone());
+                self.ensure_phase10_named_target(&key, width, height)?
+            } else if is_last {
+                output_texture.clone()
+            } else {
+                let scratch_key = phase10_scratch_texture_key(width, height, index % 2);
+                required_scratch_keys.insert(scratch_key.clone());
+                self.ensure_phase10_scratch_target(&scratch_key, width, height)?
+            };
+
+            let input_scope = Phase10PassInputScope {
+                local_current: Some(base_texture),
+                previous_pass: Some(&previous_texture),
+                background: None,
+                copied_background: None,
+                named_targets: &named_targets,
+            };
+            let pass_textures = self.phase10_pass_textures_for(visual, resolved_pass, &input_scope);
+            if pass_textures
+                .slots
+                .first()
+                .and_then(|slot| slot.as_ref())
+                .is_none()
+            {
+                return None;
+            }
+            let uniforms = self.phase10_effect_uniforms_for_pass(
+                resolved_pass,
+                &pass_textures,
+                width,
+                height,
+                elapsed_seconds,
+            );
+            let shader_defines = phase10_pass_shader_defines(resolved_pass);
+
+            if !self.encode_phase10_mesh_pass(
+                command_buffer,
+                &target.texture,
+                &projection,
+                visual,
+                &mesh_frame,
+                resolved_pass.pass,
+                &shader_defines,
+                &pass_textures,
+                &uniforms,
+                input_scope
+                    .previous_pass
+                    .map(|texture| texture.texture.clone()),
+            ) {
+                return None;
+            }
+
+            previous_texture = target.clone();
+            if let Some(target_name) = target_name {
+                named_targets.insert(target_name.to_string(), target);
+            }
+        }
+
+        Some(previous_texture.texture)
+    }
+
     fn render_phase10_mask_chain(
         &mut self,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
@@ -2464,11 +2576,8 @@ impl NativeSceneMetalRenderer {
         }
 
         let mask_apply_program = phase10_mask_apply_shader_program();
-        let mask_apply_key = phase10_shader_variant_key(
-            &mask_apply_program,
-            &BTreeMap::new(),
-            visual.blend_mode,
-        );
+        let mask_apply_key =
+            phase10_shader_variant_key(&mask_apply_program, &BTreeMap::new(), visual.blend_mode);
         let Some(mask_apply_pipeline) = self.compiled_shader_variants.get(&mask_apply_key) else {
             return None;
         };
@@ -2706,10 +2815,8 @@ impl NativeSceneMetalRenderer {
                                 .insert(mask_apply_key, pipeline);
                         }
                         Err(error) => {
-                            warnings.push(NativeSceneWarning::phase10_draw(
-                                &visual.object_name,
-                                error,
-                            ));
+                            warnings
+                                .push(NativeSceneWarning::phase10_draw(&visual.object_name, error));
                             continue;
                         }
                     }
@@ -3313,6 +3420,61 @@ impl NativeSceneMetalRenderer {
             pass_textures,
             uniforms,
             SceneRenderColor::default(),
+        );
+        encoder.endEncoding();
+        true
+    }
+
+    fn encode_phase10_mesh_pass(
+        &self,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        target: &Retained<ProtocolObject<dyn MTLTexture>>,
+        projection: &SceneProjection,
+        visual: &ScenePhase10VisualPlan,
+        mesh_frame: &crate::services::scene_mdl_service::SceneMdlMeshFrame,
+        pass: &SceneMaterialPassPlan,
+        shader_defines: &BTreeMap<String, i32>,
+        pass_textures: &Phase10PassTextures,
+        uniforms: &Phase10EffectUniforms,
+        previous_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
+    ) -> bool {
+        let descriptor = MTLRenderPassDescriptor::new();
+        unsafe {
+            let attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
+            attachment.setTexture(Some(target.as_ref()));
+            attachment.setLoadAction(MTLLoadAction::Clear);
+            attachment.setStoreAction(MTLStoreAction::Store);
+            attachment.setClearColor(objc2_metal::MTLClearColor {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 0.0,
+            });
+        }
+        let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(&descriptor) else {
+            return false;
+        };
+
+        if phase10_alpha_prefill_required(pass.blend_mode) {
+            if let Some(previous_texture) = previous_texture {
+                self.draw_phase10_fullscreen_texture(
+                    &encoder,
+                    previous_texture,
+                    SceneRenderColor::default(),
+                    SceneRenderBlendMode::Normal,
+                );
+            }
+        }
+
+        self.draw_phase10_mesh(
+            &encoder,
+            projection,
+            visual,
+            mesh_frame,
+            pass,
+            shader_defines,
+            pass_textures,
+            uniforms,
         );
         encoder.endEncoding();
         true
@@ -4017,8 +4179,10 @@ fn phase10_base_passes(visual: &ScenePhase10VisualPlan) -> &[SceneMaterialPassPl
 
 #[cfg(target_os = "macos")]
 fn phase10_visual_requires_offscreen_chain(visual: &ScenePhase10VisualPlan) -> bool {
-    visual.puppet_path.is_none()
-        && (!phase10_base_passes(visual).is_empty() || !visual.effect_chain.is_empty())
+    if visual.puppet_path.is_some() {
+        return phase10_visual_pass_chain(visual).len() > 1;
+    }
+    !phase10_base_passes(visual).is_empty() || !visual.effect_chain.is_empty()
 }
 
 #[cfg(target_os = "macos")]
@@ -4087,6 +4251,23 @@ fn phase10_local_background_projection(
         scene_origin_x: -visual.quad.left,
         scene_origin_y: -visual.quad.top,
         scene_canvas_height: visual.quad.height.abs().max(1.0),
+        camera_scale: 1.0,
+        view_width: width.max(1) as f64,
+        view_height: height.max(1) as f64,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_puppet_offscreen_projection(
+    visual: &ScenePhase10VisualPlan,
+    canvas_height: f64,
+    width: usize,
+    height: usize,
+) -> SceneProjection {
+    SceneProjection {
+        scene_origin_x: -visual.quad.left,
+        scene_origin_y: -visual.quad.top,
+        scene_canvas_height: canvas_height,
         camera_scale: 1.0,
         view_width: width.max(1) as f64,
         view_height: height.max(1) as f64,
@@ -7701,6 +7882,119 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn phase10_test_visual_with_passes(
+        puppet_path: Option<PathBuf>,
+        passes: Vec<SceneMaterialPassPlan>,
+    ) -> super::ScenePhase10VisualPlan {
+        super::ScenePhase10VisualPlan {
+            object_id: 42,
+            object_name: "Phase10Test".to_string(),
+            quad: SceneRenderQuad {
+                left: 100.0,
+                top: 80.0,
+                width: 200.0,
+                height: 100.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                flip_x: false,
+                flip_y: false,
+            },
+            base_color: SceneRenderColor::default(),
+            base_source_kind: None,
+            authored_size: [200.0, 100.0],
+            world_position: [200.0, 170.0, 0.0],
+            world_scale: [1.0, 1.0, 1.0],
+            world_angles: [0.0, 0.0, 0.0],
+            blend_mode: SceneRenderBlendMode::Normal,
+            base_texture_path: None,
+            material: SceneResolvedMaterialPlan {
+                material_path: PathBuf::from("/tmp/test.material"),
+                passes,
+                material_effects: vec![],
+            },
+            puppet_path,
+            animation_layers: vec![],
+            effect_chain: vec![],
+            submesh_count: 0,
+            mask_binding_count: 0,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_puppet_multi_pass_enters_offscreen_previous_chain() {
+        let first_pass = compat_effect_pass(SceneCompatEffectKind::Pulse, vec![], BTreeMap::new());
+        let mut second_pass =
+            compat_effect_pass(SceneCompatEffectKind::Pulse, vec![], BTreeMap::new());
+        second_pass.index = 1;
+
+        let single = phase10_test_visual_with_passes(
+            Some(PathBuf::from("/tmp/puppet.mdl")),
+            vec![first_pass.clone()],
+        );
+        let multi = phase10_test_visual_with_passes(
+            Some(PathBuf::from("/tmp/puppet.mdl")),
+            vec![first_pass, second_pass],
+        );
+
+        assert!(!super::phase10_visual_requires_offscreen_chain(&single));
+        assert!(super::phase10_visual_requires_offscreen_chain(&multi));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_puppet_offscreen_projection_maps_scene_bounds_to_local_target() {
+        let visual =
+            phase10_test_visual_with_passes(Some(PathBuf::from("/tmp/puppet.mdl")), vec![]);
+        let projection = super::phase10_puppet_offscreen_projection(&visual, 300.0, 200, 100);
+        let mesh = crate::services::scene_mdl_service::SceneMdlMeshFrame {
+            positions: vec![
+                glam::Vec3::new(-100.0, -50.0, 0.0),
+                glam::Vec3::new(100.0, -50.0, 0.0),
+                glam::Vec3::new(-100.0, 50.0, 0.0),
+            ],
+            uvs: vec![
+                glam::Vec2::new(0.0, 0.0),
+                glam::Vec2::new(1.0, 0.0),
+                glam::Vec2::new(0.0, 1.0),
+            ],
+            indices: vec![0, 1, 2],
+        };
+
+        let vertices = super::build_projected_puppet_mesh_vertices(
+            &mesh,
+            visual.world_position,
+            visual.world_scale,
+            visual.world_angles,
+            visual.quad.opacity,
+            &projection,
+        )
+        .expect("offscreen puppet mesh vertices");
+
+        let min_x = vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::INFINITY, f32::min);
+        let max_x = vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        let max_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        assert!((min_x + 1.0).abs() < 0.001);
+        assert!((max_x - 1.0).abs() < 0.001);
+        assert!((min_y + 1.0).abs() < 0.001);
+        assert!((max_y - 1.0).abs() < 0.001);
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn phase10_effect_texture_slot_plan_preserves_sparse_authored_ordinals() {
         let pass = super::ScenePhase10EffectPassNode {
@@ -8132,6 +8426,9 @@ mod tests {
         );
         assert!(!key_a.is_empty());
         assert!(!key_b.is_empty());
-        assert_ne!(key_a, key_b, "MaskAlpha and MaskApply variant keys must be distinct");
+        assert_ne!(
+            key_a, key_b,
+            "MaskAlpha and MaskApply variant keys must be distinct"
+        );
     }
 }
