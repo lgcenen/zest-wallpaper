@@ -2114,13 +2114,13 @@ impl NativeSceneMetalRenderer {
                 SceneRenderDrawKind::Visual => {
                     if let Some(visual) = phase10_visuals.get(&draw_item.object_id) {
                         self.draw_phase10_visual(
-                            &command_buffer,
                             &encoder,
                             &projection,
                             visual,
                             phase10_outputs.get(&draw_item.object_id),
                             self.animation_time_seconds,
                         );
+                        drawn_phase10_ids.insert(draw_item.object_id);
                         continue;
                     }
                     let Some(item) = visual_items.get(&draw_item.object_id) else {
@@ -2210,7 +2210,6 @@ impl NativeSceneMetalRenderer {
         for visual in &phase10_graph.visuals {
             if drawn_phase10_ids.insert(visual.object_id) {
                 self.draw_phase10_visual(
-                    &command_buffer,
                     &encoder,
                     &projection,
                     visual,
@@ -2890,7 +2889,6 @@ impl NativeSceneMetalRenderer {
 
     fn draw_phase10_visual(
         &mut self,
-        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
         projection: &SceneProjection,
         visual: &ScenePhase10VisualPlan,
@@ -2942,13 +2940,11 @@ impl NativeSceneMetalRenderer {
                 return;
             }
             let base_texture = self.phase10_base_texture_for_visual(visual);
-            let mut previous_texture = base_texture.clone();
             let named_targets = BTreeMap::<String, Phase10TextureHandle>::new();
-            let pass_count = passes.len();
-            for (index, resolved_pass) in passes.iter().enumerate() {
+            for resolved_pass in &passes {
                 let input_scope = Phase10PassInputScope {
                     local_current: base_texture.as_ref(),
-                    previous_pass: previous_texture.as_ref(),
+                    previous_pass: base_texture.as_ref(),
                     background: None,
                     copied_background: None,
                     named_targets: &named_targets,
@@ -2971,58 +2967,16 @@ impl NativeSceneMetalRenderer {
                     elapsed_seconds,
                 );
                 let shader_defines = phase10_pass_shader_defines(resolved_pass);
-
-                let is_last = index + 1 == pass_count;
-                if is_last {
-                    self.draw_phase10_mesh(
-                        encoder,
-                        projection,
-                        visual,
-                        &mesh_frame,
-                        resolved_pass.pass,
-                        &shader_defines,
-                        &pass_textures,
-                        &uniforms,
-                    );
-                } else {
-                    let (width, height) = phase10_render_target_size(visual);
-                    let scratch_key = phase10_scratch_texture_key(width, height, index % 2);
-                    let Some(scratch_target) =
-                        self.ensure_phase10_scratch_target(&scratch_key, width, height)
-                    else {
-                        continue;
-                    };
-                    let descriptor = MTLRenderPassDescriptor::new();
-                    unsafe {
-                        let attachment =
-                            descriptor.colorAttachments().objectAtIndexedSubscript(0);
-                        attachment.setTexture(Some(scratch_target.texture.as_ref()));
-                        attachment.setLoadAction(MTLLoadAction::Clear);
-                        attachment.setStoreAction(MTLStoreAction::Store);
-                        attachment.setClearColor(objc2_metal::MTLClearColor {
-                            red: 0.0,
-                            green: 0.0,
-                            blue: 0.0,
-                            alpha: 0.0,
-                        });
-                    }
-                    if let Some(scratch_encoder) = command_buffer
-                        .renderCommandEncoderWithDescriptor(&descriptor)
-                    {
-                        self.draw_phase10_mesh(
-                            &scratch_encoder,
-                            projection,
-                            visual,
-                            &mesh_frame,
-                            resolved_pass.pass,
-                            &shader_defines,
-                            &pass_textures,
-                            &uniforms,
-                        );
-                        scratch_encoder.endEncoding();
-                    }
-                    previous_texture = Some(scratch_target);
-                }
+                self.draw_phase10_mesh(
+                    encoder,
+                    projection,
+                    visual,
+                    &mesh_frame,
+                    resolved_pass.pass,
+                    &shader_defines,
+                    &pass_textures,
+                    &uniforms,
+                );
             }
         } else {
             let Some(texture) = self.phase10_base_texture_for_visual(visual) else {
