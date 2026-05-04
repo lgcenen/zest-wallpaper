@@ -1254,6 +1254,16 @@ fn active_property_update_sync_mode(
                 WallpaperRuntime::Scene { scene: previous },
                 WallpaperRuntime::Scene { scene: current },
             ) => (previous, current),
+            (WallpaperRuntime::Web { .. }, WallpaperRuntime::Web { .. })
+                if previous_runtime_record.runtime == runtime_record.runtime =>
+            {
+                return if previous_runtime_record.property_schema == runtime_record.property_schema
+                {
+                    ActivePropertyUpdateSyncMode::Current
+                } else {
+                    ActivePropertyUpdateSyncMode::FullNativeSync
+                };
+            }
             _ => {
                 return if previous_runtime_record.runtime == runtime_record.runtime {
                     ActivePropertyUpdateSyncMode::Current
@@ -1508,9 +1518,10 @@ mod tests {
         models::{
             EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
             EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
-            LibraryStore, SceneEvaluatedDocument, SceneManifest, SceneRuntimeDocument,
-            SceneRuntimeSettings, SceneTextBehavior, SceneTextLayer, WallpaperRecord,
-            WallpaperRuntime, WallpaperRuntimeRecord, WallpaperType,
+            LibraryStore, PropertyKind, PropertyPresentation, SceneEvaluatedDocument,
+            SceneManifest, SceneRuntimeDocument, SceneRuntimeSettings, SceneTextBehavior,
+            SceneTextLayer, WallpaperProperty, WallpaperRecord, WallpaperRuntime,
+            WallpaperRuntimeRecord, WallpaperType,
         },
         services::scene_now_playing_provider_service,
         store::{AppState, DynamicPlayerState, HOME_ENV_LOCK},
@@ -1599,6 +1610,24 @@ mod tests {
             scene_manifest_dirty: false,
             imported_at: Utc::now(),
             tags: vec![],
+        }
+    }
+
+    fn web_property(key: &str, value: serde_json::Value) -> WallpaperProperty {
+        WallpaperProperty {
+            key: key.to_string(),
+            label: key.to_string(),
+            markup: None,
+            kind: PropertyKind::Slider,
+            value: value.clone(),
+            default_value: value,
+            min: None,
+            max: None,
+            step: None,
+            condition: None,
+            order: None,
+            presentation: PropertyPresentation::Control,
+            options: vec![],
         }
     }
 
@@ -1962,6 +1991,41 @@ mod tests {
         assert_eq!(mode, SceneUpdateSyncMode::LightweightDynamicText);
         assert_eq!(lightweight_calls.get(), 1);
         assert_eq!(full_sync_calls.get(), 0);
+    }
+
+    #[test]
+    fn active_web_property_update_triggers_native_bridge_sync() {
+        let mut earlier = runtime_record(
+            WallpaperRuntime::Web {
+                web: Default::default(),
+            },
+            WallpaperType::Web,
+        );
+        let mut later = earlier.clone();
+        earlier.property_schema = vec![web_property("speed", serde_json::json!(1))];
+        later.property_schema = vec![web_property("speed", serde_json::json!(2))];
+
+        assert_eq!(
+            active_property_update_sync_mode(Some(&earlier), &later, false),
+            ActivePropertyUpdateSyncMode::FullNativeSync
+        );
+    }
+
+    #[test]
+    fn unchanged_web_property_payload_stays_current() {
+        let mut earlier = runtime_record(
+            WallpaperRuntime::Web {
+                web: Default::default(),
+            },
+            WallpaperType::Web,
+        );
+        earlier.property_schema = vec![web_property("speed", serde_json::json!(1))];
+        let later = earlier.clone();
+
+        assert_eq!(
+            active_property_update_sync_mode(Some(&earlier), &later, false),
+            ActivePropertyUpdateSyncMode::Current
+        );
     }
 
     #[test]
