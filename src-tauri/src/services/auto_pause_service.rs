@@ -135,14 +135,18 @@ pub fn sample_system_auto_pause_screen_labels(app: &AppHandle) -> Result<BTreeSe
 }
 
 fn resolve_auto_pause_screen_labels(
-    _frontmost: Option<&FrontmostAppSample>,
+    frontmost: Option<&FrontmostAppSample>,
     screens: &[ScreenSample],
     windows: &[WindowSample],
     app_bundle_id: &str,
 ) -> BTreeSet<String> {
+    let Some(frontmost) = frontmost else {
+        return BTreeSet::new();
+    };
     let candidate_windows = windows
         .iter()
         .filter(|window| is_candidate_window(window, app_bundle_id))
+        .filter(|window| window_belongs_to_frontmost_app(window, frontmost))
         .collect::<Vec<_>>();
     if candidate_windows.is_empty() {
         return BTreeSet::new();
@@ -157,6 +161,10 @@ fn resolve_auto_pause_screen_labels(
         })
         .map(|screen| screen.label.clone())
         .collect()
+}
+
+fn window_belongs_to_frontmost_app(window: &WindowSample, frontmost: &FrontmostAppSample) -> bool {
+    window.owner_pid == frontmost.pid
 }
 
 fn resolve_system_auto_pause_screen_labels(
@@ -537,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn non_frontmost_covering_window_still_triggers_auto_pause() {
+    fn non_frontmost_covering_window_does_not_trigger_auto_pause() {
         let paused = resolve_auto_pause_screen_labels(
             Some(&frontmost(9, "com.apple.Terminal")),
             &[screen("player", 0.0, 0.0, 1920.0, 1080.0)],
@@ -566,11 +574,11 @@ mod tests {
             "com.lin.wallpaperworkbench",
         );
 
-        assert_eq!(paused, BTreeSet::from([String::from("player")]));
+        assert!(paused.is_empty());
     }
 
     #[test]
-    fn frontmost_non_covering_window_does_not_clear_a_screen_covered_by_another_app() {
+    fn background_covering_window_does_not_pause_other_screens() {
         let paused = resolve_auto_pause_screen_labels(
             Some(&frontmost(9, "com.apple.Terminal")),
             &[
@@ -602,7 +610,7 @@ mod tests {
             "com.lin.wallpaperworkbench",
         );
 
-        assert_eq!(paused, BTreeSet::from([String::from("player-screen-1")]));
+        assert!(paused.is_empty());
     }
 
     #[test]
