@@ -591,7 +591,7 @@ fn snapshot_audio_dispatch_state(
     let Some(spec) = runtime.spec.clone() else {
         return Ok(None);
     };
-    if runtime.views.is_empty() {
+    if runtime.views.is_empty() || spec.paused {
         return Ok(None);
     }
 
@@ -760,8 +760,8 @@ impl NativeWebBridgeState {
         self.bridge_ready && !paused
     }
 
-    fn audio_dispatch_allowed(&self) -> bool {
-        self.bridge_ready && self.audio_listener_active
+    fn audio_dispatch_allowed(&self, paused: bool) -> bool {
+        self.bridge_ready && self.audio_listener_active && !paused
     }
 
     fn current_runtime_url_matches(&self, runtime_url: &str) -> bool {
@@ -1169,7 +1169,8 @@ impl NativeWebViewHost {
                 .bridge_state
                 .lock()
                 .map_err(|error| error.to_string())?;
-            state.current_runtime_url_matches(&spec.runtime_url) && state.audio_dispatch_allowed()
+            state.current_runtime_url_matches(&spec.runtime_url)
+                && state.audio_dispatch_allowed(spec.paused)
         };
         if !should_dispatch {
             return Ok(());
@@ -1183,7 +1184,8 @@ impl NativeWebViewHost {
             .bridge_state
             .lock()
             .map_err(|error| error.to_string())?;
-        Ok(state.current_runtime_url_matches(&spec.runtime_url) && state.audio_dispatch_allowed())
+        Ok(state.current_runtime_url_matches(&spec.runtime_url)
+            && state.audio_dispatch_allowed(spec.paused))
     }
 
     fn retry_pending_bootstrap(&self, spec: &WebRuntimeSpec, now: Instant) -> Result<(), String> {
@@ -1649,15 +1651,16 @@ mod tests {
         let runtime_url = "http://127.0.0.1:9000/web-runtime/demo/index.html";
         state.reset_for_navigation(runtime_url, bootstrap_payload("{}", false), Instant::now());
 
-        assert!(!state.audio_dispatch_allowed());
+        assert!(!state.audio_dispatch_allowed(false));
         state.mark_audio_listener(true, Some(runtime_url));
-        assert!(!state.audio_dispatch_allowed());
+        assert!(!state.audio_dispatch_allowed(false));
 
         let _ = state.mark_bridge_ready(Some(runtime_url));
-        assert!(state.audio_dispatch_allowed());
+        assert!(state.audio_dispatch_allowed(false));
+        assert!(!state.audio_dispatch_allowed(true));
 
         state.mark_audio_listener(false, Some(runtime_url));
-        assert!(!state.audio_dispatch_allowed());
+        assert!(!state.audio_dispatch_allowed(false));
     }
 
     #[test]
