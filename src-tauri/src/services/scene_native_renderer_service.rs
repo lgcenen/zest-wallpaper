@@ -35,8 +35,8 @@ use crate::{
         scene_render_planner_service::{
             build_scene_render_plan_with_resolver, build_scene_render_text_update_with_resolver,
             SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderColor,
-            SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem, SceneRenderPlan,
-            SceneRenderQuad, SceneRenderSoundItem, SceneRenderSourceKind,
+            SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem,
+            SceneRenderPlan, SceneRenderQuad, SceneRenderSoundItem, SceneRenderSourceKind,
             SceneRenderSpriteParticleItem, SceneRenderTextItem, SceneRenderVisualItem,
             SceneTextHorizontalAlign,
         },
@@ -2239,45 +2239,60 @@ impl NativeSceneMetalRenderer {
             .iter()
             .map(|visual| (visual.object_id, visual))
             .collect::<BTreeMap<_, _>>();
+        let visual_items = plan
+            .visuals
+            .iter()
+            .map(|item| (item.object_id, item))
+            .collect::<BTreeMap<_, _>>();
+        let text_items = plan
+            .texts
+            .iter()
+            .map(|item| (item.object_id, item))
+            .collect::<BTreeMap<_, _>>();
         let mut rendered_ids = BTreeSet::new();
         let mut previous_layers = Vec::<Phase10BackgroundLayer>::new();
 
-        for item in &plan.visuals {
-            if let Some(visual) = phase10_visuals.get(&item.object_id) {
-                if phase10_visual_requires_offscreen_chain(visual) {
-                    let background_snapshot = if phase10_visual_needs_background_snapshot(visual) {
-                        self.render_phase10_background_snapshot(
+        for (draw_item, source_kind) in phase10_background_source_order(plan, graph) {
+            if source_kind == Phase10BackgroundSourceKind::Phase10Visual {
+                if let Some(visual) = phase10_visuals.get(&draw_item.object_id) {
+                    if phase10_visual_requires_offscreen_chain(visual) {
+                        let background_snapshot =
+                            if phase10_visual_needs_background_snapshot(visual) {
+                                self.render_phase10_background_snapshot(
+                                    command_buffer,
+                                    visual,
+                                    &previous_layers,
+                                    &mut required_background_keys,
+                                )
+                            } else {
+                                None
+                            };
+                        if let Some(texture) = self.render_phase10_output_for_visual(
                             command_buffer,
+                            plan.canvas_height,
                             visual,
-                            &previous_layers,
-                            &mut required_background_keys,
-                        )
-                    } else {
-                        None
-                    };
-                    if let Some(texture) = self.render_phase10_output_for_visual(
-                        command_buffer,
-                        plan.canvas_height,
-                        visual,
-                        background_snapshot.as_ref(),
-                        elapsed_seconds,
-                        &mut required_output_keys,
-                        &mut required_scratch_keys,
-                        &mut required_named_target_keys,
-                    ) {
-                        previous_layers.push(Phase10BackgroundLayer {
-                            quad: visual.quad,
-                            blend_mode: visual.blend_mode,
-                            texture: texture.clone(),
-                        });
-                        outputs.insert(visual.object_id, texture);
+                            background_snapshot.as_ref(),
+                            elapsed_seconds,
+                            &mut required_output_keys,
+                            &mut required_scratch_keys,
+                            &mut required_named_target_keys,
+                        ) {
+                            previous_layers.push(Phase10BackgroundLayer {
+                                quad: visual.quad,
+                                blend_mode: visual.blend_mode,
+                                texture: texture.clone(),
+                            });
+                            outputs.insert(visual.object_id, texture);
+                        }
                     }
+                    rendered_ids.insert(visual.object_id);
+                    continue;
                 }
-                rendered_ids.insert(visual.object_id);
-                continue;
             }
 
-            if let Some(layer) = self.phase10_background_layer_for_visual_item(item) {
+            if let Some(layer) =
+                self.phase10_background_layer_for_draw_item(&draw_item, &visual_items, &text_items)
+            {
                 previous_layers.push(layer);
             }
         }
@@ -2536,9 +2551,7 @@ impl NativeSceneMetalRenderer {
             };
 
             if phase10_alpha_prefill_required(resolved_pass.pass.blend_mode) {
-                if let Some(previous_texture) = input_scope
-                    .previous_pass
-                    .map(|t| t.texture.clone())
+                if let Some(previous_texture) = input_scope.previous_pass.map(|t| t.texture.clone())
                 {
                     self.draw_phase10_fullscreen_texture(
                         &encoder,
@@ -2664,22 +2677,45 @@ impl NativeSceneMetalRenderer {
         Some(output_texture.texture)
     }
 
-    fn phase10_background_layer_for_visual_item(
+    fn phase10_background_layer_for_draw_item(
         &mut self,
-        item: &SceneRenderVisualItem,
+        draw_item: &SceneRenderDrawItem,
+        visual_items: &BTreeMap<u32, &SceneRenderVisualItem>,
+        text_items: &BTreeMap<u32, &SceneRenderTextItem>,
     ) -> Option<Phase10BackgroundLayer> {
-        let texture = match item.source_kind {
-            SceneRenderSourceKind::Image => self
-                .texture_cache
-                .get(&visual_texture_cache_key(item))
-                .cloned(),
-            SceneRenderSourceKind::Video => self.video_texture_for_item(item),
-        }?;
-        Some(Phase10BackgroundLayer {
-            quad: item.quad,
-            blend_mode: item.blend_mode,
-            texture,
-        })
+        match draw_item.kind {
+            SceneRenderDrawKind::Visual => {
+                let item = visual_items.get(&draw_item.object_id)?;
+                let texture = match item.source_kind {
+                    SceneRenderSourceKind::Image => self
+                        .texture_cache
+                        .get(&visual_texture_cache_key(item))
+                        .cloned(),
+                    SceneRenderSourceKind::Video => self.video_texture_for_item(item),
+                }?;
+                Some(Phase10BackgroundLayer {
+                    quad: item.quad,
+                    blend_mode: item.blend_mode,
+                    texture,
+                })
+            }
+            SceneRenderDrawKind::Text => {
+                let item = text_items.get(&draw_item.object_id)?;
+                let texture = self
+                    .text_texture_cache
+                    .get(&text_texture_cache_key(item))?
+                    .clone();
+                Some(Phase10BackgroundLayer {
+                    quad: item.quad,
+                    blend_mode: SceneRenderBlendMode::Normal,
+                    texture,
+                })
+            }
+            SceneRenderDrawKind::Audio
+            | SceneRenderDrawKind::Particle
+            | SceneRenderDrawKind::SpriteParticle
+            | SceneRenderDrawKind::Sound => None,
+        }
     }
 
     fn render_phase10_background_snapshot(
@@ -4678,6 +4714,55 @@ impl Phase10PassInputScope<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase10BackgroundSourceKind {
+    Phase10Visual,
+    Visual,
+    Text,
+}
+
+fn phase10_background_source_order(
+    plan: &SceneRenderPlan,
+    graph: &ScenePhase10GraphPlan,
+) -> Vec<(SceneRenderDrawItem, Phase10BackgroundSourceKind)> {
+    let phase10_visual_ids = graph
+        .visuals
+        .iter()
+        .map(|visual| visual.object_id)
+        .collect::<BTreeSet<_>>();
+    let visual_ids = plan
+        .visuals
+        .iter()
+        .map(|visual| visual.object_id)
+        .collect::<BTreeSet<_>>();
+    let text_ids = plan
+        .texts
+        .iter()
+        .map(|text| text.object_id)
+        .collect::<BTreeSet<_>>();
+
+    plan.draw_order
+        .iter()
+        .filter_map(|draw_item| match draw_item.kind {
+            SceneRenderDrawKind::Visual if phase10_visual_ids.contains(&draw_item.object_id) => {
+                Some((*draw_item, Phase10BackgroundSourceKind::Phase10Visual))
+            }
+            SceneRenderDrawKind::Visual if visual_ids.contains(&draw_item.object_id) => {
+                Some((*draw_item, Phase10BackgroundSourceKind::Visual))
+            }
+            SceneRenderDrawKind::Text if text_ids.contains(&draw_item.object_id) => {
+                Some((*draw_item, Phase10BackgroundSourceKind::Text))
+            }
+            SceneRenderDrawKind::Audio
+            | SceneRenderDrawKind::Particle
+            | SceneRenderDrawKind::SpriteParticle
+            | SceneRenderDrawKind::Sound
+            | SceneRenderDrawKind::Visual
+            | SceneRenderDrawKind::Text => None,
+        })
+        .collect()
+}
+
 #[cfg(target_os = "macos")]
 struct Phase10BackgroundLayer {
     quad: SceneRenderQuad,
@@ -6342,11 +6427,11 @@ mod tests {
         unpremultiply_rgba_pixels, SceneTextHorizontalAlign,
     };
     use super::{
-        now_playing_runtime_warnings_for_scene, plan_native_scene_renderer_runtime,
-        runtime_dependency_warnings_for_plan, video_texture_frame_warning,
-        video_texture_source_warning, NativeSceneRendererSnapshot, SceneDiagnosticDomain,
-        SceneRenderColor, SceneRendererSpec, SceneSessionPlan, AUDIO_INPUT_UNAVAILABLE_CODE,
-        INPUT_SNAPSHOT_UNAVAILABLE_CODE,
+        now_playing_runtime_warnings_for_scene, phase10_background_source_order,
+        plan_native_scene_renderer_runtime, runtime_dependency_warnings_for_plan,
+        video_texture_frame_warning, video_texture_source_warning, NativeSceneRendererSnapshot,
+        Phase10BackgroundSourceKind, SceneDiagnosticDomain, SceneRenderColor, SceneRendererSpec,
+        SceneSessionPlan, AUDIO_INPUT_UNAVAILABLE_CODE, INPUT_SNAPSHOT_UNAVAILABLE_CODE,
     };
     use crate::models::{
         SceneEvaluatedDocument, SceneManifest, SceneNowPlayingAvailability,
@@ -6434,6 +6519,37 @@ mod tests {
             phase10_graph: super::ScenePhase10GraphPlan::default(),
             window_labels: labels.iter().map(|label| (*label).to_string()).collect(),
             paused: false,
+        }
+    }
+
+    fn phase10_visual_plan_for_item(item: &SceneRenderVisualItem) -> super::ScenePhase10VisualPlan {
+        super::ScenePhase10VisualPlan {
+            object_id: item.object_id,
+            object_name: item.object_name.clone(),
+            quad: item.quad,
+            base_color: SceneRenderColor::default(),
+            base_source_kind: Some(item.source_kind),
+            authored_size: [item.quad.width, item.quad.height],
+            world_position: [item.quad.left, item.quad.top, 0.0],
+            world_scale: [1.0, 1.0, 1.0],
+            world_angles: [0.0, 0.0, item.quad.rotation],
+            blend_mode: item.blend_mode,
+            base_texture_path: Some(item.texture_path.clone()),
+            material: SceneResolvedMaterialPlan {
+                material_path: PathBuf::from("/tmp/background-order.material"),
+                passes: vec![],
+                material_effects: vec![],
+            },
+            puppet_path: None,
+            animation_layers: vec![],
+            effect_chain: vec![],
+            submesh_count: 0,
+            submeshes: vec![],
+            mask_binding_count: 0,
+            mask_bindings: vec![],
+            attachments: vec![],
+            morph_target_count: 0,
+            container_kind: None,
         }
     }
 
@@ -7705,6 +7821,52 @@ mod tests {
         assert_eq!(
             visual_draw_sequence(&spec),
             vec![(17, false), (67, true), (71, true), (3228, false)]
+        );
+    }
+
+    #[test]
+    fn phase10_background_sources_follow_global_draw_order() {
+        let mut spec = sample_spec("scene-a", &["player"], 3);
+        spec.render_plan.visuals[0].object_id = 11;
+        spec.render_plan.visuals[1].object_id = 33;
+        spec.render_plan.visuals[2].object_id = 77;
+        let mut text = sample_text_item();
+        text.object_id = 22;
+        spec.render_plan.texts = vec![text];
+        spec.render_plan.draw_order = vec![
+            SceneRenderDrawItem {
+                object_id: 11,
+                kind: SceneRenderDrawKind::Visual,
+            },
+            SceneRenderDrawItem {
+                object_id: 22,
+                kind: SceneRenderDrawKind::Text,
+            },
+            SceneRenderDrawItem {
+                object_id: 33,
+                kind: SceneRenderDrawKind::Visual,
+            },
+            SceneRenderDrawItem {
+                object_id: 77,
+                kind: SceneRenderDrawKind::Visual,
+            },
+        ];
+        spec.phase10_graph.visuals =
+            vec![phase10_visual_plan_for_item(&spec.render_plan.visuals[2])];
+
+        let order = phase10_background_source_order(&spec.render_plan, &spec.phase10_graph)
+            .into_iter()
+            .map(|(item, source)| (item.object_id, source))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            order,
+            vec![
+                (11, Phase10BackgroundSourceKind::Visual),
+                (22, Phase10BackgroundSourceKind::Text),
+                (33, Phase10BackgroundSourceKind::Visual),
+                (77, Phase10BackgroundSourceKind::Phase10Visual),
+            ]
         );
     }
 
