@@ -3293,8 +3293,6 @@ impl NativeSceneMetalRenderer {
             color: [1.0, 1.0, 1.0, 1.0],
             user0: [0.0, 0.0, 0.0, 0.0],
             user1: [0.0, 0.0, 0.0, 0.0],
-            user2: [0.0, 0.0, 0.0, 0.0],
-            user3: [0.0, 0.0, 0.0, 0.0],
             primary_resolution: phase10_texture_resolution(
                 pass_textures.slots.first().and_then(|slot| slot.as_ref()),
             ),
@@ -3409,158 +3407,6 @@ impl NativeSceneMetalRenderer {
                     phase10_uniform_vec2(&uniform_values, &["repeat", "scale"], [1.0, 1.0]);
                 uniforms.user0[2] = repeat[0];
                 uniforms.user0[3] = repeat[1];
-            }
-            Some(SceneCompatEffectKind::AcesTonemap) => {
-                uniforms.intensity =
-                    phase10_uniform_float(&uniform_values, &["str"], 1.0);
-            }
-            Some(SceneCompatEffectKind::GradientColor) => {
-                uniforms.color = phase10_uniform_color(
-                    &uniform_values,
-                    &["u_color1"],
-                    [1.0, 0.0, 0.2, 1.0],
-                );
-                let color2 = phase10_uniform_color(
-                    &uniform_values,
-                    &["u_color2"],
-                    [0.0, 0.0, 1.0, 1.0],
-                );
-                uniforms.user0 = [color2[0], color2[1], color2[2], 0.0];
-                uniforms.user0[3] =
-                    phase10_uniform_float(&uniform_values, &["u_amount"], 1.5);
-                uniforms.speed =
-                    phase10_uniform_float(&uniform_values, &["u_speed"], 0.0);
-                uniforms.user1[0] =
-                    phase10_uniform_float(&uniform_values, &["u_oscillate"], 0.0);
-                uniforms.intensity =
-                    phase10_uniform_float(&uniform_values, &["u_opacity"], 1.0);
-            }
-            Some(SceneCompatEffectKind::ColorGrading) => {
-                uniforms.intensity =
-                    phase10_uniform_float(&uniform_values, &["a_alpha"], 1.0);
-                uniforms.radius =
-                    phase10_uniform_float(&uniform_values, &["a_displayinitgamma"], 2.2);
-                uniforms.angle =
-                    phase10_uniform_float(&uniform_values, &["a_displaygamma"], 2.2);
-                // a_channelMultiplier: shared across all PROPERTIES modes;
-                // placed in color AND user1/user2/user3 so whichever mode is
-                // active can reach it without colliding with per-mode tints.
-                let channel_multiplier = phase10_uniform_color(
-                    &uniform_values,
-                    &["a_channelmultiplier"],
-                    [1.0, 1.0, 1.0, 1.0],
-                );
-                // Per-mode scalar parameters → user0
-                uniforms.user0[0] = phase10_uniform_float(&uniform_values, &["c_brightness"], 0.0)
-                    .max(phase10_uniform_float(&uniform_values, &["c_exposure"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_hueshift"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_colortemp"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_shadows"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_gamma"], 0.0));
-                uniforms.user0[1] = phase10_uniform_float(&uniform_values, &["c_contrast"], 0.0)
-                    .max(phase10_uniform_float(&uniform_values, &["c_blacklevel"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_chroma"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_whitetint"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_highlights"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_gain"], 0.0));
-                uniforms.user0[2] = phase10_uniform_float(&uniform_values, &["c_saturation"], 0.0)
-                    .max(phase10_uniform_float(&uniform_values, &["c_vibrance"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_hsbalance"], 0.0))
-                    .max(phase10_uniform_float(&uniform_values, &["c_lift"], 0.0));
-                // Per-mode first-vec3 tint or a_channelMultiplier → color
-                let first_tint = phase10_uniform_color(
-                    &uniform_values,
-                    &["c_colorfilter"],
-                    channel_multiplier,
-                );
-                let first_tint = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["c_shadowtint"],
-                    first_tint,
-                );
-                let first_tint = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["c_liftcolorfilter"],
-                    first_tint,
-                );
-                let first_tint = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["c_red"],
-                    first_tint,
-                );
-                uniforms.color = first_tint;
-                // Second-vec3 tint or a_channelMultiplier → user1
-                let second_tint = phase10_uniform_color(
-                    &uniform_values,
-                    &["c_highlighttint"],
-                    [1.0; 4],
-                );
-                let second_tint = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["c_gammacolorfilter"],
-                    second_tint,
-                );
-                let second_tint = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["c_green"],
-                    second_tint,
-                );
-                let second_tint = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["a_channelmultiplier"],
-                    second_tint,
-                );
-                uniforms.user1 = [second_tint[0], second_tint[1], second_tint[2], 0.0];
-                uniforms.user1[3] =
-                    phase10_uniform_float(&uniform_values, &["c_tollerance"], 1.0);
-                // Third-vec3 tint or a_channelMultiplier → user2
-                let third_tint = phase10_uniform_color(
-                    &uniform_values,
-                    &["c_gaincolorfilter"],
-                    [1.0; 4],
-                );
-                let third_tint = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["c_blue"],
-                    third_tint,
-                );
-                let third_tint = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["a_channelmultiplier"],
-                    third_tint,
-                );
-                uniforms.user2 = [third_tint[0], third_tint[1], third_tint[2], 0.0];
-                uniforms.user2[3] =
-                    phase10_uniform_float(&uniform_values, &["c_smooth"], 1.0);
-                // MODE-specific or a_channelMultiplier → user3
-                let replace_base = phase10_uniform_color(
-                    &uniform_values,
-                    &["c_replacebasecolor"],
-                    [1.0; 4],
-                );
-                let replace_base = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["c_matrixoffset"],
-                    replace_base,
-                );
-                let replace_base = phase10_uniform_same_or(
-                    &uniform_values,
-                    &["a_channelmultiplier"],
-                    replace_base,
-                );
-                uniforms.user3 = [replace_base[0], replace_base[1], replace_base[2], 0.0];
-            }
-            Some(SceneCompatEffectKind::SharpenFilter) => {
-                uniforms.intensity =
-                    phase10_uniform_float(&uniform_values, &["u_strength"], 1.0);
-                uniforms.radius =
-                    phase10_uniform_float(&uniform_values, &["u_radius"], 1.0);
-            }
-            Some(SceneCompatEffectKind::LutLoader) => {
-                uniforms.intensity =
-                    phase10_uniform_float(&uniform_values, &["g_multiply"], 1.0);
-                uniforms.user0[0] =
-                    phase10_uniform_float(&uniform_values, &["g_translucentcompensation"], 0.0);
             }
             _ => {}
         }
@@ -4712,15 +4558,6 @@ fn phase10_uniform_color(
 }
 
 #[cfg(target_os = "macos")]
-fn phase10_uniform_same_or(
-    values: &BTreeMap<String, SceneMaterialUniformValue>,
-    alias: &[&str],
-    fallback: [f32; 4],
-) -> [f32; 4] {
-    phase10_uniform_color(values, alias, fallback)
-}
-
-#[cfg(target_os = "macos")]
 fn rotate2d(vector: [f32; 2], angle: f32) -> [f32; 2] {
     let sine = angle.sin();
     let cosine = angle.cos();
@@ -4752,8 +4589,6 @@ struct Phase10EffectUniforms {
     color: [f32; 4],
     user0: [f32; 4],
     user1: [f32; 4],
-    user2: [f32; 4],
-    user3: [f32; 4],
     primary_resolution: [f32; 4],
     slot1_resolution: [f32; 4],
     slot2_resolution: [f32; 4],

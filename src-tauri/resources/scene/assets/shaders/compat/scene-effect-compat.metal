@@ -21,8 +21,6 @@ struct Phase10EffectUniforms {
     float4 color;
     float4 user0;
     float4 user1;
-    float4 user2;
-    float4 user3;
     float4 primary_resolution;
     float4 slot1_resolution;
     float4 slot2_resolution;
@@ -146,7 +144,7 @@ static float3 blend_screen(float3 base, float3 blend) {
     return 1.0 - ((1.0 - base) * (1.0 - blend));
 }
 
-static float3 apply_blending(float3 base, float3 blend, float opacity) {
+static float3 apply_tint_blend(float3 base, float3 blend, float opacity) {
     float amount = clamp(opacity, 0.0, 1.0);
 #if BLENDMODE == 2
     return mix(base, base * blend, amount);
@@ -195,142 +193,6 @@ static float phase10_shake_wave(
 #endif
 }
 
-// ─── Color grading helper functions ───
-
-static float3 greyscale_vec3(float3 color) {
-    float luma = dot(color, float3(0.2126, 0.7152, 0.0722));
-    return float3(luma);
-}
-
-static float3 hsv2rgb(float3 c) {
-    float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-    float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-static float3 rgb2hsv(float3 RGB) {
-    float4 P = (RGB.g < RGB.b) ? float4(RGB.bg, -1.0, 2.0/3.0) : float4(RGB.gb, 0.0, -1.0/3.0);
-    float4 Q = (RGB.r < P.x) ? float4(P.xyw, RGB.r) : float4(RGB.r, P.yzx);
-    float C = Q.x - min(Q.w, Q.y);
-    float H = abs((Q.w - Q.y) / (6.0 * C + 1e-10) + Q.z);
-    float3 HCV = float3(H, C, Q.x);
-    float S = HCV.y / (HCV.z + 1e-10);
-    return float3(HCV.x, S, HCV.z);
-}
-
-static float3 ContrastSaturationBrightness(float3 color, float brt, float sat, float con) {
-    float3 result = color;
-    result = (result - 0.5) * con + 0.5 + (brt - 1.0);
-    float3 grey = float3(dot(result, float3(0.2126, 0.7152, 0.0722)));
-    result = mix(grey, result, sat);
-    return result;
-}
-
-static float3 BlendSoftLight(float3 base, float3 blend) {
-    float3 result;
-    for (int i = 0; i < 3; i++) {
-        if (blend[i] <= 0.5) {
-            result[i] = base[i] - (1.0 - 2.0 * blend[i]) * base[i] * (1.0 - base[i]);
-        } else {
-            float d = (base[i] <= 0.25) ? ((16.0 * base[i] - 12.0) * base[i] + 4.0) * base[i] : sqrt(base[i]);
-            result[i] = base[i] + (2.0 * blend[i] - 1.0) * (d - base[i]);
-        }
-    }
-    return result;
-}
-
-static float3 vibrance(float3 color, float amount) {
-    float luma = dot(color, float3(0.2126, 0.7152, 0.0722));
-    float max_color = max(color.r, max(color.g, color.b));
-    float min_color = min(color.r, min(color.g, color.b));
-    float color_saturation = max_color - min_color;
-    return mix(float3(luma), color, 1.0 + amount * (1.0 - (sign(amount) * color_saturation)));
-}
-
-// Bradford-adapted white balance using LMS matrices
-static float3 whiteBalance(float3 color, float temp, float tint) {
-    // LIN_2_LMS_MAT
-    constant float3x3 LIN_2_LMS_MAT = float3x3(
-        float3(3.90405e-1, 5.49941e-1, 8.92632e-3),
-        float3(7.08416e-2, 9.63172e-1, 1.35775e-3),
-        float3(2.31082e-2, 1.28021e-1, 9.36245e-1)
-    );
-    // LMS_2_LIN_MAT
-    constant float3x3 LMS_2_LIN_MAT = float3x3(
-        float3( 2.85847e+0, -1.62879e+0, -2.48910e-2),
-        float3(-2.10182e-1,  1.15820e+0,  3.24281e-4),
-        float3(-4.18120e-2, -1.18169e-1,  1.06867e+0)
-    );
-
-    float t1 = temp * 10.0 / 6.0;
-    float t2 = tint * 10.0 / 6.0;
-    float x = 0.31271 - t1 * (t1 < 0.0 ? 0.1 : 0.05);
-    float standardIlluminantY = 2.87 * x - 3.0 * x * x - 0.27509507;
-    float y = standardIlluminantY + t2 * 0.05;
-    float3 w1 = float3(0.949237, 1.03542, 1.08728);
-    float X = x / y;
-    float Z = (1.0 - x - y) / y;
-    float L = 0.7328 * X + 0.4296 - 0.1624 * Z;
-    float M = -0.7036 * X + 1.6975 + 0.0061 * Z;
-    float S = 0.0030 * X + 0.0136 + 0.9834 * Z;
-    float3 w2 = float3(L, M, S);
-    float3 balance = float3(w1.x / w2.x, w1.y / w2.y, w1.z / w2.z);
-    float3 lms = LIN_2_LMS_MAT * color;
-    return LMS_2_LIN_MAT * (lms * balance);
-}
-
-static float3 liftGammaGain(float3 color, float3 liftFilter, float lift, float3 gammaFilter, float gamma, float3 gainFilter, float gain) {
-    color = color + (liftFilter * (lift + 1.0) / 2.0 - 0.5) * (1.0 - color);
-    color = saturate(color * (1.5 - 0.5 * liftFilter * (lift + 1.0)) + 0.5 * liftFilter * (lift + 1.0) - 0.5);
-    color *= gainFilter * pow(2.0, gain);
-    return pow(abs(color), (1.0 / gammaFilter) * pow(2.0, -gamma));
-}
-
-static float3 hueTransform(float3 color, float angle) {
-    const float3 k = float3(0.57735);
-    float cosAngle = cos(radians(angle));
-    return color * cosAngle + cross(k, color) * sin(radians(angle)) + k * dot(k, color) * (1.0 - cosAngle);
-}
-
-static float3 chromaAdjust(float3 color, float amount) {
-    float3 hsv = rgb2hsv(color);
-    hsv.y += amount;
-    return hsv2rgb(hsv);
-}
-
-static float3 invertValue(float3 color) {
-    float3 hsv = rgb2hsv(color);
-    hsv.z = 1.0 - hsv.z;
-    return hsv2rgb(hsv);
-}
-
-static float3 splitTone(float3 color, float shadows, float highlights, float balance, float3 shadowTint, float3 highlightTint) {
-    float luma = dot(color, float3(0.2126, 0.7152, 0.0722));
-    float t = saturate(luma + balance);
-    float3 s = mix(0.5, shadowTint * ((1.0 + shadows * 1.5) / 2.0), 1.0 - t);
-    float3 h = mix(0.5, highlightTint * ((1.0 + highlights * 1.5) / 2.0), t);
-    float3 result = BlendSoftLight(color, s);
-    return BlendSoftLight(result, h);
-}
-
-// Selective color targeting: returns 0..1 mask based on distance to target
-static float selectColor(float3 initColor, float3 color, float3 replaceBaseColor, float tollerance, float smooth_exp) {
-    float3 hsv = rgb2hsv(color);
-    float3 baseHsv = rgb2hsv(replaceBaseColor);
-#if MODE == 1
-    float dist = min(abs(hsv.x - baseHsv.x), 1.0 - abs(hsv.x - baseHsv.x)) + max(abs(hsv.y - baseHsv.y), 0.0) + max(abs(hsv.z - baseHsv.z), 0.0);
-#elif MODE == 2
-    float dist = min(abs(hsv.x - baseHsv.x), 1.0 - abs(hsv.x - baseHsv.x));
-#elif MODE == 3
-    float dist = max(abs(hsv.y - baseHsv.y), 0.0);
-#elif MODE == 4
-    float dist = max(abs(hsv.z - baseHsv.z), 0.0);
-#else
-    float dist = 0.0;
-#endif
-    return saturate(pow(tollerance / dist, 1.0 / smooth_exp));
-}
-
 fragment float4 phase10_effect_fragment(
     Phase10EffectVertexOut stage_vertex [[stage_in]],
     texture2d<float> input_texture [[texture(0)]],
@@ -365,7 +227,7 @@ fragment float4 phase10_effect_fragment(
     sampled.a *= clamp(pulse, 0.0, 1.0);
 #endif
 #if PULSECOLOR
-    sampled.rgb = apply_blending(sampled.rgb * uniforms.color.rgb, sampled.rgb * uniforms.user1.rgb, pulse);
+    sampled.rgb = apply_tint_blend(sampled.rgb * uniforms.color.rgb, sampled.rgb * uniforms.user1.rgb, pulse);
 #endif
 #if MASK
     if (has_aux_texture(uniforms.aux2_texel_size)) {
@@ -471,7 +333,7 @@ fragment float4 phase10_effect_fragment(
 #elif PHASE10_EFFECT_TINT
     float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
     float strength = clamp(uniforms.intensity * mask, 0.0, 1.0);
-    sampled.rgb = apply_blending(sampled.rgb, uniforms.color.rgb, strength);
+    sampled.rgb = apply_tint_blend(sampled.rgb, uniforms.color.rgb, strength);
 #elif PHASE10_EFFECT_SCROLL
     float2 scroll_speed = uniforms.user0.xy;
     float2 repeat = max(abs(uniforms.user0.zw), float2(0.01));
@@ -480,253 +342,6 @@ fragment float4 phase10_effect_fragment(
         texture_sampler,
         fract((primary_uv + signed_scroll) * repeat)
     );
-#elif PHASE10_EFFECT_ACESTONEMAP
-    float strength_ace = max(uniforms.intensity, 0.0);
-    float3 col = sampled.rgb * strength_ace;
-    constant float3x3 ACESInputMat = float3x3(
-        float3(0.59719, 0.35458, 0.04823),
-        float3(0.07600, 0.90834, 0.01566),
-        float3(0.02840, 0.13383, 0.83777)
-    );
-    constant float3x3 ACESOutputMat = float3x3(
-        float3( 1.60475, -0.53108, -0.07367),
-        float3(-0.10208,  1.10813, -0.00605),
-        float3(-0.00327, -0.07276,  1.07602)
-    );
-    col = ACESInputMat * col;
-    col = (col * (col + 0.0245786) - 0.000090537) / (col * (0.983729 * col + 0.4329510) + 0.238081);
-    sampled.rgb = saturate(ACESOutputMat * col);
-    sampled.a = 1.0;
-#elif PHASE10_EFFECT_GRADIENTCOLOR
-    float4 scene = sampled;
-    float gradient_mask = 1.0;
-#if MASK
-    if (has_aux_texture(uniforms.aux_texel_size)) {
-        gradient_mask = aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
-    }
-#endif
-    float timer = sin(uniforms.time * uniforms.user1.x);
-    float3 color1 = uniforms.color.rgb;
-    float3 color2 = uniforms.user0.xyz;
-    float amount = max(abs(uniforms.user0.w), 0.01);
-    float speed_hue = uniforms.speed;
-    float osc = uniforms.user1.x;
-    float opacity_g = max(uniforms.intensity, 0.0);
-
-#if AXIS
-    float colorDistanceBlend = pow(primary_uv.y, amount);
-#else
-    float colorDistanceBlend = pow(primary_uv.x, amount);
-#endif
-    if (osc > 0.0) {
-        colorDistanceBlend += sin(uniforms.time * osc);
-    }
-
-    float3 resultColor = mix(color1, color2, colorDistanceBlend);
-    float3 hsv = rgb2hsv(resultColor);
-    hsv.x = fract(hsv.x + uniforms.time * speed_hue);
-    resultColor = hsv2rgb(hsv);
-
-    float3 finalColor = apply_blending(mix(scene.rgb, resultColor, scene.a), resultColor, opacity_g * gradient_mask);
-    sampled.rgb = finalColor;
-#elif PHASE10_EFFECT_COLORGRADING
-    float4 albedo = sampled;
-    float4 baseAlbedo = albedo;
-    float cg_mask = 1.0;
-#if MASK
-    if (has_aux_texture(uniforms.aux_texel_size)) {
-        cg_mask = aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
-    }
-#endif
-#if INVERTMASK
-    cg_mask = 1.0 - cg_mask;
-#endif
-
-    float a_alpha = max(uniforms.intensity, 0.0);
-    if (cg_mask > 0.0 && a_alpha > 0.0) {
-        float startGamma = uniforms.radius; // a_displayInitGamma
-        float endGamma = uniforms.angle;    // a_displayGamma
-#if !GAMMA
-        startGamma = 2.2;
-        endGamma = 2.2;
-#endif
-
-#if LINEAR
-        albedo.rgb = pow(albedo.rgb, float3(startGamma));
-        baseAlbedo.rgb = pow(baseAlbedo.rgb, float3(startGamma));
-#endif
-#if GREYSCALE
-        albedo.rgb = greyscale_vec3(albedo.rgb);
-#endif
-#if INVERTCOLOR
-        albedo.rgb = 1.0 - albedo.rgb;
-#endif
-#if INVERTVALUE
-        albedo.rgb = invertValue(albedo.rgb);
-#endif
-
-#if MODE != 0
-        float colorMultiplier = selectColor(baseAlbedo.rgb, albedo.rgb, uniforms.user3.xyz, uniforms.user1.w, uniforms.user2.w);
-#else
-        float colorMultiplier = 1.0;
-#endif
-
-        // dispatch based on PROPERTIES
-#if PROPERTIES == 0
-        {
-            float c_brightness = uniforms.user0.x;
-            float c_contrast = uniforms.user0.y;
-            float c_saturation = uniforms.user0.z;
-            albedo.rgb = ContrastSaturationBrightness(albedo.rgb, 1.0 + c_brightness, 1.0 + c_saturation, 1.0 + c_contrast);
-            float3 ch = uniforms.color.rgb; // a_channelMultiplier
-            albedo.rgb = mix(baseAlbedo.rgb, albedo.rgb, ch * colorMultiplier * cg_mask * a_alpha);
-        }
-#elif PROPERTIES == 1
-        {
-            float c_exposure = uniforms.user0.x;
-            float c_blackLevel = uniforms.user0.y;
-            float c_vibrance_val = uniforms.user0.z;
-            if (c_exposure != 0.0) albedo.rgb *= pow(2.0, c_exposure);
-            if (c_vibrance_val != 0.0) albedo.rgb = vibrance(albedo.rgb, c_vibrance_val);
-            if (c_blackLevel != 0.0) albedo.rgb -= c_blackLevel / 10.0;
-            float3 ch = uniforms.color.rgb;
-            albedo.rgb = mix(baseAlbedo.rgb, albedo.rgb, ch * colorMultiplier * cg_mask * a_alpha);
-        }
-#elif PROPERTIES == 2
-        {
-            float c_hueShift = uniforms.user0.x;
-            float c_chroma_val = uniforms.user0.y;
-            float3 c_colorFilter = uniforms.color.rgb;
-            albedo.rgb *= c_colorFilter;
-            if (c_hueShift != 0.0) albedo.rgb = hueTransform(albedo.rgb, c_hueShift);
-            if (c_chroma_val != 0.0) albedo.rgb = chromaAdjust(albedo.rgb, c_chroma_val);
-            float3 ch = uniforms.user1.xyz; // a_channelMultiplier in user1 for this mode
-            albedo.rgb = mix(baseAlbedo.rgb, albedo.rgb, ch * colorMultiplier * cg_mask * a_alpha);
-        }
-#elif PROPERTIES == 3
-        {
-            float c_colorTemp = uniforms.user0.x;
-            float c_whiteTint = uniforms.user0.y;
-            albedo.rgb = whiteBalance(albedo.rgb, c_colorTemp, c_whiteTint);
-            float3 ch = uniforms.color.rgb;
-            albedo.rgb = mix(baseAlbedo.rgb, albedo.rgb, ch * colorMultiplier * cg_mask * a_alpha);
-        }
-#elif PROPERTIES == 4
-        {
-            float c_shadows = uniforms.user0.x;
-            float c_highlights = uniforms.user0.y;
-            float c_HSbalance = uniforms.user0.z;
-            float3 c_shadowTint = uniforms.color.rgb;
-            float3 c_highlightTint = uniforms.user1.xyz;
-            albedo.rgb = splitTone(albedo.rgb, c_shadows, c_highlights, c_HSbalance, c_shadowTint, c_highlightTint);
-            float3 ch = uniforms.user2.xyz; // a_channelMultiplier in user2 for this mode
-            albedo.rgb = mix(baseAlbedo.rgb, albedo.rgb, ch * colorMultiplier * cg_mask * a_alpha);
-        }
-#elif PROPERTIES == 5
-        {
-            float c_gamma = uniforms.user0.x;
-            float c_gain = uniforms.user0.y;
-            float c_lift = uniforms.user0.z;
-            float3 c_LiftColorFilter = uniforms.color.rgb;
-            float3 c_GammaColorFilter = uniforms.user1.xyz;
-            float3 c_GainColorFilter = uniforms.user2.xyz;
-            albedo.rgb = liftGammaGain(albedo.rgb, c_LiftColorFilter, c_lift, c_GammaColorFilter, c_gamma, c_GainColorFilter, c_gain);
-            float3 ch = uniforms.user3.xyz; // a_channelMultiplier in user3 for this mode
-            albedo.rgb = mix(baseAlbedo.rgb, albedo.rgb, ch * colorMultiplier * cg_mask * a_alpha);
-        }
-#elif PROPERTIES == 6
-        {
-            float3 c_red = uniforms.color.rgb;
-            float3 c_green = uniforms.user1.xyz;
-            float3 c_blue = uniforms.user2.xyz;
-            float3 c_matrixOffset = uniforms.user0.xyz;
-            float3x3 colorMatrix = float3x3(c_red, c_green, c_blue);
-            albedo.rgb = albedo.rgb * colorMatrix + c_matrixOffset;
-            float3 ch = uniforms.user3.xyz;
-            albedo.rgb = mix(baseAlbedo.rgb, albedo.rgb, ch * colorMultiplier * cg_mask * a_alpha);
-        }
-#endif
-
-#if LINEAR
-        albedo.rgb = pow(albedo.rgb, float3(1.0 / startGamma));
-        baseAlbedo.rgb = pow(baseAlbedo.rgb, float3(1.0 / startGamma));
-#endif
-
-        float blend_amount = cg_mask * albedo.a * a_alpha;
-        albedo.rgb = apply_blending(baseAlbedo.rgb, albedo.rgb, blend_amount);
-        albedo.rgb = pow(albedo.rgb, float3(2.2 / endGamma));
-    }
-    sampled = albedo;
-#elif PHASE10_EFFECT_SHARPENFILTER
-    float sharpen_mask = 1.0;
-#if OPACITY
-    if (has_aux_texture(uniforms.aux_texel_size)) {
-        sharpen_mask = aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
-#if INVERT
-        sharpen_mask = 1.0 - sharpen_mask;
-#endif
-    }
-#endif
-    if (sharpen_mask > 0.1) {
-        float strength_sh = max(uniforms.intensity, 0.0);
-        float radius_sh = max(uniforms.radius, 0.01);
-        float2 ts = uniforms.texel_size * radius_sh;
-        float4 c1 = sample_input(input_texture, texture_sampler, primary_uv + float2(-ts.x, -ts.y));
-        float4 c2 = sample_input(input_texture, texture_sampler, primary_uv + float2(0.0, -ts.y));
-        float4 c3 = sample_input(input_texture, texture_sampler, primary_uv + float2(ts.x, -ts.y));
-        float4 c4 = sample_input(input_texture, texture_sampler, primary_uv + float2(-ts.x, 0.0));
-        float4 c5 = sample_input(input_texture, texture_sampler, primary_uv + float2(ts.x, 0.0));
-        float4 c6 = sample_input(input_texture, texture_sampler, primary_uv + float2(-ts.x, ts.y));
-        float4 c7 = sample_input(input_texture, texture_sampler, primary_uv + float2(0.0, ts.y));
-        float4 c8 = sample_input(input_texture, texture_sampler, primary_uv + float2(ts.x, ts.y));
-        float4 blur = (c1 + c3 + c6 + c8 + 2.0 * (c2 + c4 + c5 + c7) + 4.0 * sampled) / 16.0;
-        sampled = (1.0 + strength_sh * sharpen_mask) * sampled - strength_sh * sharpen_mask * blur;
-    }
-#elif PHASE10_EFFECT_LUTLOADER
-    float4 textureColor = sampled;
-#if CLAMP
-    textureColor = saturate(textureColor);
-#endif
-
-    float lut_mult = max(uniforms.intensity, 0.0);
-    float tc = uniforms.user0.x; // g_TranslucentCompensation
-    float blendAmount_lut = lut_mult + tc * (1.0 - textureColor.a);
-
-    if (has_aux_texture(uniforms.aux_texel_size)) {
-#if QUAD_SIZE == 64
-        float blueColor = textureColor.b * 63.0;
-        float quad1y = floor(floor(blueColor) * 0.125);
-        float quad2y = floor(ceil(blueColor) * 0.125);
-        float2 texPos1;
-        texPos1.x = ((floor(blueColor) - (quad1y * 8.0)) * 0.125) + 0.0009765625 + ((0.125 - 0.001953125) * textureColor.r);
-        texPos1.y = (quad1y * 0.125) + 0.0009765625 + ((0.125 - 0.001953125) * textureColor.g);
-        float2 texPos2;
-        texPos2.x = ((ceil(blueColor) - (quad2y * 8.0)) * 0.125) + 0.0009765625 + ((0.125 - 0.001953125) * textureColor.r);
-        texPos2.y = (quad2y * 0.125) + 0.0009765625 + ((0.125 - 0.001953125) * textureColor.g);
-#else
-        // QUAD_SIZE == 16 (default)
-        float blueColor = textureColor.b * 15.0;
-        float quad1y = floor(floor(blueColor) * 0.25);
-        float quad2y = floor(ceil(blueColor) * 0.25);
-        float2 texPos1;
-        texPos1.x = ((floor(blueColor) - (quad1y * 4.0)) * 0.25) + 0.0078125 + ((0.25 - 0.015625) * textureColor.r);
-        texPos1.y = (quad1y * 0.25) + 0.0078125 + ((0.25 - 0.015625) * textureColor.g);
-        float2 texPos2;
-        texPos2.x = ((ceil(blueColor) - (quad2y * 4.0)) * 0.25) + 0.0078125 + ((0.25 - 0.015625) * textureColor.r);
-        texPos2.y = (quad2y * 0.25) + 0.0078125 + ((0.25 - 0.015625) * textureColor.g);
-#endif
-
-#if LUT_FLIP_Y
-        texPos1.y = 1.0 - texPos1.y;
-        texPos2.y = 1.0 - texPos2.y;
-#endif
-
-        float3 lut1 = aux_texture.sample(texture_sampler, texPos1).rgb;
-        float3 lut2 = aux_texture.sample(texture_sampler, texPos2).rgb;
-        float3 lut_color = mix(lut1, lut2, fract(blueColor));
-
-        sampled.rgb = apply_blending(textureColor.rgb, lut_color, blendAmount_lut);
-    }
 #endif
 
     sampled *= stage_vertex.color;

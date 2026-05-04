@@ -32,11 +32,6 @@ pub enum SceneCompatEffectKind {
     WaterWaves,
     Tint,
     Scroll,
-    AcesTonemap,
-    GradientColor,
-    ColorGrading,
-    SharpenFilter,
-    LutLoader,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,74 +183,6 @@ const SCROLL_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] =
         required: true,
     }];
 
-const ACESTONEMAP_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] =
-    &[ScenePhase10bTextureSlotContract {
-        slot: 0,
-        semantic: ScenePhase10bBindingSemantic::PreviousInput,
-        uv_space: ScenePhase10bUvSpace::PrimaryInput,
-        required: true,
-    }];
-
-const GRADIENTCOLOR_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
-    ScenePhase10bTextureSlotContract {
-        slot: 0,
-        semantic: ScenePhase10bBindingSemantic::PreviousInput,
-        uv_space: ScenePhase10bUvSpace::PrimaryInput,
-        required: true,
-    },
-    ScenePhase10bTextureSlotContract {
-        slot: 1,
-        semantic: ScenePhase10bBindingSemantic::OpacityMask,
-        uv_space: ScenePhase10bUvSpace::MaskTexture,
-        required: false,
-    },
-];
-
-const COLORGRADING_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
-    ScenePhase10bTextureSlotContract {
-        slot: 0,
-        semantic: ScenePhase10bBindingSemantic::PreviousInput,
-        uv_space: ScenePhase10bUvSpace::PrimaryInput,
-        required: true,
-    },
-    ScenePhase10bTextureSlotContract {
-        slot: 1,
-        semantic: ScenePhase10bBindingSemantic::OpacityMask,
-        uv_space: ScenePhase10bUvSpace::MaskTexture,
-        required: false,
-    },
-];
-
-const SHARPENFILTER_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
-    ScenePhase10bTextureSlotContract {
-        slot: 0,
-        semantic: ScenePhase10bBindingSemantic::PreviousInput,
-        uv_space: ScenePhase10bUvSpace::PrimaryInput,
-        required: true,
-    },
-    ScenePhase10bTextureSlotContract {
-        slot: 1,
-        semantic: ScenePhase10bBindingSemantic::OpacityMask,
-        uv_space: ScenePhase10bUvSpace::MaskTexture,
-        required: false,
-    },
-];
-
-const LUTLOADER_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
-    ScenePhase10bTextureSlotContract {
-        slot: 0,
-        semantic: ScenePhase10bBindingSemantic::PreviousInput,
-        uv_space: ScenePhase10bUvSpace::PrimaryInput,
-        required: true,
-    },
-    ScenePhase10bTextureSlotContract {
-        slot: 1,
-        semantic: ScenePhase10bBindingSemantic::OpacityMask,
-        uv_space: ScenePhase10bUvSpace::AuxTexture,
-        required: true,
-    },
-];
-
 const PULSE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Pulse,
     family: "pulse",
@@ -348,113 +275,6 @@ const SCROLL_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract
     supported_combo_defaults: &[],
     supported_uniforms: &["repeat", "speedx", "speedy"],
     runtime_binding_layout: SCROLL_TEXTURE_SLOTS,
-};
-
-const ACESTONEMAP_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
-    kind: SceneCompatEffectKind::AcesTonemap,
-    family: "shadertest1",
-    required_texture_slots: &[0],
-    supported_texture_slots: &[0],
-    supported_combo_defaults: &[],
-    supported_uniforms: &["str"],
-    runtime_binding_layout: ACESTONEMAP_TEXTURE_SLOTS,
-};
-
-const GRADIENTCOLOR_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
-    kind: SceneCompatEffectKind::GradientColor,
-    family: "gradient_color",
-    required_texture_slots: &[0],
-    supported_texture_slots: &[0, 1],
-    supported_combo_defaults: &[("AXIS", 0), ("BLENDMODE", 31), ("MASK", 0)],
-    supported_uniforms: &[
-        "u_color1",
-        "u_color2",
-        "u_amount",
-        "u_speed",
-        "u_oscillate",
-        "u_opacity",
-    ],
-    runtime_binding_layout: GRADIENTCOLOR_TEXTURE_SLOTS,
-};
-
-const COLORGRADING_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
-    kind: SceneCompatEffectKind::ColorGrading,
-    family: "color_grading",
-    required_texture_slots: &[0],
-    supported_texture_slots: &[0, 1],
-    supported_combo_defaults: &[
-        ("BLENDMODE", 0),
-        ("GAMMA", 0),
-        ("GREYSCALE", 0),
-        ("INVERTCOLOR", 0),
-        ("INVERTMASK", 0),
-        ("INVERTVALUE", 0),
-        ("LINEAR", 0),
-        ("MASK", 0),
-        ("MODE", 0),
-        ("PROPERTIES", 0),
-    ],
-    supported_uniforms: &[
-        "a_alpha",
-        "a_channelmultiplier",
-        "a_displaygamma",
-        "a_displayinitgamma",
-        "c_blacklevel",
-        "c_blue",
-        "c_brightness",
-        "c_chroma",
-        "c_colorfilter",
-        "c_colortemp",
-        "c_contrast",
-        "c_exposure",
-        "c_gain",
-        "c_gammacolorfilter",
-        "c_gamma",
-        "c_highlighttint",
-        "c_highlights",
-        "c_hsbalance",
-        "c_hueshift",
-        "c_liftcolorfilter",
-        "c_lift",
-        "c_matrixoffset",
-        "c_red",
-        "c_replacebasecolor",
-        "c_saturation",
-        "c_shadows",
-        "c_shadowtint",
-        "c_smooth",
-        "c_tollerance",
-        "c_vibrance",
-        "c_whitetint",
-        "c_green",
-        "c_gaincolorfilter",
-    ],
-    runtime_binding_layout: COLORGRADING_TEXTURE_SLOTS,
-};
-
-const SHARPENFILTER_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
-    kind: SceneCompatEffectKind::SharpenFilter,
-    family: "sharpen_filter",
-    required_texture_slots: &[0],
-    supported_texture_slots: &[0, 1],
-    supported_combo_defaults: &[("INVERT", 0), ("OPACITY", 0)],
-    supported_uniforms: &["u_strength", "u_radius"],
-    runtime_binding_layout: SHARPENFILTER_TEXTURE_SLOTS,
-};
-
-const LUTLOADER_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
-    kind: SceneCompatEffectKind::LutLoader,
-    family: "lut_loader",
-    required_texture_slots: &[0, 1],
-    supported_texture_slots: &[0, 1],
-    supported_combo_defaults: &[
-        ("BLENDMODE", 0),
-        ("CLAMP", 1),
-        ("LUT_FLIP_Y", 0),
-        ("QUAD_SIZE", 16),
-    ],
-    supported_uniforms: &["g_multiply", "g_translucentcompensation"],
-    runtime_binding_layout: LUTLOADER_TEXTURE_SLOTS,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1239,11 +1059,6 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "waterwaves" => Some(&WATERWAVES_CONTRACT),
         "tint" => Some(&TINT_CONTRACT),
         "scroll" => Some(&SCROLL_CONTRACT),
-        "shadertest1" => Some(&ACESTONEMAP_CONTRACT),
-        "gradient_color" => Some(&GRADIENTCOLOR_CONTRACT),
-        "color_grading" => Some(&COLORGRADING_CONTRACT),
-        "sharpen_filter" => Some(&SHARPENFILTER_CONTRACT),
-        "lut_loader" => Some(&LUTLOADER_CONTRACT),
         _ => None,
     }
 }
@@ -1258,11 +1073,6 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::WaterWaves => Some(&WATERWAVES_CONTRACT),
         SceneCompatEffectKind::Tint => Some(&TINT_CONTRACT),
         SceneCompatEffectKind::Scroll => Some(&SCROLL_CONTRACT),
-        SceneCompatEffectKind::AcesTonemap => Some(&ACESTONEMAP_CONTRACT),
-        SceneCompatEffectKind::GradientColor => Some(&GRADIENTCOLOR_CONTRACT),
-        SceneCompatEffectKind::ColorGrading => Some(&COLORGRADING_CONTRACT),
-        SceneCompatEffectKind::SharpenFilter => Some(&SHARPENFILTER_CONTRACT),
-        SceneCompatEffectKind::LutLoader => Some(&LUTLOADER_CONTRACT),
     }
 }
 
@@ -1273,9 +1083,6 @@ pub fn phase10b_blocked_effect_reason(shader_ref: &str) -> Option<&'static str> 
         ),
         "shine" => Some(
             "shine requires phase-10d named render targets, multi-pass order, previous-texture chaining, and copy-background lifecycle support.",
-        ),
-        "bokehblur" => Some(
-            "bokeh_blur requires phase-10d multi-pass render targets with scale-down/scale-up, named FBO chaining, and cross-pass texture binding.",
         ),
         _ => None,
     }
@@ -1348,21 +1155,6 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::Scroll => {
             defines.insert("PHASE10_EFFECT_SCROLL".to_string(), 1);
-        }
-        SceneCompatEffectKind::AcesTonemap => {
-            defines.insert("PHASE10_EFFECT_ACESTONEMAP".to_string(), 1);
-        }
-        SceneCompatEffectKind::GradientColor => {
-            defines.insert("PHASE10_EFFECT_GRADIENTCOLOR".to_string(), 1);
-        }
-        SceneCompatEffectKind::ColorGrading => {
-            defines.insert("PHASE10_EFFECT_COLORGRADING".to_string(), 1);
-        }
-        SceneCompatEffectKind::SharpenFilter => {
-            defines.insert("PHASE10_EFFECT_SHARPENFILTER".to_string(), 1);
-        }
-        SceneCompatEffectKind::LutLoader => {
-            defines.insert("PHASE10_EFFECT_LUTLOADER".to_string(), 1);
         }
     }
     if let Some(contract) = phase10b_effect_contract_for_kind(kind) {
@@ -2080,11 +1872,6 @@ mod tests {
             (SceneCompatEffectKind::WaterWaves, vec![0, 1, 2]),
             (SceneCompatEffectKind::Tint, vec![0, 1]),
             (SceneCompatEffectKind::Scroll, vec![0]),
-            (SceneCompatEffectKind::AcesTonemap, vec![0]),
-            (SceneCompatEffectKind::GradientColor, vec![0, 1]),
-            (SceneCompatEffectKind::ColorGrading, vec![0, 1]),
-            (SceneCompatEffectKind::SharpenFilter, vec![0, 1]),
-            (SceneCompatEffectKind::LutLoader, vec![0, 1]),
         ];
 
         for (kind, supported_slots) in families {
@@ -2139,31 +1926,6 @@ mod tests {
                 super::ScenePhase10bUvSpace::MaskTexture,
             ]
         );
-
-        let aces = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::AcesTonemap)
-            .expect("aces tonemap contract");
-        assert_eq!(aces.family, "shadertest1");
-        assert!(aces.supported_uniforms.contains(&"str"));
-
-        let gradient = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::GradientColor)
-            .expect("gradient color contract");
-        assert!(gradient.supported_uniforms.contains(&"u_color1"));
-        assert!(gradient.supported_uniforms.contains(&"u_color2"));
-
-        let grading = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::ColorGrading)
-            .expect("color grading contract");
-        assert!(grading.supported_uniforms.contains(&"a_alpha"));
-        assert!(grading.supported_uniforms.contains(&"c_brightness"));
-
-        let sharpen = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::SharpenFilter)
-            .expect("sharpen filter contract");
-        assert!(sharpen.supported_uniforms.contains(&"u_strength"));
-        assert!(sharpen.supported_uniforms.contains(&"u_radius"));
-
-        let lut = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::LutLoader)
-            .expect("lut loader contract");
-        assert!(lut.supported_uniforms.contains(&"g_multiply"));
-        assert_eq!(lut.required_texture_slots, &[0, 1]);
     }
 
     #[test]
@@ -2172,15 +1934,11 @@ mod tests {
             super::phase10b_blocked_effect_reason("effects/blur").expect("blur blocker");
         let shine_reason =
             super::phase10b_blocked_effect_reason("effects/shine").expect("shine blocker");
-        let bokeh_reason =
-            super::phase10b_blocked_effect_reason("effects/bokeh_blur").expect("bokeh blocker");
 
         assert!(blur_reason.contains("phase-10d"));
         assert!(blur_reason.contains("named render targets"));
         assert!(shine_reason.contains("phase-10d"));
         assert!(shine_reason.contains("copy-background lifecycle"));
-        assert!(bokeh_reason.contains("phase-10d"));
-        assert!(bokeh_reason.contains("multi-pass"));
     }
 
     #[test]
