@@ -33,6 +33,18 @@ impl DynamicPlayerState {
     pub fn effective_paused(&self) -> bool {
         self.manually_paused || self.auto_paused()
     }
+
+    pub fn effective_runtime_paused_for_labels(&self, labels: &BTreeSet<String>) -> bool {
+        if self.manually_paused {
+            return true;
+        }
+        if labels.is_empty() {
+            return self.auto_paused();
+        }
+        labels
+            .iter()
+            .all(|label| self.auto_pause_screen_labels.contains(label))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -418,6 +430,30 @@ mod tests {
         }
 
         result
+    }
+
+    #[test]
+    fn runtime_pause_only_collapses_auto_pause_when_all_labels_are_covered() {
+        let mut player = DynamicPlayerState {
+            active_id: Some("demo".to_string()),
+            manually_paused: false,
+            auto_pause_screen_labels: BTreeSet::from([String::from("player-screen-1")]),
+            scene_update_generation: 0,
+            last_scene_signature: None,
+        };
+        let labels = BTreeSet::from([String::from("player"), String::from("player-screen-1")]);
+
+        assert!(player.effective_paused());
+        assert!(!player.effective_runtime_paused_for_labels(&labels));
+
+        player
+            .auto_pause_screen_labels
+            .insert(String::from("player"));
+        assert!(player.effective_runtime_paused_for_labels(&labels));
+
+        player.manually_paused = true;
+        player.auto_pause_screen_labels.clear();
+        assert!(player.effective_runtime_paused_for_labels(&labels));
     }
 
     #[test]

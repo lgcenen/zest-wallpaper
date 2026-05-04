@@ -543,7 +543,7 @@ pub(crate) fn sync_native_runtime_for_active_wallpaper(
                 .runtime_sync
                 .lock()
                 .map_err(|error| error.to_string())?;
-            match active_runtime_snapshot(&state)? {
+            match active_runtime_snapshot_for_runtime_sync(&app, &state)? {
                 Some((runtime_record, effective_paused)) => {
                     sync_native_runtime(&app, Some(&runtime_record), effective_paused)
                 }
@@ -558,7 +558,7 @@ pub(crate) fn sync_native_runtime_for_active_wallpaper(
             .runtime_sync
             .lock()
             .map_err(|error| error.to_string())?;
-        match active_runtime_snapshot(state)? {
+        match active_runtime_snapshot_for_runtime_sync(app, state)? {
             Some((runtime_record, effective_paused)) => {
                 sync_native_runtime(app, Some(&runtime_record), effective_paused)
             }
@@ -598,14 +598,14 @@ fn sync_scene_runtime_update_for_runtime_record(
         .lock()
         .map_err(|error| error.to_string())?;
     let effective_paused = {
-        let player = state.player.lock().map_err(|error| error.to_string())?;
-        if player.active_id.as_deref() != Some(runtime_record.id.as_str()) {
+        let (active_id, paused) = active_runtime_pause_snapshot(app, state)?;
+        if active_id.as_deref() != Some(runtime_record.id.as_str()) {
             return Err(format!(
                 "native Scene property update targeted {}, but it is no longer active",
                 runtime_record.id
             ));
         }
-        player.effective_paused()
+        paused
     };
     scene_native_renderer_service::sync_native_scene_runtime(
         app,
@@ -887,6 +887,34 @@ fn active_runtime_snapshot(
         runtime_document_service::runtime_record(&record),
         effective_paused,
     )))
+}
+
+fn active_runtime_snapshot_for_runtime_sync(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<Option<(WallpaperRuntimeRecord, bool)>, String> {
+    let Some((record, _)) = active_record_snapshot(state)? else {
+        return Ok(None);
+    };
+    let paused = active_runtime_pause_snapshot(app, state)?.1;
+    Ok(Some((
+        runtime_document_service::runtime_record(&record),
+        paused,
+    )))
+}
+
+fn active_runtime_pause_snapshot(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<(Option<String>, bool), String> {
+    let labels = window_service::player_window_labels(app)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let player = state.player.lock().map_err(|error| error.to_string())?;
+    Ok((
+        player.active_id.clone(),
+        player.effective_runtime_paused_for_labels(&labels),
+    ))
 }
 
 fn active_record_snapshot(state: &AppState) -> Result<Option<(WallpaperRecord, bool)>, String> {
