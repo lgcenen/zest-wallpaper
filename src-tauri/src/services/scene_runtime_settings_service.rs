@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -74,7 +75,7 @@ pub fn set_external_assets_path(
 }
 
 pub fn set_cache_storage_path(
-    app: &AppHandle,
+    _app: &AppHandle,
     state: &AppState,
     path: Option<String>,
 ) -> Result<SceneRuntimeSettingsSnapshot, String> {
@@ -107,18 +108,102 @@ pub fn set_cache_storage_path(
     Ok(snapshot_from_settings(&next_settings))
 }
 
-pub fn clear_scene_cache(state: &AppState) -> Result<(), String> {
-    let library = state
-        .library
-        .lock()
-        .map_err(|error| error.to_string())?;
-    for record in &library.wallpapers {
-        let cache_dir = PathBuf::from(&record.managed_path).join("cache");
-        if cache_dir.exists() {
-            fs::remove_dir_all(&cache_dir).map_err(|error| format!("Failed to remove cache dir {}: {error}", cache_dir.display()))?;
-        }
+pub fn clear_scene_cache(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    clear_scene_cache_with_app_cache(state, app.path().app_cache_dir().ok())
+}
+
+pub fn get_scene_cache_size(app: &AppHandle, state: &AppState) -> Result<u64, String> {
+    get_scene_cache_size_with_app_cache(state, app.path().app_cache_dir().ok())
+}
+
+fn clear_scene_cache_with_app_cache(
+    state: &AppState,
+    app_cache_root: Option<PathBuf>,
+) -> Result<(), String> {
+    for cache_root in cache_roots(state, app_cache_root)? {
+        clear_directory_contents(&cache_root)
+            .map_err(|error| format!("Failed to clear cache {}: {error}", cache_root.display()))?;
     }
     Ok(())
+}
+
+fn get_scene_cache_size_with_app_cache(
+    state: &AppState,
+    app_cache_root: Option<PathBuf>,
+) -> Result<u64, String> {
+    let mut total: u64 = 0;
+    for cache_root in cache_roots(state, app_cache_root)? {
+        if cache_root.exists() {
+            total += dir_size(&cache_root).unwrap_or(0);
+        }
+    }
+    Ok(total)
+}
+
+fn cache_roots(state: &AppState, app_cache_root: Option<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    let library_cache_roots = {
+        let library = state.library.lock().map_err(|error| error.to_string())?;
+        library
+            .wallpapers
+            .iter()
+            .map(|record| PathBuf::from(&record.managed_path).join("cache"))
+            .collect::<Vec<_>>()
+    };
+
+    let settings = state
+        .scene_runtime_settings
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+
+    let mut roots = BTreeSet::new();
+    roots.extend(library_cache_roots);
+    if let Some(path) = settings.cache_storage_path {
+        roots.insert(PathBuf::from(path));
+    }
+    if let Some(path) = app_cache_root {
+        roots.insert(path);
+    }
+
+    Ok(roots.into_iter().collect())
+}
+
+fn clear_directory_contents(path: &Path) -> Result<(), std::io::Error> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    if path.is_file() {
+        fs::remove_file(path)?;
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry_path)?;
+        } else {
+            fs::remove_file(entry_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn dir_size(path: &Path) -> Result<u64, std::io::Error> {
+    let mut total: u64 = 0;
+    let entries = fs::read_dir(path)?;
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else if file_type.is_file() {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
 }
 
 fn snapshot_from_settings(settings: &SceneRuntimeSettings) -> SceneRuntimeSettingsSnapshot {
@@ -176,13 +261,23 @@ fn validate_directory_path(path: Option<String>, label: &str) -> Result<Option<S
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs};
+    use std::{env, fs, sync::Mutex};
 
+    use chrono::Utc;
     use tempfile::tempdir;
 
-    use crate::{models::SceneRuntimeSettings, store::HOME_ENV_LOCK};
+    use crate::{
+        models::{
+            LibraryStore, PropertyKind, PropertyPresentation, SceneRuntimeSettings,
+            WallpaperProperty, WallpaperRecord, WallpaperType,
+        },
+        store::{AppState, DynamicPlayerState, StaticSnapshotSyncState, HOME_ENV_LOCK},
+    };
 
-    use super::{persisted_external_assets_root, snapshot_from_settings};
+    use super::{
+        clear_scene_cache_with_app_cache, get_scene_cache_size_with_app_cache,
+        persisted_external_assets_root, snapshot_from_settings,
+    };
 
     #[test]
     fn snapshot_marks_missing_external_assets_path_as_unavailable() {
@@ -239,5 +334,119 @@ mod tests {
         }
 
         result
+    }
+
+    fn sample_record(managed_path: String) -> WallpaperRecord {
+        WallpaperRecord {
+            id: "scene".to_string(),
+            title: "Scene".to_string(),
+            wallpaper_type: WallpaperType::Scene,
+            source_path: managed_path.clone(),
+            managed_path,
+            preview_path: None,
+            entry_path: None,
+            last_snapshot_path: None,
+            property_schema: vec![WallpaperProperty {
+                key: "enabled".to_string(),
+                label: "Enabled".to_string(),
+                markup: None,
+                kind: PropertyKind::Bool,
+                value: serde_json::json!(true),
+                default_value: serde_json::json!(true),
+                min: None,
+                max: None,
+                step: None,
+                condition: None,
+                order: None,
+                presentation: PropertyPresentation::Control,
+                options: vec![],
+            }],
+            property_sections: vec![],
+            scene_cache: None,
+            scene_manifest: None,
+            scene_manifest_version: None,
+            scene_manifest_dirty: false,
+            imported_at: Utc::now(),
+            tags: vec![],
+        }
+    }
+
+    fn app_state(record: WallpaperRecord, cache_storage_path: Option<String>) -> AppState {
+        AppState {
+            library: Mutex::new(LibraryStore {
+                wallpapers: vec![record],
+            }),
+            player: Mutex::new(DynamicPlayerState::default()),
+            static_snapshot_sync: Mutex::new(StaticSnapshotSyncState::default()),
+            runtime_sync: Mutex::new(()),
+            scene_runtime_settings: Mutex::new(SceneRuntimeSettings {
+                external_assets_path: None,
+                cache_storage_path,
+            }),
+        }
+    }
+
+    #[test]
+    fn get_scene_cache_size_counts_record_custom_and_app_cache_roots() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let record_cache = managed.join("cache");
+        fs::create_dir_all(&record_cache).expect("record cache dir");
+        fs::write(record_cache.join("scene-manifest.json"), b"abc").expect("record cache file");
+
+        let custom_cache = temp.path().join("custom-cache");
+        fs::create_dir_all(&custom_cache).expect("custom cache dir");
+        fs::write(custom_cache.join("custom.bin"), b"12345").expect("custom cache file");
+
+        let app_cache = temp.path().join("app-cache");
+        fs::create_dir_all(&app_cache).expect("app cache dir");
+        fs::write(app_cache.join("runtime.tmp"), b"1234567").expect("app cache file");
+
+        let state = app_state(
+            sample_record(managed.display().to_string()),
+            Some(custom_cache.display().to_string()),
+        );
+
+        let total =
+            get_scene_cache_size_with_app_cache(&state, Some(app_cache)).expect("cache size");
+
+        assert_eq!(total, 3 + 5 + 7);
+    }
+
+    #[test]
+    fn clear_scene_cache_removes_contents_from_all_cache_roots() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let record_cache = managed.join("cache");
+        fs::create_dir_all(record_cache.join("nested")).expect("record cache dir");
+        fs::write(
+            record_cache.join("nested").join("scene-manifest.json"),
+            b"abc",
+        )
+        .expect("record cache file");
+
+        let custom_cache = temp.path().join("custom-cache");
+        fs::create_dir_all(custom_cache.join("sub")).expect("custom cache dir");
+        fs::write(custom_cache.join("sub").join("custom.bin"), b"12345")
+            .expect("custom cache file");
+
+        let app_cache = temp.path().join("app-cache");
+        fs::create_dir_all(app_cache.join("more")).expect("app cache dir");
+        fs::write(app_cache.join("more").join("runtime.tmp"), b"1234567").expect("app cache file");
+
+        let state = app_state(
+            sample_record(managed.display().to_string()),
+            Some(custom_cache.display().to_string()),
+        );
+
+        clear_scene_cache_with_app_cache(&state, Some(app_cache.clone())).expect("clear cache");
+
+        assert!(record_cache.exists());
+        assert!(custom_cache.exists());
+        assert!(app_cache.exists());
+        assert_eq!(
+            get_scene_cache_size_with_app_cache(&state, Some(app_cache)).expect("cache size"),
+            0
+        );
     }
 }

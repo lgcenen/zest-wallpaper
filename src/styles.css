@@ -1427,6 +1427,7 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .primary-button 
   top: calc(100% + 12px);
   right: 0;
   width: min(340px, calc(100vw - 56px));
+  max-height: min(720px, calc(100dvh - 48px));
   display: grid;
   gap: 16px;
   padding: 16px;
@@ -1436,6 +1437,19 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .primary-button 
   box-shadow: var(--wb-shadow);
   z-index: 20;
   contain: paint;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--wb-text) 18%, transparent) transparent;
+}
+
+.workbench-shell .settings-popover::-webkit-scrollbar {
+  width: 8px;
+}
+
+.workbench-shell .settings-popover::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wb-text) 18%, transparent);
 }
 
 .workbench-shell .settings-popover-header,
@@ -1548,6 +1562,19 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .primary-button 
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.workbench-shell .settings-cache-size {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid var(--wb-line);
+  font-size: 12px;
+}
+
+.workbench-shell .settings-cache-size-label {
+  color: var(--wb-muted);
 }
 
 .workbench-shell .settings-tabs {

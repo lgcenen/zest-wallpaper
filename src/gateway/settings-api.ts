@@ -22,6 +22,10 @@ export function clearSceneCache() {
   return invoke<void>("clear_scene_cache");
 }
 
+export function getSceneCacheSize() {
+  return invoke<number>("get_scene_cache_size");
+}
+
 export function fetchExternalImage(url: string) {
   return invoke<string>("fetch_external_image", { url });
 }

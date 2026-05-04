@@ -6,8 +6,7 @@ use crate::{
     models::SceneRuntimeSettingsSnapshot, services::scene_runtime_settings_service, store::AppState,
 };
 
-const BASE64_CHARS: &[u8] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
@@ -91,15 +90,19 @@ pub fn set_cache_storage_path(
 }
 
 #[tauri::command]
-pub fn clear_scene_cache(
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    scene_runtime_settings_service::clear_scene_cache(&state)
+pub fn clear_scene_cache(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    scene_runtime_settings_service::clear_scene_cache(&app, &state)
+}
+
+#[tauri::command]
+pub fn get_scene_cache_size(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
+    scene_runtime_settings_service::get_scene_cache_size(&app, &state)
 }
 
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
-    if !matches!(url.split_once(":"), Some((scheme, _)) if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")) {
+    if !matches!(url.split_once(":"), Some((scheme, _)) if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+    {
         return Err("only http and https URLs can be opened externally".to_string());
     }
 

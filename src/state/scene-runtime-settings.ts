@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   clearSceneCache,
+  getSceneCacheSize,
   getSceneRuntimeSettings,
   setCacheStoragePath,
   setSceneExternalAssetsPath,
@@ -21,6 +22,7 @@ export function useSceneRuntimeSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [cacheSize, setCacheSize] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -47,10 +49,27 @@ export function useSceneRuntimeSettings() {
         setLoading(false);
       });
 
+    void getSceneCacheSize()
+      .then((size) => {
+        if (active) setCacheSize(size);
+      })
+      .catch(() => {
+        if (active) setCacheSize(0);
+      });
+
     return () => {
       active = false;
     };
   }, []);
+
+  async function refreshCacheSize() {
+    try {
+      const size = await getSceneCacheSize();
+      setCacheSize(size);
+    } catch {
+      setCacheSize(null);
+    }
+  }
 
   async function updateExternalAssetsPath(path: string | null) {
     setSaving(true);
@@ -70,6 +89,7 @@ export function useSceneRuntimeSettings() {
     try {
       const next = await setCacheStoragePath(path);
       setSettings(next);
+      await refreshCacheSize();
       return next;
     } catch (nextError) {
       throw nextError;
@@ -82,6 +102,7 @@ export function useSceneRuntimeSettings() {
     setClearing(true);
     try {
       await clearSceneCache();
+      await refreshCacheSize();
     } catch (nextError) {
       throw nextError;
     } finally {
@@ -95,8 +116,10 @@ export function useSceneRuntimeSettings() {
     saving,
     error,
     clearing,
+    cacheSize,
     updateExternalAssetsPath,
     updateCacheStoragePath,
     clearCache,
+    refreshCacheSize,
   };
 }
