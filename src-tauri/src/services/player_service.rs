@@ -174,7 +174,6 @@ pub fn apply_dynamic_wallpaper(
         .clone();
     let previous_runtime = active_runtime_snapshot(state)?;
     let had_player_windows = !window_service::player_window_labels(app).is_empty();
-    let has_static_snapshot = static_snapshot_service::snapshot_for_record(&record).is_ok();
     let snapshot_stage_logged = Cell::new(false);
 
     let effective_paused = match apply_runtime_record_transaction(
@@ -188,7 +187,7 @@ pub fn apply_dynamic_wallpaper(
                 app,
                 state,
                 &record,
-                has_static_snapshot,
+                true,
                 had_player_windows,
             );
             snapshot_stage_logged.set(true);
@@ -222,9 +221,6 @@ pub fn apply_dynamic_wallpaper(
     };
 
     lifecycle_service::sync_pause_menu_state(app, false);
-    if !has_static_snapshot {
-        let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
-    }
     app.emit("player:load", Some(runtime_record.clone()))
         .map_err(|error| error.to_string())?;
     app.emit("player:pause", effective_paused)
@@ -240,17 +236,9 @@ fn prepare_static_snapshot_sync_before_runtime(
     app: &AppHandle,
     state: &AppState,
     record: &WallpaperRecord,
-    has_static_snapshot: bool,
-    had_player_windows: bool,
+    _has_static_snapshot: bool,
+    _had_player_windows: bool,
 ) -> Result<(), String> {
-    if !has_static_snapshot {
-        return Ok(());
-    }
-
-    if had_player_windows {
-        lifecycle_service::hide_player_windows_for_snapshot_sync(app)
-            .map_err(|error| error.to_string())?;
-    }
     static_snapshot_service::sync_after_active_wallpaper_change(app, state, record)?;
     Ok(())
 }
@@ -951,28 +939,6 @@ where
 
     let _runtime_sync = lock_runtime_sync_for_apply(state)?;
     commit_player_state(state, candidate.player_state.clone())?;
-    if let Err(error) = sync_static_snapshot() {
-        let state_rollback_error = commit_player_state(state, previous_player.clone())
-            .err()
-            .map(|rollback_error| {
-                format!("failed to restore previous player state: {rollback_error}")
-            });
-        let runtime_rollback_error = rollback_failed_apply(
-            previous_runtime.as_ref(),
-            had_player_windows,
-            &mut sync_native_runtime,
-            &mut close_player_windows,
-        )
-        .err();
-        let rollback_errors = [state_rollback_error, runtime_rollback_error]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        if !rollback_errors.is_empty() {
-            return Err(format!("{error}; {}", rollback_errors.join("; ")));
-        }
-        return Err(error);
-    }
     if let Err(error) = ensure_player_windows() {
         let state_rollback_error = commit_player_state(state, previous_player.clone())
             .err()
@@ -997,6 +963,29 @@ where
     }
 
     if let Err(error) = sync_native_runtime(Some(runtime_record), candidate.effective_paused) {
+        let state_rollback_error = commit_player_state(state, previous_player.clone())
+            .err()
+            .map(|rollback_error| {
+                format!("failed to restore previous player state: {rollback_error}")
+            });
+        let runtime_rollback_error = rollback_failed_apply(
+            previous_runtime.as_ref(),
+            had_player_windows,
+            &mut sync_native_runtime,
+            &mut close_player_windows,
+        )
+        .err();
+        let rollback_errors = [state_rollback_error, runtime_rollback_error]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if !rollback_errors.is_empty() {
+            return Err(format!("{error}; {}", rollback_errors.join("; ")));
+        }
+        return Err(error);
+    }
+
+    if let Err(error) = sync_static_snapshot() {
         let state_rollback_error = commit_player_state(state, previous_player.clone())
             .err()
             .map(|rollback_error| {
@@ -2372,6 +2361,7 @@ mod tests {
             },
             WallpaperType::Video,
         );
+        let snapshot_calls = RefCell::new(0usize);
         let sync_calls = RefCell::new(Vec::new());
         let persist_calls = RefCell::new(Vec::new());
 
@@ -2381,7 +2371,10 @@ mod tests {
             Some((previous_runtime.clone(), previous_player.effective_paused())),
             &state,
             true,
-            || Ok(()),
+            || {
+                *snapshot_calls.borrow_mut() += 1;
+                Ok(())
+            },
             || Ok(()),
             |runtime_record, paused| {
                 sync_calls
@@ -2403,6 +2396,7 @@ mod tests {
         );
 
         assert!(result.is_err());
+        assert_eq!(*snapshot_calls.borrow(), 0);
         assert_eq!(
             sync_calls.into_inner(),
             vec![
@@ -2518,7 +2512,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_transaction_commits_active_state_before_native_sync() {
+    fn apply_transaction_syncs_static_snapshot_after_native_runtime_succeeds() {
         let previous_player = DynamicPlayerState {
             active_id: Some("old-wallpaper".to_string()),
             manually_paused: true,
@@ -2577,7 +2571,7 @@ mod tests {
             observed_static_state.into_inner(),
             vec![(Some("new-wallpaper".to_string()), 12)]
         );
-        assert_eq!(order.into_inner(), vec!["static", "windows", "native"]);
+        assert_eq!(order.into_inner(), vec!["windows", "native", "static"]);
         assert_eq!(
             observed_sync_state.into_inner(),
             vec![(
@@ -2594,7 +2588,7 @@ mod tests {
     }
 
     #[test]
-    fn static_sync_prepare_hides_existing_window_before_single_reuse() {
+    fn static_sync_runs_after_native_window_reuse() {
         let previous_player = DynamicPlayerState {
             active_id: Some("old-wallpaper".to_string()),
             manually_paused: false,
@@ -2620,7 +2614,6 @@ mod tests {
             &state,
             true,
             || {
-                events.borrow_mut().push("hide-old-windows");
                 events.borrow_mut().push("static-sync");
                 Ok(())
             },
@@ -2645,10 +2638,9 @@ mod tests {
         assert_eq!(
             events.into_inner(),
             vec![
-                "hide-old-windows",
-                "static-sync",
                 "ensure-player-windows",
                 "native-sync",
+                "static-sync",
             ]
         );
     }

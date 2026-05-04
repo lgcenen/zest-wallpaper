@@ -130,17 +130,6 @@ pub fn show_player_windows<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<usiz
     Ok(labels.len())
 }
 
-pub fn hide_player_windows_from_desktop<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<usize> {
-    let _transaction = lock_player_window_transaction()?;
-    let labels = player_window_labels(app);
-    for label in &labels {
-        if let Some(window) = app.get_webview_window(label) {
-            remove_player_window_from_desktop(&window);
-        }
-    }
-    Ok(labels.len())
-}
-
 #[cfg(target_os = "macos")]
 pub fn set_player_windows_snapshot_background_color<R: Runtime>(
     app: &AppHandle<R>,
