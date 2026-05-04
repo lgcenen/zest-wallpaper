@@ -82,6 +82,22 @@ pub fn set_scene_external_assets_path(
 }
 
 #[tauri::command]
+pub fn set_cache_storage_path(
+    path: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SceneRuntimeSettingsSnapshot, String> {
+    scene_runtime_settings_service::set_cache_storage_path(&app, &state, path)
+}
+
+#[tauri::command]
+pub fn clear_scene_cache(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    scene_runtime_settings_service::clear_scene_cache(&state)
+}
+
+#[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
     if !matches!(url.split_once(":"), Some((scheme, _)) if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")) {
         return Err("only http and https URLs can be opened externally".to_string());

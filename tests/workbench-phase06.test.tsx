@@ -107,6 +107,7 @@ const mocks = vi.hoisted(() => {
       getWallpaperDetails: vi.fn(async () => wallpaper),
       applyDynamicWallpaper: vi.fn(async () => wallpaper),
       setWallpaperProperties: vi.fn(async () => wallpaper),
+      getAppVersion: vi.fn(async () => "0.1.0"),
       pauseResumeDynamic: vi.fn(async (paused: boolean) => paused),
       removeWallpaper: vi.fn(async () => true),
       chooseImportDirectory: vi.fn(async () => null),
@@ -184,7 +185,7 @@ describe("phase-06 workbench gui", () => {
   it("prefers the restored active wallpaper in the detail pane on startup", async () => {
     const { container } = render(<WorkbenchApp />);
 
-    await screen.findByText("本地壁纸库");
+    await screen.findByText("Zest Wallpaper");
     await screen.findByRole("heading", { name: "Neon Drift" });
 
     expect(screen.getByRole("button", { name: "导入" })).toBeTruthy();
@@ -212,7 +213,7 @@ describe("phase-06 workbench gui", () => {
     const user = userEvent.setup();
     const firstRender = render(<WorkbenchApp />);
 
-    await screen.findByText("本地壁纸库");
+    await screen.findByText("Zest Wallpaper");
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(screen.queryByLabelText("缩略图密度")).toBeNull();
@@ -220,7 +221,7 @@ describe("phase-06 workbench gui", () => {
     fireEvent.input(screen.getByLabelText("GUI 透明度"), { target: { value: "70" } });
     await chooseWorkbenchOption(user, "语言", "English");
 
-    await screen.findByText("Wallpaper Library");
+    await screen.findByText("Zest Wallpaper");
 
     await chooseWorkbenchOption(user, "Appearance", "Light");
 
@@ -240,7 +241,7 @@ describe("phase-06 workbench gui", () => {
 
     const secondRender = render(<WorkbenchApp />);
 
-    await screen.findByText("Wallpaper Library");
+    await screen.findByText("Zest Wallpaper");
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
     expect(
@@ -265,7 +266,7 @@ describe("phase-06 workbench gui", () => {
   it("keeps no-preview library cards identifiable with a readable title fallback", async () => {
     const { container } = render(<WorkbenchApp />);
 
-    await screen.findByText("本地壁纸库");
+    await screen.findByText("Zest Wallpaper");
 
     const card = screen.getByRole("button", { name: mocks.fallbackWallpaper.title });
     expect(within(card).getByText(mocks.fallbackWallpaper.title)).toBeTruthy();
@@ -325,7 +326,7 @@ describe("phase-06 workbench gui", () => {
   it("clears scene apply loading when the native apply chain does not return", async () => {
     render(<WorkbenchApp />);
 
-    await screen.findByText("本地壁纸库");
+    await screen.findByText("Zest Wallpaper");
     vi.useFakeTimers();
     mocks.gateway.applyDynamicWallpaper.mockImplementation(
       () => new Promise(() => undefined),

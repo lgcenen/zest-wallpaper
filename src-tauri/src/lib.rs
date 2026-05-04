@@ -10,19 +10,19 @@ mod tex;
 
 use store::AppState;
 
-use commands::{
-    player_commands::{
-        apply_dynamic_wallpaper, get_player_diagnostics, get_player_state, pause_resume_dynamic,
-    },
-    settings_commands::{
-        fetch_external_image, get_scene_runtime_settings, open_external_url,
-        set_scene_external_assets_path,
-    },
-    wallpaper_commands::{
-        get_wallpaper_details, import_wallpaper, list_wallpapers, remove_wallpaper,
-        set_wallpaper_properties,
-    },
-};
+    use commands::{
+        player_commands::{
+            apply_dynamic_wallpaper, get_player_diagnostics, get_player_state, pause_resume_dynamic,
+        },
+        settings_commands::{
+            clear_scene_cache, fetch_external_image, get_scene_runtime_settings, open_external_url,
+            set_cache_storage_path, set_scene_external_assets_path,
+        },
+        wallpaper_commands::{
+            get_wallpaper_details, import_wallpaper, list_wallpapers, remove_wallpaper,
+            set_wallpaper_properties,
+        },
+    };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,6 +46,8 @@ pub fn run() {
             get_player_state,
             get_player_diagnostics,
             set_scene_external_assets_path,
+            set_cache_storage_path,
+            clear_scene_cache,
             open_external_url,
             fetch_external_image,
         ])

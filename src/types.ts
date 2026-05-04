@@ -531,6 +531,8 @@ export interface WallpaperRuntimeRecord {
 export interface SceneRuntimeSettingsSnapshot {
   externalAssetsPath?: string | null;
   externalAssetsExists: boolean;
+  cacheStoragePath?: string | null;
+  cacheStorageExists: boolean;
 }
 
 export interface PlayerRuntimeState {

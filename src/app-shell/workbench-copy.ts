@@ -25,6 +25,9 @@ export type WorkbenchBannerKey =
   | "sceneAssetsMounted"
   | "sceneAssetsCleared"
   | "sceneAssetsUpdateFailed"
+  | "cacheCleared"
+  | "cacheClearFailed"
+  | "cachePathSetFailed"
   | "removeSuccess"
   | "removeFailed";
 
@@ -47,6 +50,22 @@ export interface WorkbenchCopy {
   searchAction: string;
   searchPlaceholder: string;
   settingsAction: string;
+  settingsTabGeneral: string;
+  settingsTabAbout: string;
+  aboutHeading: string;
+  copyrightLabel: string;
+  versionLabel: string;
+  qqGroupLabel: string;
+  cacheLabel: string;
+  cacheBrowseAction: string;
+  cacheClearAction: string;
+  cachePathUnset: string;
+  cachePathMounted: string;
+  cachePathMissing: string;
+  cacheStorageHint: string;
+  cacheStorageLoading: string;
+  cacheStorageSaving: string;
+  cacheClearing: string;
   emptyLibraryTitle: string;
   emptyLibraryBody: string;
   emptySearchTitle: string;
@@ -104,6 +123,22 @@ const zhCnCopy: WorkbenchCopy = {
   searchAction: "搜索",
   searchPlaceholder: "搜索标题、标签或类型",
   settingsAction: "设置",
+  settingsTabGeneral: "常规",
+  settingsTabAbout: "关于",
+  aboutHeading: "关于 Zest Wallpaper",
+  copyrightLabel: "Copyright",
+  versionLabel: "版本",
+  qqGroupLabel: "QQ 群",
+  cacheLabel: "Scene 缓存",
+  cacheBrowseAction: "选择目录",
+  cacheClearAction: "清理缓存",
+  cachePathUnset: "使用默认位置",
+  cachePathMounted: "已配置",
+  cachePathMissing: "路径不可用",
+  cacheStorageHint: "自定义缓存存储目录。留空则使用管理的库路径下的默认位置。",
+  cacheStorageLoading: "读取中…",
+  cacheStorageSaving: "保存中…",
+  cacheClearing: "清理中…",
   emptyLibraryTitle: "还没有本地壁纸",
   emptyLibraryBody: "导入目录后，这里会显示你的 Workbench 壁纸库。",
   emptySearchTitle: "没有匹配的壁纸",
@@ -210,6 +245,12 @@ const zhCnCopy: WorkbenchCopy = {
         return `${String(banner.values?.title ?? "")} 已从本地工作台移除。`;
       case "removeFailed":
         return `删除失败：${String(banner.values?.error ?? "")}`;
+      case "cacheCleared":
+        return "Scene 缓存已清理。";
+      case "cacheClearFailed":
+        return `清理缓存失败：${String(banner.values?.error ?? "")}`;
+      case "cachePathSetFailed":
+        return `设置缓存目录失败：${String(banner.values?.error ?? "")}`;
       default:
         return "";
     }
@@ -230,6 +271,22 @@ const englishCopy: WorkbenchCopy = {
   searchAction: "Search",
   searchPlaceholder: "Search title, tag, or type",
   settingsAction: "Settings",
+  settingsTabGeneral: "General",
+  settingsTabAbout: "About",
+  aboutHeading: "About Zest Wallpaper",
+  copyrightLabel: "Copyright",
+  versionLabel: "Version",
+  qqGroupLabel: "QQ Group",
+  cacheLabel: "Scene Cache",
+  cacheBrowseAction: "Choose Folder",
+  cacheClearAction: "Clear Cache",
+  cachePathUnset: "Default location",
+  cachePathMounted: "Configured",
+  cachePathMissing: "Path unavailable",
+  cacheStorageHint: "Custom cache storage directory. Defaults to the managed library path when empty.",
+  cacheStorageLoading: "Loading…",
+  cacheStorageSaving: "Saving…",
+  cacheClearing: "Clearing…",
   emptyLibraryTitle: "No wallpapers yet",
   emptyLibraryBody: "Import a directory and your Workbench library will appear here.",
   emptySearchTitle: "No wallpapers match this search",
@@ -338,6 +395,12 @@ const englishCopy: WorkbenchCopy = {
         return `${String(banner.values?.title ?? "")} removed from the local library.`;
       case "removeFailed":
         return `Remove failed: ${String(banner.values?.error ?? "")}`;
+      case "cacheCleared":
+        return "Scene cache cleared.";
+      case "cacheClearFailed":
+        return `Failed to clear cache: ${String(banner.values?.error ?? "")}`;
+      case "cachePathSetFailed":
+        return `Failed to set cache directory: ${String(banner.values?.error ?? "")}`;
       default:
         return "";
     }

@@ -2,9 +2,11 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState
 import type { RefObject } from "react";
 import {
   applyDynamicWallpaper,
+  chooseCacheDirectory,
   chooseImportDirectory,
   chooseSceneAssetsDirectory,
   fetchExternalImage,
+  getAppVersion,
   importWallpaper,
   listWallpapers,
   openExternalUrl,
@@ -283,6 +285,7 @@ function SelectField({
 }
 
 function SettingsPopover({
+  appVersion,
   themeMode,
   resolvedTheme,
   language,
@@ -291,6 +294,7 @@ function SettingsPopover({
   sceneRuntimeSettings,
   sceneRuntimeSettingsLoading,
   sceneRuntimeSettingsSaving,
+  sceneCacheClearing,
   copy,
   onThemeModeChange,
   onLanguageChange,
@@ -298,7 +302,10 @@ function SettingsPopover({
   onGuiOpacityChange,
   onChooseSceneAssets,
   onClearSceneAssets,
+  onChooseCacheDir,
+  onClearCache,
 }: {
+  appVersion: string;
   themeMode: WorkbenchThemeMode;
   resolvedTheme: "light" | "dark";
   language: WorkbenchLanguage;
@@ -307,6 +314,7 @@ function SettingsPopover({
   sceneRuntimeSettings: SceneRuntimeSettingsSnapshot;
   sceneRuntimeSettingsLoading: boolean;
   sceneRuntimeSettingsSaving: boolean;
+  sceneCacheClearing: boolean;
   copy: WorkbenchCopy;
   onThemeModeChange: (value: WorkbenchThemeMode) => void;
   onLanguageChange: (value: WorkbenchLanguage) => void;
@@ -314,7 +322,11 @@ function SettingsPopover({
   onGuiOpacityChange: (value: number) => void;
   onChooseSceneAssets: () => void;
   onClearSceneAssets: () => void;
+  onChooseCacheDir: () => void;
+  onClearCache: () => void;
 }) {
+  const [tab, setTab] = useState<"general" | "about">("general");
+
   const externalAssetsPath = sceneRuntimeSettings.externalAssetsPath?.trim() ?? "";
   const sceneAssetsStatus = !externalAssetsPath
     ? copy.sceneAssetsUnset
@@ -327,6 +339,18 @@ function SettingsPopover({
       ? "ready"
       : "warning";
 
+  const cachePath = sceneRuntimeSettings.cacheStoragePath?.trim() ?? "";
+  const cacheStatus = !cachePath
+    ? copy.cachePathUnset
+    : sceneRuntimeSettings.cacheStorageExists
+      ? copy.cachePathMounted
+      : copy.cachePathMissing;
+  const cacheStateClass = !cachePath
+    ? "idle"
+    : sceneRuntimeSettings.cacheStorageExists
+      ? "ready"
+      : "warning";
+
   return (
     <div className="settings-popover" role="dialog" aria-label={copy.settingsAction}>
       <div className="settings-popover-header">
@@ -335,87 +359,153 @@ function SettingsPopover({
         </div>
       </div>
 
-      <div className="settings-grid">
-        <SelectField
-          label={copy.themeModeLabel}
-          value={themeMode}
-          options={[
-            { value: "system", label: copy.themeModeName("system") },
-            { value: "dark", label: copy.themeModeName("dark") },
-            { value: "light", label: copy.themeModeName("light") },
-          ]}
-          onChange={(value) => onThemeModeChange(value as WorkbenchThemeMode)}
-        />
-        <SelectField
-          label={copy.languageLabel}
-          value={language}
-          options={[
-            { value: "zh-CN", label: copy.languageName("zh-CN") },
-            { value: "en", label: copy.languageName("en") },
-          ]}
-          onChange={(value) => onLanguageChange(value as WorkbenchLanguage)}
-        />
-        <label className="settings-field">
-          <span>{copy.guiOpacityLabel}</span>
-          <div className="settings-range-row">
-            <input
-              className="property-range settings-range"
-              type="range"
-              min={WORKBENCH_GUI_OPACITY_MIN}
-              max={WORKBENCH_GUI_OPACITY_MAX}
-              step={WORKBENCH_GUI_OPACITY_STEP}
-              value={guiOpacity}
-              aria-label={copy.guiOpacityLabel}
-              onInput={(event) =>
-                onGuiOpacityChange(Number((event.target as HTMLInputElement).value))
-              }
-              onChange={(event) => onGuiOpacityChange(Number(event.target.value))}
-            />
-            <strong className="settings-range-value">{copy.guiOpacityValue(guiOpacity)}</strong>
-          </div>
-        </label>
+      <div className="settings-tabs">
+        <button
+          type="button"
+          className={`settings-tab ${tab === "general" ? "active" : ""}`}
+          onClick={() => setTab("general")}
+        >
+          {copy.settingsTabGeneral}
+        </button>
+        <button
+          type="button"
+          className={`settings-tab ${tab === "about" ? "active" : ""}`}
+          onClick={() => setTab("about")}
+        >
+          {copy.settingsTabAbout}
+        </button>
       </div>
 
-      <div className="settings-runtime">
-        <label className="settings-field">
-          <span>{copy.sceneAssetsLabel}</span>
-          <div className="settings-path-card">
-            <div className="settings-path-copy">
-              <strong
-                className={`settings-path-state ${sceneAssetsStateClass}`}
-              >
-                {sceneRuntimeSettingsLoading ? copy.sceneAssetsLoading : sceneAssetsStatus}
-              </strong>
-              <code>{externalAssetsPath || copy.sceneAssetsUnset}</code>
-              <p>{copy.sceneAssetsHint}</p>
-            </div>
-
-            <div className="settings-path-actions">
-              <button
-                className="ghost-button"
-                type="button"
-                disabled={sceneRuntimeSettingsLoading || sceneRuntimeSettingsSaving}
-                onClick={onChooseSceneAssets}
-              >
-                {sceneRuntimeSettingsSaving ? copy.sceneAssetsSaving : copy.sceneAssetsBrowseAction}
-              </button>
-              <button
-                className="ghost-button"
-                type="button"
-                disabled={
-                  sceneRuntimeSettingsLoading
-                  || sceneRuntimeSettingsSaving
-                  || !externalAssetsPath
+      {tab === "general" ? (
+        <div className="settings-grid">
+          <SelectField
+            label={copy.themeModeLabel}
+            value={themeMode}
+            options={[
+              { value: "system", label: copy.themeModeName("system") },
+              { value: "dark", label: copy.themeModeName("dark") },
+              { value: "light", label: copy.themeModeName("light") },
+            ]}
+            onChange={(value) => onThemeModeChange(value as WorkbenchThemeMode)}
+          />
+          <SelectField
+            label={copy.languageLabel}
+            value={language}
+            options={[
+              { value: "zh-CN", label: copy.languageName("zh-CN") },
+              { value: "en", label: copy.languageName("en") },
+            ]}
+            onChange={(value) => onLanguageChange(value as WorkbenchLanguage)}
+          />
+          <label className="settings-field">
+            <span>{copy.guiOpacityLabel}</span>
+            <div className="settings-range-row">
+              <input
+                className="property-range settings-range"
+                type="range"
+                min={WORKBENCH_GUI_OPACITY_MIN}
+                max={WORKBENCH_GUI_OPACITY_MAX}
+                step={WORKBENCH_GUI_OPACITY_STEP}
+                value={guiOpacity}
+                aria-label={copy.guiOpacityLabel}
+                onInput={(event) =>
+                  onGuiOpacityChange(Number((event.target as HTMLInputElement).value))
                 }
-                onClick={onClearSceneAssets}
-              >
-                {copy.sceneAssetsClearAction}
-              </button>
+                onChange={(event) => onGuiOpacityChange(Number(event.target.value))}
+              />
+              <strong className="settings-range-value">{copy.guiOpacityValue(guiOpacity)}</strong>
             </div>
-          </div>
-        </label>
-      </div>
+          </label>
 
+          <div className="settings-runtime">
+            <label className="settings-field">
+              <span>{copy.sceneAssetsLabel}</span>
+              <div className="settings-path-card">
+                <div className="settings-path-copy">
+                  <strong
+                    className={`settings-path-state ${sceneAssetsStateClass}`}
+                  >
+                    {sceneRuntimeSettingsLoading ? copy.sceneAssetsLoading : sceneAssetsStatus}
+                  </strong>
+                  <code>{externalAssetsPath || copy.sceneAssetsUnset}</code>
+                  <p>{copy.sceneAssetsHint}</p>
+                </div>
+
+                <div className="settings-path-actions">
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    disabled={sceneRuntimeSettingsLoading || sceneRuntimeSettingsSaving}
+                    onClick={onChooseSceneAssets}
+                  >
+                    {sceneRuntimeSettingsSaving ? copy.sceneAssetsSaving : copy.sceneAssetsBrowseAction}
+                  </button>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    disabled={
+                      sceneRuntimeSettingsLoading
+                      || sceneRuntimeSettingsSaving
+                      || !externalAssetsPath
+                    }
+                    onClick={onClearSceneAssets}
+                  >
+                    {copy.sceneAssetsClearAction}
+                  </button>
+                </div>
+              </div>
+            </label>
+
+            <label className="settings-field">
+              <span>{copy.cacheLabel}</span>
+              <div className="settings-path-card">
+                <div className="settings-path-copy">
+                  <strong
+                    className={`settings-path-state ${cacheStateClass}`}
+                  >
+                    {sceneRuntimeSettingsLoading ? copy.cacheStorageLoading : cacheStatus}
+                  </strong>
+                  <code>{cachePath || copy.cachePathUnset}</code>
+                  <p>{copy.cacheStorageHint}</p>
+                </div>
+
+                <div className="settings-path-actions">
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    disabled={sceneRuntimeSettingsLoading || sceneRuntimeSettingsSaving}
+                    onClick={onChooseCacheDir}
+                  >
+                    {sceneRuntimeSettingsSaving ? copy.cacheStorageSaving : copy.cacheBrowseAction}
+                  </button>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    disabled={sceneCacheClearing}
+                    onClick={onClearCache}
+                  >
+                    {sceneCacheClearing ? copy.cacheClearing : copy.cacheClearAction}
+                  </button>
+                </div>
+              </div>
+            </label>
+          </div>
+        </div>
+      ) : (
+        <div className="settings-about">
+          <strong className="settings-about-heading">{copy.aboutHeading}</strong>
+          <div className="settings-about-grid">
+            <span className="settings-about-label">{copy.copyrightLabel}</span>
+            <span className="settings-about-value">2026 lin. All rights reserved.</span>
+
+            <span className="settings-about-label">{copy.versionLabel}</span>
+            <span className="settings-about-value">{appVersion}</span>
+
+            <span className="settings-about-label">{copy.qqGroupLabel}</span>
+            <span className="settings-about-value">867740762</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -781,6 +871,7 @@ function PropertiesPanel({
 }
 
 function LibraryPane({
+  appVersion,
   wallpapers,
   totalCount,
   selectedId,
@@ -797,6 +888,7 @@ function LibraryPane({
   sceneRuntimeSettings,
   sceneRuntimeSettingsLoading,
   sceneRuntimeSettingsSaving,
+  sceneCacheClearing,
   onSearchChange,
   onTypeFilterChange,
   onTagFilterChange,
@@ -806,9 +898,12 @@ function LibraryPane({
   onGuiOpacityChange,
   onChooseSceneAssets,
   onClearSceneAssets,
+  onChooseCacheDir,
+  onClearCache,
   onSelect,
   onOpenImport,
 }: {
+  appVersion: string;
   wallpapers: WallpaperRuntimeRecord[];
   totalCount: number;
   selectedId: string | null;
@@ -830,6 +925,7 @@ function LibraryPane({
   sceneRuntimeSettings: SceneRuntimeSettingsSnapshot;
   sceneRuntimeSettingsLoading: boolean;
   sceneRuntimeSettingsSaving: boolean;
+  sceneCacheClearing: boolean;
   onSearchChange: (value: string) => void;
   onTypeFilterChange: (value: WallpaperType | "all") => void;
   onTagFilterChange: (value: string) => void;
@@ -839,6 +935,8 @@ function LibraryPane({
   onGuiOpacityChange: (value: number) => void;
   onChooseSceneAssets: () => void;
   onClearSceneAssets: () => void;
+  onChooseCacheDir: () => void;
+  onClearCache: () => void;
   onSelect: (record: WallpaperRuntimeRecord) => void;
   onOpenImport: () => void;
 }) {
@@ -955,6 +1053,7 @@ function LibraryPane({
             </button>
             {settingsOpen ? (
               <SettingsPopover
+                appVersion={appVersion}
                 themeMode={preferences.themeMode}
                 resolvedTheme={resolvedTheme}
                 language={preferences.language}
@@ -963,6 +1062,7 @@ function LibraryPane({
                 sceneRuntimeSettings={sceneRuntimeSettings}
                 sceneRuntimeSettingsLoading={sceneRuntimeSettingsLoading}
                 sceneRuntimeSettingsSaving={sceneRuntimeSettingsSaving}
+                sceneCacheClearing={sceneCacheClearing}
                 copy={copy}
                 onThemeModeChange={onThemeModeChange}
                 onLanguageChange={onLanguageChange}
@@ -970,6 +1070,8 @@ function LibraryPane({
                 onGuiOpacityChange={onGuiOpacityChange}
                 onChooseSceneAssets={onChooseSceneAssets}
                 onClearSceneAssets={onClearSceneAssets}
+                onChooseCacheDir={onChooseCacheDir}
+                onClearCache={onClearCache}
               />
             ) : null}
           </div>
@@ -1168,7 +1270,10 @@ export default function WorkbenchApp() {
     loading: sceneRuntimeSettingsLoading,
     saving: sceneRuntimeSettingsSaving,
     error: sceneRuntimeSettingsError,
+    clearing: sceneCacheClearing,
     updateExternalAssetsPath,
+    updateCacheStoragePath,
+    clearCache,
   } = useSceneRuntimeSettings();
   const copy = useMemo(() => getWorkbenchCopy(preferences.language), [preferences.language]);
   const [wallpapers, setWallpapers] = useState<WallpaperRuntimeRecord[]>([]);
@@ -1180,6 +1285,7 @@ export default function WorkbenchApp() {
     key: "dropHint",
   });
   const [isImporting, setIsImporting] = useState(false);
+  const [appVersion, setAppVersion] = useState("0.1.0");
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [typeFilter, setTypeFilter] = useState<WallpaperType | "all">("all");
@@ -1198,6 +1304,26 @@ export default function WorkbenchApp() {
     setWallpapers,
     setBanner,
   });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getAppVersion()
+      .then((version) => {
+        if (!cancelled) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAppVersion("0.1.0");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!sceneRuntimeSettingsError) {
@@ -1554,6 +1680,47 @@ export default function WorkbenchApp() {
     }
   }
 
+  async function handleChooseCacheDir() {
+    const path = await chooseCacheDirectory(
+      preferences.language === "zh-CN"
+        ? "选择缓存存储目录"
+        : "Choose a cache storage directory",
+    );
+    if (!path) {
+      return;
+    }
+
+    try {
+      await updateCacheStoragePath(path);
+    } catch (error) {
+      setBanner({
+        tone: "warning",
+        key: "cachePathSetFailed",
+        values: {
+          error: String(error),
+        },
+      });
+    }
+  }
+
+  async function handleClearCache() {
+    try {
+      await clearCache();
+      setBanner({
+        tone: "neutral",
+        key: "cacheCleared",
+      });
+    } catch (error) {
+      setBanner({
+        tone: "warning",
+        key: "cacheClearFailed",
+        values: {
+          error: String(error),
+        },
+      });
+    }
+  }
+
   async function handlePropertyCommit(property: WallpaperProperty, value: unknown) {
     if (!selected) {
       return;
@@ -1687,6 +1854,7 @@ export default function WorkbenchApp() {
   return (
     <main className="app-shell workbench-shell">
       <LibraryPane
+        appVersion={appVersion}
         wallpapers={visibleWallpapers}
         totalCount={orderedWallpapers.length}
         selectedId={selectedId}
@@ -1703,6 +1871,7 @@ export default function WorkbenchApp() {
         sceneRuntimeSettings={sceneRuntimeSettings}
         sceneRuntimeSettingsLoading={sceneRuntimeSettingsLoading}
         sceneRuntimeSettingsSaving={sceneRuntimeSettingsSaving}
+        sceneCacheClearing={sceneCacheClearing}
         onSearchChange={setSearchQuery}
         onTypeFilterChange={setTypeFilter}
         onTagFilterChange={setTagFilter}
@@ -1712,6 +1881,8 @@ export default function WorkbenchApp() {
         onGuiOpacityChange={(value) => updatePreference("guiOpacity", value)}
         onChooseSceneAssets={() => void handleChooseSceneAssets()}
         onClearSceneAssets={() => void handleClearSceneAssets()}
+        onChooseCacheDir={() => void handleChooseCacheDir()}
+        onClearCache={() => void handleClearCache()}
         onSelect={(record) => void handleWallpaperCardClick(record)}
         onOpenImport={() => void handleOpenImport()}
       />

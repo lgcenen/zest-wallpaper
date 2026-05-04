@@ -1318,6 +1318,8 @@ pub struct LibraryStore {
 pub struct SceneRuntimeSettings {
     #[serde(default)]
     pub external_assets_path: Option<String>,
+    #[serde(default)]
+    pub cache_storage_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1326,6 +1328,9 @@ pub struct SceneRuntimeSettingsSnapshot {
     #[serde(default)]
     pub external_assets_path: Option<String>,
     pub external_assets_exists: bool,
+    #[serde(default)]
+    pub cache_storage_path: Option<String>,
+    pub cache_storage_exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

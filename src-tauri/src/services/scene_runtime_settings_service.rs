@@ -43,7 +43,7 @@ pub fn set_external_assets_path(
     state: &AppState,
     path: Option<String>,
 ) -> Result<SceneRuntimeSettingsSnapshot, String> {
-    let normalized = validate_external_assets_path(path)?;
+    let normalized = validate_directory_path(path, "Scene external assets")?;
     let next_settings = {
         let current = state
             .scene_runtime_settings
@@ -56,6 +56,7 @@ pub fn set_external_assets_path(
 
         SceneRuntimeSettings {
             external_assets_path: normalized,
+            cache_storage_path: current.cache_storage_path.clone(),
         }
     };
 
@@ -72,6 +73,54 @@ pub fn set_external_assets_path(
     Ok(snapshot_from_settings(&next_settings))
 }
 
+pub fn set_cache_storage_path(
+    app: &AppHandle,
+    state: &AppState,
+    path: Option<String>,
+) -> Result<SceneRuntimeSettingsSnapshot, String> {
+    let normalized = validate_directory_path(path, "Cache storage")?;
+    let next_settings = {
+        let current = state
+            .scene_runtime_settings
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clone();
+        if current.cache_storage_path == normalized {
+            return Ok(snapshot_from_settings(&current));
+        }
+
+        SceneRuntimeSettings {
+            external_assets_path: current.external_assets_path.clone(),
+            cache_storage_path: normalized,
+        }
+    };
+
+    save_scene_runtime_settings(&next_settings).map_err(|error| error.to_string())?;
+    {
+        let mut current = state
+            .scene_runtime_settings
+            .lock()
+            .map_err(|error| error.to_string())?;
+        *current = next_settings.clone();
+    }
+
+    Ok(snapshot_from_settings(&next_settings))
+}
+
+pub fn clear_scene_cache(state: &AppState) -> Result<(), String> {
+    let library = state
+        .library
+        .lock()
+        .map_err(|error| error.to_string())?;
+    for record in &library.wallpapers {
+        let cache_dir = PathBuf::from(&record.managed_path).join("cache");
+        if cache_dir.exists() {
+            fs::remove_dir_all(&cache_dir).map_err(|error| format!("Failed to remove cache dir {}: {error}", cache_dir.display()))?;
+        }
+    }
+    Ok(())
+}
+
 fn snapshot_from_settings(settings: &SceneRuntimeSettings) -> SceneRuntimeSettingsSnapshot {
     let external_assets_exists = settings
         .external_assets_path
@@ -80,13 +129,22 @@ fn snapshot_from_settings(settings: &SceneRuntimeSettings) -> SceneRuntimeSettin
         .map(Path::is_dir)
         .unwrap_or(false);
 
+    let cache_storage_exists = settings
+        .cache_storage_path
+        .as_deref()
+        .map(Path::new)
+        .map(Path::is_dir)
+        .unwrap_or(false);
+
     SceneRuntimeSettingsSnapshot {
         external_assets_path: settings.external_assets_path.clone(),
         external_assets_exists,
+        cache_storage_path: settings.cache_storage_path.clone(),
+        cache_storage_exists,
     }
 }
 
-fn validate_external_assets_path(path: Option<String>) -> Result<Option<String>, String> {
+fn validate_directory_path(path: Option<String>, label: &str) -> Result<Option<String>, String> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -98,17 +156,17 @@ fn validate_external_assets_path(path: Option<String>) -> Result<Option<String>,
 
     let normalized = PathBuf::from(trimmed);
     if !normalized.is_absolute() {
-        return Err("Scene external assets path must be absolute.".to_string());
+        return Err(format!("{label} path must be absolute."));
     }
     if !normalized.exists() {
         return Err(format!(
-            "Scene external assets path {} does not exist.",
+            "{label} path {} does not exist.",
             normalized.display()
         ));
     }
     if !normalized.is_dir() {
         return Err(format!(
-            "Scene external assets path {} is not a directory.",
+            "{label} path {} is not a directory.",
             normalized.display()
         ));
     }
@@ -132,6 +190,7 @@ mod tests {
         let missing = temp.path().join("missing-assets");
         let snapshot = snapshot_from_settings(&SceneRuntimeSettings {
             external_assets_path: Some(missing.display().to_string()),
+            cache_storage_path: None,
         });
 
         assert_eq!(
@@ -149,6 +208,7 @@ mod tests {
 
         let snapshot = snapshot_from_settings(&SceneRuntimeSettings {
             external_assets_path: Some(external.display().to_string()),
+            cache_storage_path: None,
         });
 
         assert!(snapshot.external_assets_exists);
@@ -166,6 +226,7 @@ mod tests {
             fs::create_dir_all(&external).expect("external dir");
             crate::store::save_scene_runtime_settings(&SceneRuntimeSettings {
                 external_assets_path: Some(external.display().to_string()),
+                cache_storage_path: None,
             })
             .expect("save settings");
 

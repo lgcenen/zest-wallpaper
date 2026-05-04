@@ -249,6 +249,10 @@ fn normalized_scene_runtime_settings(mut settings: SceneRuntimeSettings) -> Scen
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     });
+    settings.cache_storage_path = settings.cache_storage_path.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    });
     settings
 }
 
@@ -464,6 +468,7 @@ mod tests {
 
             save_scene_runtime_settings(&SceneRuntimeSettings {
                 external_assets_path: Some(external_assets_path.display().to_string()),
+                cache_storage_path: None,
             })
             .unwrap();
 

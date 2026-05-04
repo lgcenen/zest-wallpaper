@@ -1550,6 +1550,75 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .primary-button 
   gap: 8px;
 }
 
+.workbench-shell .settings-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--wb-line);
+  margin-top: 2px;
+}
+
+.workbench-shell .settings-tab {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--wb-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease;
+}
+
+.workbench-shell .settings-tab:hover {
+  color: var(--wb-text);
+}
+
+.workbench-shell .settings-tab.active {
+  color: var(--wb-text);
+  border-bottom-color: var(--wb-accent);
+}
+
+.workbench-shell .settings-about {
+  display: grid;
+  gap: 14px;
+}
+
+.workbench-shell .settings-about-heading {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workbench-shell .settings-about-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  align-items: center;
+}
+
+.workbench-shell .settings-about-label {
+  font-size: 12px;
+  color: var(--wb-muted);
+}
+
+.workbench-shell .settings-about-value {
+  font-size: 13px;
+  color: var(--wb-text);
+}
+
+.workbench-shell .settings-about-link {
+  font-size: 13px;
+  color: var(--wb-accent);
+  text-decoration: none;
+}
+
+.workbench-shell .settings-about-link:hover {
+  text-decoration: underline;
+}
+
 .workbench-shell .library-grid-scroll,
 .workbench-shell .detail-scroll {
   min-width: 0;

@@ -21,6 +21,10 @@ export function chooseSceneAssetsDirectory(title?: string) {
   return chooseDirectory(title ?? "选择 Scene 外部 assets 目录");
 }
 
+export function chooseCacheDirectory(title?: string) {
+  return chooseDirectory(title ?? "选择缓存存储目录");
+}
+
 export function openExternalUrl(url: string) {
   return invoke<void>("open_external_url", { url });
 }
