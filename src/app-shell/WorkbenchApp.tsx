@@ -18,6 +18,7 @@ import {
 import type {
   PlayerRuntimeState,
   PropertySection,
+  RuntimeDiagnostic,
   SceneRuntimeSettingsSnapshot,
   WallpaperProperty,
   WallpaperRuntimeRecord,
@@ -263,6 +264,17 @@ function feedbackToneClass(tone: WorkbenchBannerState["tone"]) {
     default:
       return "neutral";
   }
+}
+
+function latestRuntimeDiagnostic(
+  diagnostics: RuntimeDiagnostic[],
+): RuntimeDiagnostic | null {
+  return diagnostics.reduce<RuntimeDiagnostic | null>((latest, diagnostic) => {
+    if (!latest || diagnostic.timestampMs >= latest.timestampMs) {
+      return diagnostic;
+    }
+    return latest;
+  }, null);
 }
 
 function SelectField({
@@ -1134,6 +1146,7 @@ function WallpaperDetailPane({
   activeWallpaper,
   isApplying,
   lastApplyError,
+  diagnostics,
   banner,
   paused,
   copy,
@@ -1150,6 +1163,7 @@ function WallpaperDetailPane({
   activeWallpaper?: WallpaperRuntimeRecord | null;
   isApplying: boolean;
   lastApplyError?: string | null;
+  diagnostics: RuntimeDiagnostic[];
   banner: WorkbenchBannerState;
   paused: boolean;
   copy: WorkbenchCopy;
@@ -1173,22 +1187,30 @@ function WallpaperDetailPane({
   }
 
   const isActive = activeWallpaper?.id === wallpaper.id;
+  const latestDiagnostic = latestRuntimeDiagnostic(diagnostics);
+  const diagnosticFeedback = latestDiagnostic
+    ? copy.runtimeDiagnosticMessage(latestDiagnostic)
+    : null;
   const fallbackFeedbackTone: WorkbenchBannerState["tone"] = lastApplyError
     ? "warning"
-    : isApplying
-      ? "neutral"
-      : isActive
-        ? "success"
-        : "neutral";
+    : latestDiagnostic
+      ? "warning"
+      : isApplying
+        ? "neutral"
+        : isActive
+          ? "success"
+          : "neutral";
   const fallbackFeedback = lastApplyError
     ? copy.applyFailed
-    : isApplying
-      ? copy.applying
-      : isActive
-        ? copy.applyLive
-        : activeWallpaper
-          ? `${copy.desktopLabel} · ${activeWallpaper.title}`
-          : copy.applyReady;
+    : diagnosticFeedback
+      ? diagnosticFeedback
+      : isApplying
+        ? copy.applying
+        : isActive
+          ? copy.applyLive
+          : activeWallpaper
+            ? `${copy.desktopLabel} · ${activeWallpaper.title}`
+            : copy.applyReady;
   const feedbackMessage = banner.key === "dropHint" ? fallbackFeedback : copy.bannerMessage(banner);
   const feedbackTone = banner.key === "dropHint" ? fallbackFeedbackTone : banner.tone;
 
@@ -1214,6 +1236,9 @@ function WallpaperDetailPane({
                 ) : null}
                 {isApplying ? <span className="toolbar-chip warning">{copy.applying}</span> : null}
                 {lastApplyError ? <span className="toolbar-chip warning">{copy.applyFailed}</span> : null}
+                {latestDiagnostic ? (
+                  <span className="toolbar-chip warning">{copy.runtimeDiagnosticLabel}</span>
+                ) : null}
               </div>
 
               {wallpaper.tags.length > 0 ? (
@@ -1894,6 +1919,7 @@ export default function WorkbenchApp() {
             activeWallpaper={activeWallpaper}
             isApplying={isApplyingWallpaperId === selected?.id}
             lastApplyError={lastApplyError && lastApplyError.id === selected?.id ? lastApplyError.error : null}
+            diagnostics={playerState.diagnostics ?? []}
             banner={banner}
             paused={paused}
             copy={copy}

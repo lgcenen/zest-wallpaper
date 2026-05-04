@@ -535,7 +535,7 @@ export interface SceneRuntimeSettingsSnapshot {
   cacheStorageExists: boolean;
 }
 
-export interface PlayerRuntimeState {
+export interface PlayerRuntimePlaybackState {
   active?: WallpaperRuntimeRecord | null;
   paused: boolean;
 }
@@ -580,4 +580,8 @@ export interface RuntimeDiagnostic {
   severity: RuntimeDiagnosticSeverity;
   summary: string;
   detail?: string | null;
+}
+
+export interface PlayerRuntimeState extends PlayerRuntimePlaybackState {
+  diagnostics: RuntimeDiagnostic[];
 }

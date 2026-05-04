@@ -59,6 +59,7 @@ describe("phase-11 player runtime cutover", () => {
     const state: PlayerRuntimeState = {
       active: sceneWallpaper(),
       paused: false,
+      diagnostics: [],
     };
     mocks.usePlayerController.mockReturnValue(state);
     mocks.toAssetUrl.mockClear();

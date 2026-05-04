@@ -130,11 +130,13 @@ const mocks = vi.hoisted(() => {
       toAssetUrl: vi.fn((path?: string | null) => (path ? `asset://${path}` : null)),
       openExternalUrl: vi.fn(async () => undefined),
       getPlayerState: vi.fn(async () => ({ active: restoredWallpaper, paused: false })),
+      getPlayerDiagnostics: vi.fn(async () => []),
       onPlayerLoad: vi.fn(async () => () => undefined),
       onPlayerPause: vi.fn(async () => () => undefined),
       onPlayerUpdate: vi.fn(async () => () => undefined),
+      onPlayerDiagnostics: vi.fn(async () => () => undefined),
     },
-    usePlayerController: vi.fn(() => ({ active: restoredWallpaper, paused: false })),
+    usePlayerController: vi.fn(() => ({ active: restoredWallpaper, paused: false, diagnostics: [] })),
   };
 });
 
@@ -190,6 +192,7 @@ describe("phase-06 workbench gui", () => {
     mocks.usePlayerController.mockReturnValue({
       active: mocks.restoredWallpaper,
       paused: false,
+      diagnostics: [],
     });
   });
 
@@ -326,6 +329,7 @@ describe("phase-06 workbench gui", () => {
     mocks.usePlayerController.mockReturnValue({
       active: externalLinkWallpaper,
       paused: false,
+      diagnostics: [],
     });
 
     render(<WorkbenchApp />);
@@ -336,6 +340,29 @@ describe("phase-06 workbench gui", () => {
     expect(mocks.gateway.openExternalUrl).toHaveBeenCalledWith(
       "https://space.bilibili.com/425570450",
     );
+  });
+
+  it("surfaces runtime diagnostics in the detail feedback state", async () => {
+    mocks.usePlayerController.mockReturnValue({
+      active: mocks.restoredWallpaper,
+      paused: false,
+      diagnostics: [
+        {
+          timestampMs: 42,
+          subsystem: "native-web",
+          code: "sync-failed",
+          severity: "error",
+          summary: "WKWebView bridge update failed",
+          detail: null,
+        },
+      ],
+    });
+
+    render(<WorkbenchApp />);
+
+    await screen.findByRole("heading", { name: "Neon Drift" });
+    expect(screen.getByText("运行时诊断")).toBeTruthy();
+    expect(screen.getByText(/WKWebView bridge update failed/)).toBeTruthy();
   });
 
   it("clears scene apply loading when the native apply chain does not return", async () => {
@@ -515,6 +542,7 @@ describe("phase-06 workbench gui", () => {
     mocks.usePlayerController.mockReturnValue({
       active: multiSectionWallpaper,
       paused: false,
+      diagnostics: [],
     });
     mocks.gateway.setWallpaperProperties.mockResolvedValue(persistedWallpaper);
 

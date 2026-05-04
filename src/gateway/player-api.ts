@@ -1,13 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  PlayerRuntimeState,
+  PlayerRuntimePlaybackState,
   RuntimeDiagnostic,
   WallpaperRuntimeRecord,
 } from "../types";
 
 export function getPlayerState() {
-  return invoke<PlayerRuntimeState>("get_player_state");
+  return invoke<PlayerRuntimePlaybackState>("get_player_state");
 }
 
 export function getPlayerDiagnostics() {

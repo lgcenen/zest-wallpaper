@@ -1,4 +1,4 @@
-import type { WallpaperType } from "../types";
+import type { RuntimeDiagnostic, WallpaperType } from "../types";
 import type {
   WorkbenchLanguage,
   WorkbenchResolvedTheme,
@@ -86,6 +86,8 @@ export interface WorkbenchCopy {
   applyReady: string;
   applyLive: string;
   applyFailed: string;
+  runtimeDiagnosticLabel: string;
+  runtimeDiagnosticMessage: (diagnostic: RuntimeDiagnostic) => string;
   sceneAssetsLabel: string;
   sceneAssetsBrowseAction: string;
   sceneAssetsClearAction: string;
@@ -159,6 +161,9 @@ const zhCnCopy: WorkbenchCopy = {
   applyReady: "等待应用",
   applyLive: "动态播放已在桌面生效；静态快照同步只跟随当前活动壁纸。",
   applyFailed: "应用失败",
+  runtimeDiagnosticLabel: "运行时诊断",
+  runtimeDiagnosticMessage: (diagnostic: RuntimeDiagnostic) =>
+    `运行时诊断（${diagnostic.subsystem}/${diagnostic.code}）：${diagnostic.summary}`,
   sceneAssetsLabel: "Scene 外部 assets",
   sceneAssetsBrowseAction: "挂载目录",
   sceneAssetsClearAction: "清除",
@@ -308,6 +313,9 @@ const englishCopy: WorkbenchCopy = {
   applyReady: "Waiting to apply",
   applyLive: "Dynamic playback is live; static snapshot sync follows only the active wallpaper.",
   applyFailed: "Apply failed",
+  runtimeDiagnosticLabel: "Runtime diagnostic",
+  runtimeDiagnosticMessage: (diagnostic: RuntimeDiagnostic) =>
+    `Runtime diagnostic (${diagnostic.subsystem}/${diagnostic.code}): ${diagnostic.summary}`,
   sceneAssetsLabel: "Scene External Assets",
   sceneAssetsBrowseAction: "Mount Folder",
   sceneAssetsClearAction: "Clear",
