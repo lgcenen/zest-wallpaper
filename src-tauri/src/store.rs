@@ -47,11 +47,16 @@ impl DynamicPlayerState {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct StaticSnapshotSyncState {
+    #[serde(default)]
     pub active_record_id: Option<String>,
+    #[serde(default)]
     pub generation: u64,
+    #[serde(default)]
     pub last_applied_snapshot_path: Option<String>,
+    #[serde(default)]
     pub last_failure_code: Option<String>,
 }
 
@@ -76,6 +81,7 @@ impl AppState {
     pub fn load() -> Result<Self> {
         let library = load_library()?;
         let mut player = load_player_state().unwrap_or_default();
+        let mut static_snapshot_sync = load_static_snapshot_sync_state().unwrap_or_default();
         let scene_runtime_settings = load_scene_runtime_settings().unwrap_or_default();
 
         let active_is_valid = player
@@ -88,11 +94,23 @@ impl AppState {
             player.manually_paused = false;
             let _ = save_player_state(&player);
         }
+        if static_snapshot_sync
+            .active_record_id
+            .as_deref()
+            .map(|id| {
+                player.active_id.as_deref() != Some(id) || find_record(&library, id).is_none()
+            })
+            .unwrap_or(false)
+        {
+            static_snapshot_sync.active_record_id = None;
+            static_snapshot_sync.last_failure_code = None;
+            let _ = save_static_snapshot_sync_state(&static_snapshot_sync);
+        }
 
         Ok(Self {
             library: Mutex::new(library),
             player: Mutex::new(player),
-            static_snapshot_sync: Mutex::new(StaticSnapshotSyncState::default()),
+            static_snapshot_sync: Mutex::new(static_snapshot_sync),
             runtime_sync: Mutex::new(()),
             scene_runtime_settings: Mutex::new(scene_runtime_settings),
         })
@@ -129,6 +147,10 @@ pub fn player_state_path() -> Result<PathBuf> {
 
 pub fn scene_runtime_settings_path() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("scene-runtime-settings.json"))
+}
+
+pub fn static_snapshot_sync_state_path() -> Result<PathBuf> {
+    Ok(app_support_dir()?.join("static-snapshot-sync-state.json"))
 }
 
 pub fn library_root_dir() -> Result<PathBuf> {
@@ -202,6 +224,13 @@ pub fn save_scene_runtime_settings(settings: &SceneRuntimeSettings) -> Result<()
     Ok(())
 }
 
+pub fn save_static_snapshot_sync_state(state: &StaticSnapshotSyncState) -> Result<()> {
+    let path = static_snapshot_sync_state_path()?;
+    let serialized = serde_json::to_string_pretty(state)?;
+    fs::write(path, serialized)?;
+    Ok(())
+}
+
 pub fn find_record(store: &LibraryStore, id: &str) -> Option<WallpaperRecord> {
     store
         .wallpapers
@@ -237,6 +266,16 @@ fn load_scene_runtime_settings() -> Result<SceneRuntimeSettings> {
     let contents = fs::read_to_string(path)?;
     let settings: SceneRuntimeSettings = serde_json::from_str(&contents)?;
     Ok(normalized_scene_runtime_settings(settings))
+}
+
+fn load_static_snapshot_sync_state() -> Result<StaticSnapshotSyncState> {
+    let path = static_snapshot_sync_state_path()?;
+    if !path.exists() {
+        return Ok(StaticSnapshotSyncState::default());
+    }
+
+    let contents = fs::read_to_string(path)?;
+    serde_json::from_str(&contents).map_err(Into::into)
 }
 
 fn dynamic_player_state(persisted: PersistedPlayerState) -> DynamicPlayerState {
@@ -278,7 +317,8 @@ mod tests {
 
     use super::{
         app_support_dir, load_library, load_player_state, save_library, save_player_state,
-        save_scene_runtime_settings, scene_runtime_settings_path, AppState, DynamicPlayerState,
+        save_scene_runtime_settings, save_static_snapshot_sync_state, scene_runtime_settings_path,
+        static_snapshot_sync_state_path, AppState, DynamicPlayerState, StaticSnapshotSyncState,
     };
 
     #[test]
@@ -454,6 +494,101 @@ mod tests {
         player.manually_paused = true;
         player.auto_pause_screen_labels.clear();
         assert!(player.effective_runtime_paused_for_labels(&labels));
+    }
+
+    #[test]
+    fn load_and_save_static_snapshot_sync_state_round_trips_active_snapshot_state() {
+        let _lock = super::HOME_ENV_LOCK.lock().unwrap();
+        let temp = tempdir().unwrap();
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path());
+
+        let result = (|| {
+            let sync_state = StaticSnapshotSyncState {
+                active_record_id: Some("demo".to_string()),
+                generation: 9,
+                last_applied_snapshot_path: Some("/portable/snapshot.png".to_string()),
+                last_failure_code: Some("snapshot-unavailable".to_string()),
+            };
+
+            save_static_snapshot_sync_state(&sync_state).unwrap();
+            let restored = super::load_static_snapshot_sync_state().unwrap();
+
+            assert_eq!(restored, sync_state);
+            let saved = fs::read_to_string(static_snapshot_sync_state_path().unwrap()).unwrap();
+            assert!(saved.contains("\"activeRecordId\": \"demo\""));
+            assert!(saved.contains("\"lastAppliedSnapshotPath\": \"/portable/snapshot.png\""));
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        result
+    }
+
+    #[test]
+    fn app_state_load_restores_static_snapshot_sync_state_for_valid_active_wallpaper() {
+        let _lock = super::HOME_ENV_LOCK.lock().unwrap();
+        let temp = tempdir().unwrap();
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path());
+
+        let result = (|| {
+            let support_dir = app_support_dir().unwrap();
+            fs::create_dir_all(&support_dir).unwrap();
+            fs::write(
+                support_dir.join("library.json"),
+                r#"{
+                  "wallpapers": [
+                    {
+                      "id": "demo",
+                      "title": "Demo",
+                      "wallpaperType": "video",
+                      "sourcePath": "/tmp/source",
+                      "managedPath": "/tmp/managed",
+                      "previewPath": "/tmp/preview.png",
+                      "entryPath": "/tmp/entry.mp4",
+                      "propertySchema": [],
+                      "propertySections": [],
+                      "importedAt": "2024-01-01T00:00:00Z",
+                      "tags": []
+                    }
+                  ]
+                }"#,
+            )
+            .unwrap();
+            fs::write(
+                support_dir.join("player-state.json"),
+                r#"{ "activeId": "demo", "manuallyPaused": false }"#,
+            )
+            .unwrap();
+            save_static_snapshot_sync_state(&StaticSnapshotSyncState {
+                active_record_id: Some("demo".to_string()),
+                generation: 3,
+                last_applied_snapshot_path: Some("/portable/snapshot.png".to_string()),
+                last_failure_code: None,
+            })
+            .unwrap();
+
+            let state = AppState::load().unwrap();
+            let sync_state = state.static_snapshot_sync.lock().unwrap().clone();
+
+            assert_eq!(sync_state.active_record_id.as_deref(), Some("demo"));
+            assert_eq!(sync_state.generation, 3);
+            assert_eq!(
+                sync_state.last_applied_snapshot_path.as_deref(),
+                Some("/portable/snapshot.png")
+            );
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        result
     }
 
     #[test]

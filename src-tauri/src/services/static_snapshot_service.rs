@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use crate::{
     models::WallpaperRecord,
     services::{diagnostic_service, window_service},
-    store::{AppState, StaticSnapshotSyncState},
+    store::{save_static_snapshot_sync_state, AppState, StaticSnapshotSyncState},
 };
 
 pub const DIAGNOSTIC_SUBSYSTEM: &str = "static-snapshot-sync";
@@ -99,18 +99,20 @@ pub fn sync_after_active_wallpaper_change(
         .map_err(|error| error.to_string())?
         .active_id
         .clone();
-    let outcome = {
+    let (outcome, persisted_state) = {
         let mut sync_state = state
             .static_snapshot_sync
             .lock()
             .map_err(|error| error.to_string())?;
-        sync_active_snapshot_transaction(
+        let outcome = sync_active_snapshot_transaction(
             &mut sync_state,
             active_record_id.as_deref(),
             record,
             apply_system_wallpaper,
-        )
+        );
+        (outcome, sync_state.clone())
     };
+    save_static_snapshot_sync_state(&persisted_state).map_err(|error| error.to_string())?;
     publish_static_snapshot_diagnostic(app, &outcome)?;
     sync_player_window_snapshot_background(app, &outcome)?;
     Ok(outcome)
@@ -120,13 +122,15 @@ pub fn clear_active_snapshot_sync(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<StaticSnapshotSyncOutcome, String> {
-    let outcome = {
+    let (outcome, persisted_state) = {
         let mut sync_state = state
             .static_snapshot_sync
             .lock()
             .map_err(|error| error.to_string())?;
-        clear_active_snapshot_sync_state(&mut sync_state)
+        let outcome = clear_active_snapshot_sync_state(&mut sync_state);
+        (outcome, sync_state.clone())
     };
+    save_static_snapshot_sync_state(&persisted_state).map_err(|error| error.to_string())?;
     publish_static_snapshot_diagnostic(app, &outcome)?;
     Ok(outcome)
 }
