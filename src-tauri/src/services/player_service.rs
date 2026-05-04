@@ -1485,7 +1485,7 @@ fn validate_scene_apply_preflight(
         builtin_assets_root,
         runtime_scene,
     );
-    if report.is_supported() {
+    if report.is_supported_for_apply() {
         Ok(())
     } else {
         Err(report.apply_error_message())

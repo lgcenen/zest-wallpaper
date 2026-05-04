@@ -12,8 +12,8 @@ use crate::{
     services::{
         diagnostic_service,
         scene_diagnostics::{
-            SceneDiagnosticDetail, SceneDiagnosticDomain, SceneDiagnosticEntry,
-            SceneDiagnosticResourceDetail, SceneDiagnosticSeverity,
+            SceneDiagnosticCategory, SceneDiagnosticDetail, SceneDiagnosticDomain,
+            SceneDiagnosticEntry, SceneDiagnosticResourceDetail, SceneDiagnosticSeverity,
         },
         scene_particle_runtime_service::build_authored_particle_runtime_for_resource,
         scene_render_graph_service::{
@@ -89,8 +89,8 @@ pub struct SceneSupportReport {
 }
 
 impl SceneSupportReport {
-    pub fn is_supported(&self) -> bool {
-        self.errors.is_empty()
+    pub fn is_supported_for_apply(&self) -> bool {
+        self.apply_blocking_issues().is_empty()
     }
 
     pub fn has_warnings(&self) -> bool {
@@ -98,18 +98,18 @@ impl SceneSupportReport {
     }
 
     pub fn apply_error_message(&self) -> String {
-        if self.errors.is_empty() {
+        let blocking_issues = self.apply_blocking_issues();
+        if blocking_issues.is_empty() {
             return "Scene native apply is supported.".to_string();
         }
 
-        let preview = self
-            .errors
+        let preview = blocking_issues
             .iter()
             .take(4)
             .map(|error| error.message.as_str())
             .collect::<Vec<_>>()
             .join("; ");
-        let remaining = self.errors.len().saturating_sub(4);
+        let remaining = blocking_issues.len().saturating_sub(4);
         let suffix = if remaining == 0 {
             String::new()
         } else {
@@ -146,6 +146,31 @@ impl SceneSupportReport {
     pub fn diagnostic_detail(&self) -> Option<String> {
         serde_json::to_string_pretty(self).ok()
     }
+
+    fn apply_blocking_issues(&self) -> Vec<&SceneSupportError> {
+        self.errors
+            .iter()
+            .chain(
+                self.warnings
+                    .iter()
+                    .filter(|warning| warning_blocks_phase11_apply(warning)),
+            )
+            .collect()
+    }
+}
+
+fn warning_blocks_phase11_apply(warning: &SceneSupportError) -> bool {
+    let Some(detail) = warning.detail.as_ref() else {
+        return false;
+    };
+    if detail.category == SceneDiagnosticCategory::Capability {
+        return true;
+    }
+    detail
+        .resource
+        .as_ref()
+        .map(|resource| resource.present_but_unsupported)
+        .unwrap_or(false)
 }
 
 fn missing_scene_json() -> SceneSupportError {
@@ -313,7 +338,7 @@ pub fn ensure_scene_supported_for_apply(
     }
 
     let report = analyze_scene_support_for_app(app, record, runtime_scene);
-    if report.is_supported() {
+    if report.is_supported_for_apply() {
         let _ = diagnostic_service::clear_diagnostic(app, DIAGNOSTIC_SUBSYSTEM, APPLY_BLOCKED_CODE);
         if report.has_warnings() {
             let summary = report.warning_summary().unwrap_or_else(|| {
@@ -433,27 +458,32 @@ fn support_error_from_graph_issue(issue: SceneGraphIssue) -> SceneSupportError {
         SceneGraphIssueCode::GraphInputMissing => {
             ("graph-input-missing", SceneDiagnosticDomain::Visual)
         }
-        SceneGraphIssueCode::GraphCycleOrOrderInvalid => {
-            ("graph-cycle-or-order-invalid", SceneDiagnosticDomain::Visual)
-        }
-        SceneGraphIssueCode::GraphCopybackgroundUnavailable => {
-            ("graph-copybackground-unavailable", SceneDiagnosticDomain::Visual)
-        }
+        SceneGraphIssueCode::GraphCycleOrOrderInvalid => (
+            "graph-cycle-or-order-invalid",
+            SceneDiagnosticDomain::Visual,
+        ),
+        SceneGraphIssueCode::GraphCopybackgroundUnavailable => (
+            "graph-copybackground-unavailable",
+            SceneDiagnosticDomain::Visual,
+        ),
         SceneGraphIssueCode::GraphMaskTargetMissing => {
             ("graph-mask-target-missing", SceneDiagnosticDomain::Visual)
         }
-        SceneGraphIssueCode::GraphConstructionIncomplete => {
-            ("graph-construction-incomplete", SceneDiagnosticDomain::Visual)
-        }
+        SceneGraphIssueCode::GraphConstructionIncomplete => (
+            "graph-construction-incomplete",
+            SceneDiagnosticDomain::Visual,
+        ),
         SceneGraphIssueCode::MorphMetadataNotConsumed => {
             ("morph-metadata-not-consumed", SceneDiagnosticDomain::Visual)
         }
-        SceneGraphIssueCode::ClippingMetadataNotConsumed => {
-            ("clipping-metadata-not-consumed", SceneDiagnosticDomain::Visual)
-        }
-        SceneGraphIssueCode::AttachmentMetadataNotConsumed => {
-            ("attachment-metadata-not-consumed", SceneDiagnosticDomain::Visual)
-        }
+        SceneGraphIssueCode::ClippingMetadataNotConsumed => (
+            "clipping-metadata-not-consumed",
+            SceneDiagnosticDomain::Visual,
+        ),
+        SceneGraphIssueCode::AttachmentMetadataNotConsumed => (
+            "attachment-metadata-not-consumed",
+            SceneDiagnosticDomain::Visual,
+        ),
         SceneGraphIssueCode::InlineMdlMeshNoBones => {
             ("inline-mdl-mesh-no-bones", SceneDiagnosticDomain::Visual)
         }
@@ -1496,7 +1526,7 @@ mod tests {
             _ => panic!("expected scene runtime"),
         };
 
-        assert!(!report.is_supported());
+        assert!(!report.errors.is_empty());
         assert!(report
             .errors
             .iter()
@@ -1561,7 +1591,7 @@ mod tests {
             _ => panic!("expected scene runtime"),
         };
 
-        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
         assert!(!report.has_warnings());
         assert_eq!(report.errors.len(), 0);
     }
@@ -1593,7 +1623,7 @@ mod tests {
         let record = scene_record(&managed_root);
         let report = analyze_scene_support_with_builtin_root(&record, &builtin_root, None);
 
-        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
         assert!(report.errors.is_empty());
         let font_warning = report
             .warnings
@@ -1645,7 +1675,7 @@ mod tests {
         let record = scene_record(&managed_root);
         let report = analyze_scene_support_with_builtin_root(&record, &builtin_root, None);
 
-        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
         assert!(report.errors.is_empty());
         assert!(!report
             .warnings
@@ -1687,7 +1717,7 @@ mod tests {
         let record = scene_record(&managed_root);
         let report = analyze_scene_support_with_builtin_root(&record, &builtin_root, None);
 
-        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
         assert!(report.errors.is_empty());
         assert!(report.warnings.is_empty());
     }
@@ -1736,7 +1766,7 @@ mod tests {
             _ => panic!("expected scene runtime"),
         };
 
-        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
         assert_eq!(report.errors.len(), 0);
         assert!(!report
             .warnings
@@ -1776,7 +1806,7 @@ mod tests {
             None,
         );
 
-        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
         assert!(report
             .warnings
             .iter()
@@ -1844,7 +1874,7 @@ mod tests {
             _ => panic!("expected scene runtime"),
         };
 
-        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
         assert_eq!(report.errors.len(), 0);
         assert!(!report
             .warnings
@@ -1900,7 +1930,7 @@ mod tests {
             _ => panic!("expected scene runtime"),
         };
 
-        assert!(report.is_supported());
+        assert!(report.errors.is_empty());
         assert!(report.errors.is_empty());
         assert!(!report
             .warnings
@@ -2373,6 +2403,11 @@ mod tests {
             .expect("particle resource detail");
         assert!(particle_detail.reference_resolved);
         assert!(particle_detail.present_but_unsupported);
+        assert!(report.errors.is_empty());
+        assert!(!report.is_supported_for_apply());
+        assert!(report
+            .apply_error_message()
+            .contains("Scene native apply is blocked"));
     }
 
     #[test]
