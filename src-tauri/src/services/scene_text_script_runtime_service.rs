@@ -87,11 +87,16 @@ pub fn text_script_requires_runtime(script_text: Option<&str>) -> bool {
     let lower_script = script_text.unwrap_or_default().to_ascii_lowercase();
     lower_script.contains("export function update")
         || lower_script.contains("function update")
+        || lower_script.contains("function init")
         || lower_script.contains("module.update")
+        || lower_script.contains("module.init")
+        || lower_script.contains("module.exports.update")
+        || lower_script.contains("module.exports.init")
         || lower_script.contains("export default")
         || lower_script.contains("export function applyuserproperties")
         || lower_script.contains("function applyuserproperties")
         || lower_script.contains("module.applyuserproperties")
+        || lower_script.contains("module.exports.applyuserproperties")
         || lower_script.contains("thislayer.")
         || lower_script.contains("engine.userproperties")
 }
@@ -738,7 +743,8 @@ mod tests {
     use super::{
         clear_scene_text_script_runtime_cache, evaluate_scripted_text_layer,
         evaluate_scripted_text_layer_detailed, normalize_script_source,
-        scene_text_script_runtime_diagnostics, tracked_script_state_keys,
+        scene_text_script_runtime_diagnostics, text_script_requires_runtime,
+        tracked_script_state_keys,
     };
 
     fn sample_script_layer(script_text: &str) -> SceneTextLayer {
@@ -936,6 +942,36 @@ mod tests {
 
         assert_eq!(first, "11");
         assert_eq!(second, "12");
+    }
+
+    #[test]
+    fn script_gate_recognizes_module_exports_entries() {
+        assert!(text_script_requires_runtime(Some(
+            "module.exports.update = function () { thisLayer.text = 'ready'; };"
+        )));
+        assert!(text_script_requires_runtime(Some(
+            "module.exports.applyUserProperties = function () {};"
+        )));
+        assert!(text_script_requires_runtime(Some(
+            "module.exports.init = function () {};"
+        )));
+    }
+
+    #[test]
+    fn scripted_text_layer_supports_module_exports_update_entry() {
+        clear_scene_text_script_runtime_cache();
+        let layer = sample_script_layer(
+            "'use strict';\nvar counter = 0;\nmodule.exports.init = function () { counter = 20; };\nmodule.exports.update = function () { counter += 2; thisLayer.text = String(counter); };\n",
+        );
+        let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
+        let properties = BTreeMap::new();
+
+        let rendered =
+            evaluate_scripted_text_layer(Some("module-exports-demo"), &layer, &properties, &now)
+                .expect("module.exports evaluation")
+                .expect("module.exports text");
+
+        assert_eq!(rendered, "22");
     }
 
     #[test]
