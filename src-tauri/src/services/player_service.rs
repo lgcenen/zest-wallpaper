@@ -183,13 +183,7 @@ pub fn apply_dynamic_wallpaper(
         state,
         had_player_windows,
         || {
-            let result = prepare_static_snapshot_sync_before_runtime(
-                app,
-                state,
-                &record,
-                true,
-                had_player_windows,
-            );
+            let result = sync_static_snapshot_for_active_runtime(app, state, &record);
             snapshot_stage_logged.set(true);
             trace.log_result("snapshot_sync_done", &result);
             result
@@ -232,14 +226,30 @@ pub fn apply_dynamic_wallpaper(
     Ok(runtime_record)
 }
 
-fn prepare_static_snapshot_sync_before_runtime(
+fn sync_static_snapshot_for_active_runtime(
     app: &AppHandle,
     state: &AppState,
     record: &WallpaperRecord,
-    _has_static_snapshot: bool,
-    _had_player_windows: bool,
 ) -> Result<(), String> {
     static_snapshot_service::sync_after_active_wallpaper_change(app, state, record)?;
+    Ok(())
+}
+
+fn restore_runtime_record_transaction<EnsurePlayerWindows, SyncNativeRuntime, SyncStaticSnapshot>(
+    runtime_record: &WallpaperRuntimeRecord,
+    effective_paused: bool,
+    mut ensure_player_windows: EnsurePlayerWindows,
+    mut sync_native_runtime: SyncNativeRuntime,
+    mut sync_static_snapshot: SyncStaticSnapshot,
+) -> Result<(), String>
+where
+    EnsurePlayerWindows: FnMut() -> Result<(), String>,
+    SyncNativeRuntime: FnMut(Option<&WallpaperRuntimeRecord>, bool) -> Result<(), String>,
+    SyncStaticSnapshot: FnMut() -> Result<(), String>,
+{
+    ensure_player_windows()?;
+    sync_native_runtime(Some(runtime_record), effective_paused)?;
+    sync_static_snapshot()?;
     Ok(())
 }
 
@@ -251,20 +261,15 @@ pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), S
     let runtime_record = runtime_document_service::runtime_record(&record);
     preflight_scene_apply(app, &record, &runtime_record)?;
 
-    let has_static_snapshot = static_snapshot_service::snapshot_for_record(&record).is_ok();
-    let had_player_windows = !window_service::player_window_labels(app).is_empty();
-    prepare_static_snapshot_sync_before_runtime(
-        app,
-        state,
-        &record,
-        has_static_snapshot,
-        had_player_windows,
+    restore_runtime_record_transaction(
+        &runtime_record,
+        effective_paused,
+        || lifecycle_service::show_player_windows(app).map_err(|error| error.to_string()),
+        |runtime_record, paused| {
+            sync_native_runtime_with_transaction_lock(app, state, runtime_record, paused)
+        },
+        || sync_static_snapshot_for_active_runtime(app, state, &record),
     )?;
-    if !has_static_snapshot {
-        let _ = static_snapshot_service::sync_after_active_wallpaper_change(app, state, &record);
-    }
-    lifecycle_service::show_player_windows(app).map_err(|error| error.to_string())?;
-    sync_native_runtime_with_transaction_lock(app, state, Some(&runtime_record), effective_paused)?;
     if should_start_scene_update_loop(&runtime_record) {
         start_scene_update_loop(app.clone(), state);
     }
@@ -1013,9 +1018,7 @@ where
 }
 
 fn lock_runtime_sync_for_apply(state: &AppState) -> Result<MutexGuard<'_, ()>, String> {
-    state.runtime_sync
-        .lock()
-        .map_err(|error| error.to_string())
+    state.runtime_sync.lock().map_err(|error| error.to_string())
 }
 
 fn build_apply_wallpaper_candidate(
@@ -1518,9 +1521,10 @@ mod tests {
         build_apply_wallpaper_candidate, clear_player_session_state,
         dispatch_active_property_update_sync, dispatch_scene_update_sync,
         ensure_apply_record_current_by_id_with, native_host_sync_disposition,
-        push_critical_sync_error, scene_requires_periodic_updates, scene_signature,
-        scene_update_cadence, scene_update_sync_is_current, scene_update_sync_mode,
-        should_emit_scene_update, should_start_scene_update_loop, validate_scene_apply_preflight,
+        push_critical_sync_error, restore_runtime_record_transaction,
+        scene_requires_periodic_updates, scene_signature, scene_update_cadence,
+        scene_update_sync_is_current, scene_update_sync_mode, should_emit_scene_update,
+        should_start_scene_update_loop, validate_scene_apply_preflight,
         ActivePropertyUpdateSyncMode, NativeHostKind, NativeHostSyncDisposition,
         SceneUpdateCadence, SceneUpdateSyncMode,
     };
@@ -2637,11 +2641,46 @@ mod tests {
         assert_eq!(live_window_labels.into_inner(), vec!["player"]);
         assert_eq!(
             events.into_inner(),
-            vec![
-                "ensure-player-windows",
-                "native-sync",
-                "static-sync",
-            ]
+            vec!["ensure-player-windows", "native-sync", "static-sync",]
+        );
+    }
+
+    #[test]
+    fn restore_transaction_skips_static_snapshot_when_native_sync_fails() {
+        let runtime = runtime_record(
+            WallpaperRuntime::Web {
+                web: Default::default(),
+            },
+            WallpaperType::Web,
+        );
+        let events = RefCell::new(Vec::new());
+
+        let result = restore_runtime_record_transaction(
+            &runtime,
+            true,
+            || {
+                events.borrow_mut().push("ensure-player-windows");
+                Ok(())
+            },
+            |runtime_record, paused| {
+                events.borrow_mut().push("native-sync");
+                assert_eq!(
+                    runtime_record.map(|record| record.id.as_str()),
+                    Some(runtime.id.as_str())
+                );
+                assert!(paused);
+                Err("native web runtime failed".to_string())
+            },
+            || {
+                events.borrow_mut().push("static-sync");
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("native web runtime failed".to_string()));
+        assert_eq!(
+            events.into_inner(),
+            vec!["ensure-player-windows", "native-sync"]
         );
     }
 
