@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => {
   const sceneRuntimeSettings = {
     externalAssetsPath: null as string | null,
     externalAssetsExists: false,
+    cacheStoragePath: null as string | null,
+    cacheStorageExists: false,
   };
   const wallpaper = {
     id: "wallpaper-aurora",
@@ -113,11 +115,18 @@ const mocks = vi.hoisted(() => {
       chooseImportDirectory: vi.fn(async () => null),
       chooseSceneAssetsDirectory: vi.fn(async () => null),
       getSceneRuntimeSettings: vi.fn(async () => ({ ...sceneRuntimeSettings })),
+      getSceneCacheSize: vi.fn(async () => 0),
       setSceneExternalAssetsPath: vi.fn(async (path: string | null) => {
         sceneRuntimeSettings.externalAssetsPath = path;
         sceneRuntimeSettings.externalAssetsExists = Boolean(path);
         return { ...sceneRuntimeSettings };
       }),
+      setCacheStoragePath: vi.fn(async (path: string | null) => {
+        sceneRuntimeSettings.cacheStoragePath = path;
+        sceneRuntimeSettings.cacheStorageExists = Boolean(path);
+        return { ...sceneRuntimeSettings };
+      }),
+      clearSceneCache: vi.fn(async () => undefined),
       toAssetUrl: vi.fn((path?: string | null) => (path ? `asset://${path}` : null)),
       openExternalUrl: vi.fn(async () => undefined),
       getPlayerState: vi.fn(async () => ({ active: restoredWallpaper, paused: false })),
@@ -164,8 +173,14 @@ describe("phase-06 workbench gui", () => {
     mocks.gateway.getSceneRuntimeSettings.mockResolvedValue({
       externalAssetsPath: null,
       externalAssetsExists: false,
+      cacheStoragePath: null,
+      cacheStorageExists: false,
     });
+    mocks.gateway.getSceneCacheSize.mockReset();
+    mocks.gateway.getSceneCacheSize.mockResolvedValue(0);
     mocks.gateway.setSceneExternalAssetsPath.mockClear();
+    mocks.gateway.setCacheStoragePath.mockClear();
+    mocks.gateway.clearSceneCache.mockClear();
     mocks.gateway.openExternalUrl.mockClear();
     mocks.gateway.getPlayerState.mockReset();
     mocks.gateway.getPlayerState.mockResolvedValue({
