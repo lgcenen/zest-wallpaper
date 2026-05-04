@@ -80,30 +80,56 @@ struct NamedScreenBounds {
     bounds: Rect,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SystemInactivitySample {
+    screen_locked: bool,
+    displays_asleep: bool,
+}
+
 pub fn sample_auto_pause_screen_labels(
     app: &AppHandle,
     app_bundle_id: &str,
 ) -> Result<BTreeSet<String>, String> {
     #[cfg(target_os = "macos")]
     {
+        let system_labels = sample_system_auto_pause_screen_labels(app)?;
         let (frontmost, screens) = sample_frontmost_and_screens(app)?;
         if screens.is_empty() {
-            return Ok(BTreeSet::new());
+            return Ok(system_labels);
         }
 
         let windows = sample_window_list()?;
-        return Ok(resolve_auto_pause_screen_labels(
-            frontmost.as_ref(),
-            &screens,
-            &windows,
-            app_bundle_id,
-        ));
+        let mut labels =
+            resolve_auto_pause_screen_labels(frontmost.as_ref(), &screens, &windows, app_bundle_id);
+        labels.extend(system_labels);
+        return Ok(labels);
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
         let _ = app_bundle_id;
+        Ok(BTreeSet::new())
+    }
+}
+
+pub fn sample_system_auto_pause_screen_labels(app: &AppHandle) -> Result<BTreeSet<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let labels = player_screen_labels_for_system_pause(app)?;
+        if labels.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+
+        return Ok(resolve_system_auto_pause_screen_labels(
+            &labels,
+            sample_system_inactivity(),
+        ));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
         Ok(BTreeSet::new())
     }
 }
@@ -133,6 +159,17 @@ fn resolve_auto_pause_screen_labels(
         .collect()
 }
 
+fn resolve_system_auto_pause_screen_labels(
+    labels: &BTreeSet<String>,
+    sample: SystemInactivitySample,
+) -> BTreeSet<String> {
+    if sample.screen_locked || sample.displays_asleep {
+        labels.clone()
+    } else {
+        BTreeSet::new()
+    }
+}
+
 fn is_candidate_window(window: &WindowSample, app_bundle_id: &str) -> bool {
     window.owner_pid > 0
         && window.layer == CONTENT_WINDOW_LAYER
@@ -154,6 +191,62 @@ fn window_covers_screen(screen: &ScreenSample, window: &WindowSample) -> bool {
     };
 
     overlap.area() / screen_area >= FULLSCREEN_COVERAGE_THRESHOLD
+}
+
+#[cfg(target_os = "macos")]
+fn player_screen_labels_for_system_pause(app: &AppHandle) -> Result<BTreeSet<String>, String> {
+    let expected_labels =
+        window_service::expected_player_window_labels(app).map_err(|error| error.to_string())?;
+    let live_labels = window_service::player_window_labels(app);
+    Ok(expected_labels.into_iter().chain(live_labels).collect())
+}
+
+#[cfg(target_os = "macos")]
+fn sample_system_inactivity() -> SystemInactivitySample {
+    SystemInactivitySample {
+        screen_locked: session_screen_is_locked(),
+        displays_asleep: displays_are_asleep(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn session_screen_is_locked() -> bool {
+    use objc2_core_foundation::{CFBoolean, CFDictionary, CFString, CFType};
+    use objc2_core_graphics::CGSessionCopyCurrentDictionary;
+
+    let Some(session) = CGSessionCopyCurrentDictionary() else {
+        return false;
+    };
+    let session: &CFDictionary<CFString, CFType> =
+        unsafe { session.cast_unchecked::<CFString, CFType>() };
+    let key = CFString::from_static_str("CGSSessionScreenIsLocked");
+    session
+        .get(&key)
+        .and_then(|value| value.downcast::<CFBoolean>().ok())
+        .map(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn displays_are_asleep() -> bool {
+    use objc2_core_graphics::{
+        CGDirectDisplayID, CGDisplayIsAsleep, CGError, CGGetOnlineDisplayList,
+    };
+
+    let mut count = 0;
+    let count_result = unsafe { CGGetOnlineDisplayList(0, std::ptr::null_mut(), &mut count) };
+    if count_result != CGError::Success || count == 0 {
+        return false;
+    }
+
+    let mut displays = vec![0 as CGDirectDisplayID; count as usize];
+    let list_result = unsafe { CGGetOnlineDisplayList(count, displays.as_mut_ptr(), &mut count) };
+    if list_result != CGError::Success || count == 0 {
+        return false;
+    }
+
+    displays.truncate(count as usize);
+    displays.iter().any(|display| CGDisplayIsAsleep(*display))
 }
 
 #[cfg(target_os = "macos")]
@@ -364,7 +457,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        resolve_auto_pause_screen_labels, FrontmostAppSample, Rect, ScreenSample, WindowSample,
+        resolve_auto_pause_screen_labels, resolve_system_auto_pause_screen_labels,
+        FrontmostAppSample, Rect, ScreenSample, SystemInactivitySample, WindowSample,
     };
 
     fn frontmost(pid: i32, bundle_id: &str) -> FrontmostAppSample {
@@ -607,5 +701,45 @@ mod tests {
         );
 
         assert_eq!(paused, BTreeSet::from([String::from("player")]));
+    }
+
+    #[test]
+    fn locked_screen_marks_all_player_screens_auto_paused() {
+        let labels = BTreeSet::from([String::from("player"), String::from("player-screen-1")]);
+
+        let paused = resolve_system_auto_pause_screen_labels(
+            &labels,
+            SystemInactivitySample {
+                screen_locked: true,
+                ..SystemInactivitySample::default()
+            },
+        );
+
+        assert_eq!(paused, labels);
+    }
+
+    #[test]
+    fn sleeping_displays_mark_all_player_screens_auto_paused() {
+        let labels = BTreeSet::from([String::from("player"), String::from("player-screen-1")]);
+
+        let paused = resolve_system_auto_pause_screen_labels(
+            &labels,
+            SystemInactivitySample {
+                displays_asleep: true,
+                ..SystemInactivitySample::default()
+            },
+        );
+
+        assert_eq!(paused, labels);
+    }
+
+    #[test]
+    fn active_unlocked_system_does_not_add_auto_pause_labels() {
+        let labels = BTreeSet::from([String::from("player")]);
+
+        let paused =
+            resolve_system_auto_pause_screen_labels(&labels, SystemInactivitySample::default());
+
+        assert!(paused.is_empty());
     }
 }
