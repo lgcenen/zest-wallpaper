@@ -40,6 +40,7 @@
     "active": true,
     "resources": ["resources/scene"],
     "targets": ["app"],
+    "icon": ["icons/icon.icns", "icons/icon.ico", "icons/icon.png"],
     "macOS": {
       "minimumSystemVersion": "14.0"
     }
