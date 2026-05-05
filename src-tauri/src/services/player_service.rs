@@ -1513,7 +1513,7 @@ fn validate_scene_apply_preflight(
         builtin_assets_root,
         runtime_scene,
     );
-    if report.is_supported_for_apply() {
+    if report.is_supported() {
         Ok(())
     } else {
         Err(report.apply_error_message())
