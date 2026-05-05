@@ -15,9 +15,9 @@
     "security": {
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/**", "$HOME/Library/Application Support/**", "/Volumes/**"]
+        "scope": ["$APPDATA/**", "$HOME/Library/Application Support/WallpaperWorkbench/**"]
       },
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' asset: data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' asset: data:; connect-src 'self' asset: http://localhost:1420 http://127.0.0.1:1420 https:; media-src 'self' asset: blob: data:; worker-src 'self' blob:;"
     },
     "windows": [
       {

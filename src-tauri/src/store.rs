@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -205,14 +206,14 @@ fn record_needs_metadata_refresh(record: &WallpaperRecord) -> bool {
 pub fn save_library(store: &LibraryStore) -> Result<()> {
     let path = library_path()?;
     let serialized = serde_json::to_string_pretty(store)?;
-    fs::write(path, serialized)?;
+    atomic_write_json(&path, &serialized)?;
     Ok(())
 }
 
 pub fn save_player_state(player: &DynamicPlayerState) -> Result<()> {
     let path = player_state_path()?;
     let serialized = serde_json::to_string_pretty(&persisted_player_state(player))?;
-    fs::write(path, serialized)?;
+    atomic_write_json(&path, &serialized)?;
     Ok(())
 }
 
@@ -220,14 +221,14 @@ pub fn save_scene_runtime_settings(settings: &SceneRuntimeSettings) -> Result<()
     let path = scene_runtime_settings_path()?;
     let serialized =
         serde_json::to_string_pretty(&normalized_scene_runtime_settings(settings.clone()))?;
-    fs::write(path, serialized)?;
+    atomic_write_json(&path, &serialized)?;
     Ok(())
 }
 
 pub fn save_static_snapshot_sync_state(state: &StaticSnapshotSyncState) -> Result<()> {
     let path = static_snapshot_sync_state_path()?;
     let serialized = serde_json::to_string_pretty(state)?;
-    fs::write(path, serialized)?;
+    atomic_write_json(&path, &serialized)?;
     Ok(())
 }
 
@@ -307,13 +308,57 @@ fn normalized_scene_runtime_settings(mut settings: SceneRuntimeSettings) -> Scen
     settings
 }
 
+fn atomic_write_json(path: &Path, contents: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .context(format!("missing parent directory for {}", path.display()))?;
+    fs::create_dir_all(parent)?;
+
+    let temp_path = temp_path_for(path);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&temp_path)
+        .with_context(|| format!("failed to open temp file {}", temp_path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to flush temp file {}", temp_path.display()))?;
+    drop(file);
+
+    fs::rename(&temp_path, path).with_context(|| {
+        format!(
+            "failed to replace {} with {}",
+            path.display(),
+            temp_path.display()
+        )
+    })?;
+
+    if let Ok(directory) = OpenOptions::new().read(true).open(parent) {
+        let _ = directory.sync_all();
+    }
+
+    Ok(())
+}
+
+fn temp_path_for(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("wallpaper-state.json");
+    path.with_file_name(format!(".{file_name}.tmp-{}", std::process::id()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeSet, env, fs};
 
     use tempfile::tempdir;
 
-    use crate::models::{PropertySection, SceneRuntimeSettings, WallpaperRecord, WallpaperType};
+    use crate::models::{
+        LibraryStore, PropertySection, SceneRuntimeSettings, WallpaperRecord, WallpaperType,
+    };
 
     use super::{
         app_support_dir, load_library, load_player_state, save_library, save_player_state,
@@ -369,6 +414,78 @@ mod tests {
             save_library(&store).unwrap();
             let saved = fs::read_to_string(support_dir.join("library.json")).unwrap();
             assert!(saved.contains("\"lastSnapshotPath\": \"/tmp/old.png\""));
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        result
+    }
+
+    #[test]
+    fn save_library_uses_atomic_replace_without_leaving_temp_file() {
+        let _lock = super::HOME_ENV_LOCK.lock().unwrap();
+        let temp = tempdir().unwrap();
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path());
+
+        let result = (|| {
+            let store = LibraryStore::default();
+            save_library(&store).unwrap();
+
+            let library_path = super::library_path().unwrap();
+            assert!(library_path.exists());
+
+            let temp_name = library_path
+                .parent()
+                .unwrap()
+                .join(format!(".library.json.tmp-{}", std::process::id()));
+            assert!(!temp_name.exists());
+        })();
+
+        match previous_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
+        }
+
+        result
+    }
+
+    #[test]
+    fn atomic_writes_replace_all_persisted_state_files_without_leaving_temp_files() {
+        let _lock = super::HOME_ENV_LOCK.lock().unwrap();
+        let temp = tempdir().unwrap();
+        let previous_home = env::var_os("HOME");
+        env::set_var("HOME", temp.path());
+
+        let result = (|| {
+            save_library(&LibraryStore::default()).unwrap();
+            save_player_state(&DynamicPlayerState::default()).unwrap();
+            save_scene_runtime_settings(&SceneRuntimeSettings::default()).unwrap();
+            save_static_snapshot_sync_state(&StaticSnapshotSyncState::default()).unwrap();
+
+            let paths = [
+                super::library_path().unwrap(),
+                super::player_state_path().unwrap(),
+                scene_runtime_settings_path().unwrap(),
+                static_snapshot_sync_state_path().unwrap(),
+            ];
+
+            for path in paths {
+                assert!(path.exists(), "expected {} to exist", path.display());
+                let temp_path = path.parent().unwrap().join(format!(
+                    ".{}.tmp-{}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    std::process::id()
+                ));
+                assert!(
+                    !temp_path.exists(),
+                    "unexpected temp file left behind at {}",
+                    temp_path.display()
+                );
+            }
         })();
 
         match previous_home {

@@ -140,7 +140,13 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/gateway", () => mocks.gateway);
+vi.mock("../src/gateway", async () => {
+  const actual = await vi.importActual<typeof import("../src/gateway")>("../src/gateway");
+  return {
+    ...actual,
+    ...mocks.gateway,
+  };
+});
 vi.mock("../src/state/player-controller", () => ({
   usePlayerController: mocks.usePlayerController,
 }));
