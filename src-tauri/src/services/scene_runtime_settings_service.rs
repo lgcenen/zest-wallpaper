@@ -255,13 +255,48 @@ fn validate_directory_path(path: Option<String>, label: &str) -> Result<Option<S
             normalized.display()
         ));
     }
+    if is_overbroad_directory_path(&normalized, home_directory().as_deref()) {
+        return Err(format!(
+            "{label} path {} is too broad. Choose a specific subdirectory instead.",
+            normalized.display()
+        ));
+    }
 
     Ok(Some(normalized.display().to_string()))
 }
 
+fn home_directory() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+fn is_overbroad_directory_path(path: &Path, home_dir: Option<&Path>) -> bool {
+    if path == Path::new("/") || path == Path::new("/Volumes") {
+        return true;
+    }
+
+    if path.parent() == Some(Path::new("/Volumes")) {
+        return true;
+    }
+
+    if let Some(home_dir) = home_dir {
+        if path == home_dir
+            || path == home_dir.join("Library")
+            || path == home_dir.join("Library").join("Application Support")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, sync::Mutex};
+    use std::{
+        env, fs,
+        path::Path,
+        sync::Mutex,
+    };
 
     use chrono::Utc;
     use tempfile::tempdir;
@@ -276,7 +311,7 @@ mod tests {
 
     use super::{
         clear_scene_cache_with_app_cache, get_scene_cache_size_with_app_cache,
-        persisted_external_assets_root, snapshot_from_settings,
+        is_overbroad_directory_path, persisted_external_assets_root, snapshot_from_settings,
     };
 
     #[test]
@@ -448,5 +483,30 @@ mod tests {
             get_scene_cache_size_with_app_cache(&state, Some(app_cache)).expect("cache size"),
             0
         );
+    }
+
+    #[test]
+    fn broad_directory_guard_rejects_root_mount_and_home_containers() {
+        let home = Path::new("/Users/tester");
+
+        assert!(is_overbroad_directory_path(Path::new("/"), Some(home)));
+        assert!(is_overbroad_directory_path(Path::new("/Volumes"), Some(home)));
+        assert!(is_overbroad_directory_path(
+            Path::new("/Volumes/ExternalDisk"),
+            Some(home)
+        ));
+        assert!(is_overbroad_directory_path(home, Some(home)));
+        assert!(is_overbroad_directory_path(
+            &home.join("Library/Application Support"),
+            Some(home)
+        ));
+        assert!(!is_overbroad_directory_path(
+            Path::new("/Volumes/ExternalDisk/WallpaperAssets"),
+            Some(home)
+        ));
+        assert!(!is_overbroad_directory_path(
+            &home.join("Documents/WallpaperAssets"),
+            Some(home)
+        ));
     }
 }
