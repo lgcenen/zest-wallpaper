@@ -95,10 +95,6 @@ impl SceneRandom {
         ((self.state >> 11) as f64) / ((1_u64 << 53) as f64)
     }
 
-    fn centered(&mut self) -> f64 {
-        self.next_f64() - 0.5
-    }
-
     fn range(&mut self, min: f64, max: f64) -> f64 {
         min + (max - min).max(0.0) * self.next_f64()
     }

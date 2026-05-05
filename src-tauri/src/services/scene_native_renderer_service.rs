@@ -3505,61 +3505,6 @@ impl NativeSceneMetalRenderer {
         true
     }
 
-    fn encode_phase10_mesh_pass(
-        &self,
-        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-        target: &Retained<ProtocolObject<dyn MTLTexture>>,
-        projection: &SceneProjection,
-        visual: &ScenePhase10VisualPlan,
-        mesh_frame: &crate::services::scene_mdl_service::SceneMdlMeshFrame,
-        pass: &SceneMaterialPassPlan,
-        shader_defines: &BTreeMap<String, i32>,
-        pass_textures: &Phase10PassTextures,
-        uniforms: &Phase10EffectUniforms,
-        previous_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
-    ) -> bool {
-        let descriptor = MTLRenderPassDescriptor::new();
-        unsafe {
-            let attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
-            attachment.setTexture(Some(target.as_ref()));
-            attachment.setLoadAction(MTLLoadAction::Clear);
-            attachment.setStoreAction(MTLStoreAction::Store);
-            attachment.setClearColor(objc2_metal::MTLClearColor {
-                red: 0.0,
-                green: 0.0,
-                blue: 0.0,
-                alpha: 0.0,
-            });
-        }
-        let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(&descriptor) else {
-            return false;
-        };
-
-        if phase10_alpha_prefill_required(pass.blend_mode) {
-            if let Some(previous_texture) = previous_texture {
-                self.draw_phase10_fullscreen_texture(
-                    &encoder,
-                    previous_texture,
-                    SceneRenderColor::default(),
-                    SceneRenderBlendMode::Normal,
-                );
-            }
-        }
-
-        self.draw_phase10_mesh(
-            &encoder,
-            projection,
-            visual,
-            mesh_frame,
-            pass,
-            shader_defines,
-            pass_textures,
-            uniforms,
-        );
-        encoder.endEncoding();
-        true
-    }
-
     fn ensure_phase10_output_target(
         &mut self,
         key: &str,
@@ -4185,7 +4130,7 @@ fn should_retain_visual_in_draw_plan(
         || image_texture_loaded
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn compile_scene_shader_program_pipeline(
     device: &ProtocolObject<dyn MTLDevice>,
     program: &SceneShaderProgram,

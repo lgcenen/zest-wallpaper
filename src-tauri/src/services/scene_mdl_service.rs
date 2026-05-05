@@ -117,28 +117,6 @@ pub struct SceneMdlDocument {
     pub container_kind: SceneMdlContainerKind,
 }
 
-impl SceneMdlDocument {
-    pub fn attachment_world_matrix(
-        &self,
-        attachment: &SceneMdlAttachment,
-    ) -> glam::Mat4 {
-        let local_matrices: Vec<glam::Mat4> = self
-            .bones
-            .iter()
-            .map(|bone| mat4_from_cols(bone.local_matrix))
-            .collect();
-        if local_matrices.is_empty() {
-            return mat4_from_cols(attachment.matrix);
-        }
-        let model_matrices = build_model_space_matrices(&local_matrices, &self.bones);
-        let bone_model = model_matrices
-            .get(attachment.bone_index)
-            .copied()
-            .unwrap_or(glam::Mat4::IDENTITY);
-        bone_model * mat4_from_cols(attachment.matrix)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneMdlMeshFrame {
     pub positions: Vec<Vec3>,
