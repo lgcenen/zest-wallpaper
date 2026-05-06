@@ -71,7 +71,7 @@ function MediaStageSurface({
   if (!wallpaper) {
     return (
       <div className="stage-empty stage-empty-player">
-        <span>导入一个 Wallpaper Engine 目录后，这里会成为你的桌面舞台。</span>
+        <span>导入壁纸后，这里会显示你的壁纸。</span>
       </div>
     );
   }

@@ -146,7 +146,7 @@ const zhCnCopy: WorkbenchCopy = {
   cacheStorageSaving: "保存中…",
   cacheClearing: "清理中…",
   emptyLibraryTitle: "还没有本地壁纸",
-  emptyLibraryBody: "导入目录后，这里会显示你的 Workbench 壁纸库。",
+  emptyLibraryBody: "导入壁纸后，这里会显示你的壁纸。",
   emptySearchTitle: "没有匹配的壁纸",
   emptySearchBody: "换个关键词，或清空搜索后再试。",
   detailEyebrow: "详细信息",
@@ -163,7 +163,7 @@ const zhCnCopy: WorkbenchCopy = {
   desktopLabel: "当前桌面",
   applying: "应用中",
   applyReady: "等待应用",
-  applyLive: "动态播放已在桌面生效；静态快照同步只跟随当前活动壁纸。",
+  applyLive: "动态播放已在桌面生效。",
   applyFailed: "应用失败",
   runtimeDiagnosticLabel: "运行时诊断",
   runtimeDiagnosticMessage: (diagnostic: RuntimeDiagnostic) =>
@@ -217,7 +217,7 @@ const zhCnCopy: WorkbenchCopy = {
   bannerMessage: (banner: WorkbenchBannerState) => {
     switch (banner.key) {
       case "dropHint":
-        return "把 Windows 上的壁纸目录拖进来，或点击导入。";
+        return "点击导入壁纸目录。";
       case "libraryReadFailed":
         return `读取本地库失败：${String(banner.values?.error ?? "")}`;
       case "sceneAssetsReadFailed":
@@ -225,7 +225,7 @@ const zhCnCopy: WorkbenchCopy = {
       case "dropWithoutPath":
         return "拖拽没有暴露本地路径，改用导入按钮会更稳。";
       case "importing":
-        return "正在逆向导入并建立本地素材索引…";
+        return "正在导入并建立本地素材索引…";
       case "importSuccess":
         return `${String(banner.values?.title ?? "")} 已导入。`;
       case "importFailed":
@@ -255,7 +255,7 @@ const zhCnCopy: WorkbenchCopy = {
       case "removeFailed":
         return `删除失败：${String(banner.values?.error ?? "")}`;
       case "cacheCleared":
-        return "Scene 缓存已清理。";
+        return "缓存已清理。";
       case "cacheClearFailed":
         return `清理缓存失败：${String(banner.values?.error ?? "")}`;
       case "cachePathSetFailed":
