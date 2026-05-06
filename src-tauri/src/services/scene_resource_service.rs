@@ -1228,12 +1228,20 @@ pub fn default_builtin_scene_assets_root() -> PathBuf {
         .join("scene")
 }
 
+fn builtin_scene_assets_root_from_resource_dir(resource_dir: &Path) -> Option<PathBuf> {
+    [
+        resource_dir.join("scene"),
+        resource_dir.join("resources").join("scene"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
 pub fn builtin_scene_assets_root_for_app(app: &AppHandle) -> PathBuf {
     app.path()
         .resource_dir()
         .ok()
-        .map(|path| path.join("scene"))
-        .filter(|path| path.exists())
+        .and_then(|path| builtin_scene_assets_root_from_resource_dir(&path))
         .unwrap_or_else(default_builtin_scene_assets_root)
 }
 
@@ -1783,6 +1791,32 @@ mod tests {
         assert_eq!(
             scene_text_font_reference_kind("systemfont_arial"),
             Some(SceneTextFontReferenceKind::SystemFontAlias)
+        );
+    }
+
+    #[test]
+    fn builtin_assets_root_accepts_direct_scene_resource_dir() {
+        let temp = tempdir().expect("temp dir");
+        let resource_dir = temp.path().join("Resources");
+        let scene_dir = resource_dir.join("scene");
+        fs::create_dir_all(&scene_dir).expect("scene dir");
+
+        assert_eq!(
+            super::builtin_scene_assets_root_from_resource_dir(&resource_dir),
+            Some(scene_dir)
+        );
+    }
+
+    #[test]
+    fn builtin_assets_root_accepts_nested_resources_scene_dir() {
+        let temp = tempdir().expect("temp dir");
+        let resource_dir = temp.path().join("Resources");
+        let scene_dir = resource_dir.join("resources").join("scene");
+        fs::create_dir_all(&scene_dir).expect("nested scene dir");
+
+        assert_eq!(
+            super::builtin_scene_assets_root_from_resource_dir(&resource_dir),
+            Some(scene_dir)
         );
     }
 }
