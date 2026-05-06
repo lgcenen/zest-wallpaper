@@ -31,7 +31,7 @@ This project is under active development.
 
 ## Community
 
-- QQ group: `867740762`
+- QQ group: [`867740762`](https://qm.qq.com/q/984wIUELGE)
 
 ## Scope
 
@@ -48,11 +48,31 @@ This project is under active development.
 ## Platform and Stack
 
 - macOS `14.0+` only
+- current packaged builds support Apple Silicon (`arm64`) only
+- Intel Mac builds are not supported at this time
 - Tauri 2
 - React + Vite
 - Rust
 
-## Development
+## Installation
+
+### 1. Download from Releases
+
+Download the latest test build from GitHub Releases.
+
+If macOS blocks the app from opening, try this first:
+
+- Go to `System Settings -> Privacy & Security` and click `Open Anyway`
+
+You can also run this in Terminal:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Zest Wallpaper.app"
+```
+
+Then open the app again.
+
+### 2. Build it yourself
 
 Prerequisites:
 
@@ -98,19 +118,6 @@ cargo test -j 1 --manifest-path src-tauri/Cargo.toml
 cargo check -j 1 --manifest-path src-tauri/Cargo.toml
 ```
 
-## Assets and Legal Boundaries
-
-This repository does not ship third-party proprietary wallpaper assets.
-
-Important constraints:
-
-- imported wallpaper content is expected to come from the user
-- external `assets` directories may be mounted locally to improve Scene compatibility
-- the app must remain runnable even without external assets
-- this project does not copy source code, resources, or symbol naming from third-party reference apps
-
-If you use local external assets, keep them outside this repository.
-
 ## Special Thanks
 
 Thanks to these projects for public tooling and ecosystem reference value:
@@ -124,4 +131,14 @@ Apache License 2.0. See [LICENSE](./LICENSE).
 
 ## Disclaimer
 
-`Wallpaper Engine` is a third-party product. This project is an independent macOS player and is not affiliated with, endorsed by, or distributed with proprietary Wallpaper Engine assets.
+`Wallpaper Engine` is a third-party product. This project is an independent macOS player. It is not affiliated with, endorsed by, authorized by, or distributed together with Wallpaper Engine or any proprietary Wallpaper Engine assets.
+
+Additional boundaries:
+
+- this repository does not ship third-party proprietary wallpaper assets
+- imported wallpaper content is expected to come from the user
+- external `assets` directories may be mounted locally to improve Scene compatibility
+- the app is expected to remain runnable even without external assets
+- if you use local external assets, keep them outside this repository
+
+This repository is intended to provide an independent player implementation, not a redistribution channel for third-party commercial content.

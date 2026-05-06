@@ -31,7 +31,7 @@
 
 ## 社区交流
 
-- 项目 QQ 交流群：`867740762`
+- 项目 QQ 交流群：[`867740762`](https://qm.qq.com/q/984wIUELGE)
 
 ## 支持范围
 
@@ -48,11 +48,31 @@
 ## 平台与技术栈
 
 - 仅限 macOS `14.0+` 使用
+- 当前打包产物仅支持 Apple Silicon (`arm64`)
+- 目前暂不支持 Intel 芯片 Mac
 - Tauri 2
 - React + Vite
 - Rust
 
-## 开发
+## 安装
+
+### 1. 从 Releases 下载
+
+从 GitHub Releases 下载最新测试版。
+
+如果 macOS 阻止应用打开，你可以先尝试：
+
+- 前往“系统设置 -> 隐私与安全性”，点击“仍要打开”
+
+也可以在终端执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Zest Wallpaper.app"
+```
+
+然后重新打开应用。
+
+### 2. 自行构建
 
 前置依赖：
 
@@ -98,19 +118,6 @@ cargo test -j 1 --manifest-path src-tauri/Cargo.toml
 cargo check -j 1 --manifest-path src-tauri/Cargo.toml
 ```
 
-## 资源与法律边界
-
-本仓库不分发第三方专有壁纸资源。
-
-需要明确的约束：
-
-- 导入的壁纸内容应由用户自行提供
-- 可以通过本地挂载外部 `assets` 目录来提升 Scene 兼容性
-- 即使没有外部 `assets`，应用本身也必须保持可运行
-- 本项目不会复制第三方参考应用的源码、资源或符号命名
-
-如果你使用本地外部 `assets`，请将它们保存在仓库之外。
-
 ## 特别鸣谢
 
 感谢以下项目提供的公开工具与生态参考价值：
@@ -124,4 +131,14 @@ Apache License 2.0。参见 [LICENSE](./LICENSE)。
 
 ## 声明
 
-`Wallpaper Engine` 是第三方产品。本项目是一个独立的 macOS 播放器，不隶属于、也不受 Wallpaper Engine 官方认可，且不随项目分发其专有资源。
+`Wallpaper Engine` 是第三方产品。本项目是一个独立的 macOS 播放器，不隶属于、不受其官方认可、不代表其官方立场，也不与 Wallpaper Engine 或其专有资源一同分发。
+
+还需要明确以下边界：
+
+- 本仓库不分发第三方专有壁纸资源
+- 导入的壁纸内容应由用户自行提供
+- 可以通过本地挂载外部 `assets` 目录来提升 Scene 兼容性
+- 即使没有外部 `assets`，应用本身也必须保持可运行
+- 如果你使用本地外部 `assets`，请将它们保存在仓库之外
+
+本仓库的目标是提供独立播放器实现，而不是作为任何第三方商业内容的再分发渠道。

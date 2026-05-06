@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    permissions:
+      contents: write
+
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Validate Rust tests
+        run: cargo test -j 1 --manifest-path src-tauri/Cargo.toml
+
+      - name: Validate Rust check
+        run: cargo check -j 1 --manifest-path src-tauri/Cargo.toml
+
+      - name: Validate frontend build
+        run: npm run build
+
+      - name: Build macOS app bundle
+        run: npm run tauri:build -- --bundles app
+
+      - name: Package unsigned DMG
+        run: |
+          APP_NAME="Zest Wallpaper.app" \
+          APP_PATH="${GITHUB_WORKSPACE}/src-tauri/target/release/bundle/macos/Zest Wallpaper.app" \
+          OUTPUT_DIR="${GITHUB_WORKSPACE}/src-tauri/target/release/bundle/dmg-manual" \
+          STAGING_DIR="${RUNNER_TEMP}/zest-dmg" \
+          DMG_NAME="Zest Wallpaper_${GITHUB_REF_NAME}_aarch64.dmg" \
+          "${GITHUB_WORKSPACE}/scripts/build-unsigned-dmg.sh"
+
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          bash "${GITHUB_WORKSPACE}/scripts/generate-release-notes.sh" "${TAG}" > "${RUNNER_TEMP}/release-notes.md"
+
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          DMG_PATH="$(find src-tauri/target/release/bundle/dmg-manual -name '*.dmg' -print -quit)"
+          gh release view "${TAG}" >/dev/null 2>&1 || gh release create "${TAG}" \
+            --draft \
+            --prerelease \
+            --title "${TAG}" \
+            --notes-file "${RUNNER_TEMP}/release-notes.md"
+          gh release upload "${TAG}" "${DMG_PATH}" --clobber
