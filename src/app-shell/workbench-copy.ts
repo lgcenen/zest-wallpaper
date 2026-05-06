@@ -53,8 +53,10 @@ export interface WorkbenchCopy {
   settingsTabGeneral: string;
   settingsTabAbout: string;
   aboutHeading: string;
-  copyrightLabel: string;
+  appLabel: string;
   versionLabel: string;
+  licenseLabel: string;
+  githubLabel: string;
   qqGroupLabel: string;
   cacheLabel: string;
   cacheBrowseAction: string;
@@ -128,8 +130,10 @@ const zhCnCopy: WorkbenchCopy = {
   settingsTabGeneral: "常规",
   settingsTabAbout: "关于",
   aboutHeading: "关于 Zest Wallpaper",
-  copyrightLabel: "Copyright",
+  appLabel: "应用名",
   versionLabel: "版本",
+  licenseLabel: "License",
+  githubLabel: "GitHub",
   qqGroupLabel: "QQ 群",
   cacheLabel: "Scene 缓存",
   cacheBrowseAction: "选择目录",
@@ -279,8 +283,10 @@ const englishCopy: WorkbenchCopy = {
   settingsTabGeneral: "General",
   settingsTabAbout: "About",
   aboutHeading: "About Zest Wallpaper",
-  copyrightLabel: "Copyright",
+  appLabel: "App",
   versionLabel: "Version",
+  licenseLabel: "License",
+  githubLabel: "GitHub",
   qqGroupLabel: "QQ Group",
   cacheLabel: "Scene Cache",
   cacheBrowseAction: "Choose Folder",

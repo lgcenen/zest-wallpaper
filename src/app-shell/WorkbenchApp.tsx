@@ -338,6 +338,7 @@ function SettingsPopover({
   onClearCache: () => void;
 }) {
   const [tab, setTab] = useState<"general" | "about">("general");
+  const githubUrl = "https://github.com/lgcenen/zest-wallpaper";
 
   const externalAssetsPath = sceneRuntimeSettings.externalAssetsPath?.trim() ?? "";
   const sceneAssetsStatus = !externalAssetsPath
@@ -507,11 +508,28 @@ function SettingsPopover({
         <div className="settings-about">
           <strong className="settings-about-heading">{copy.aboutHeading}</strong>
           <div className="settings-about-grid">
-            <span className="settings-about-label">{copy.copyrightLabel}</span>
-            <span className="settings-about-value">2026 lin. All rights reserved.</span>
+            <span className="settings-about-label">{copy.appLabel}</span>
+            <span className="settings-about-value">Zest Wallpaper</span>
 
             <span className="settings-about-label">{copy.versionLabel}</span>
             <span className="settings-about-value">{appVersion}</span>
+
+            <span className="settings-about-label">{copy.licenseLabel}</span>
+            <span className="settings-about-value">Apache-2.0</span>
+
+            <span className="settings-about-label">{copy.githubLabel}</span>
+            <a
+              className="settings-about-link"
+              href={githubUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => {
+                event.preventDefault();
+                void openExternalUrl(githubUrl);
+              }}
+            >
+              {githubUrl}
+            </a>
 
             <span className="settings-about-label">{copy.qqGroupLabel}</span>
             <span className="settings-about-value">867740762</span>
