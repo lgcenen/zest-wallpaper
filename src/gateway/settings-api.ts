@@ -1,6 +1,6 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
-import type { SceneRuntimeSettingsSnapshot } from "../types";
+import type { RuntimeAudioOutputDevice, SceneRuntimeSettingsSnapshot } from "../types";
 
 export function getAppVersion() {
   return getVersion();
@@ -20,6 +20,18 @@ export function setCacheStoragePath(path: string | null) {
 
 export function clearSceneCache() {
   return invoke<void>("clear_scene_cache");
+}
+
+export function setRuntimeAudioOutputVolume(volume: number) {
+  return invoke<void>("set_runtime_audio_output_volume", { volume });
+}
+
+export function listRuntimeAudioOutputDevices() {
+  return invoke<RuntimeAudioOutputDevice[]>("list_runtime_audio_output_devices");
+}
+
+export function setRuntimeAudioOutputDevice(deviceId: string | null) {
+  return invoke<void>("set_runtime_audio_output_device", { deviceId });
 }
 
 export function getSceneCacheSize() {

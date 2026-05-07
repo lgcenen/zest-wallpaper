@@ -16,7 +16,9 @@ use commands::{
     },
     settings_commands::{
         clear_scene_cache, fetch_external_image, get_scene_cache_size, get_scene_runtime_settings,
-        open_external_url, set_cache_storage_path, set_scene_external_assets_path,
+        list_runtime_audio_output_devices, open_external_url, set_cache_storage_path,
+        set_runtime_audio_output_device, set_runtime_audio_output_volume,
+        set_scene_external_assets_path,
     },
     wallpaper_commands::{
         get_wallpaper_details, import_wallpaper, list_wallpapers, remove_wallpaper,
@@ -47,6 +49,9 @@ pub fn run() {
             get_player_diagnostics,
             set_scene_external_assets_path,
             set_cache_storage_path,
+            set_runtime_audio_output_volume,
+            list_runtime_audio_output_devices,
+            set_runtime_audio_output_device,
             clear_scene_cache,
             get_scene_cache_size,
             open_external_url,

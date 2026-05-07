@@ -4,15 +4,21 @@ export type WorkbenchThemeMode = "light" | "dark" | "system";
 export type WorkbenchResolvedTheme = "light" | "dark";
 export type WorkbenchLanguage = "zh-CN" | "en";
 export type WorkbenchSortKey = "recent" | "title";
+export type WorkbenchAudioOutputDevice = string;
 export const WORKBENCH_GUI_OPACITY_MIN = 55;
 export const WORKBENCH_GUI_OPACITY_MAX = 100;
 export const WORKBENCH_GUI_OPACITY_STEP = 5;
+export const WORKBENCH_AUDIO_OUTPUT_VOLUME_MIN = 0;
+export const WORKBENCH_AUDIO_OUTPUT_VOLUME_MAX = 100;
+export const WORKBENCH_AUDIO_OUTPUT_VOLUME_STEP = 5;
 
 export interface WorkbenchPreferences {
   themeMode: WorkbenchThemeMode;
   language: WorkbenchLanguage;
   sortKey: WorkbenchSortKey;
   guiOpacity: number;
+  audioOutputVolume: number;
+  audioOutputDevice: WorkbenchAudioOutputDevice;
 }
 
 const STORAGE_KEY = "wallpaper-workbench.preferences";
@@ -30,6 +36,8 @@ function defaultPreferences(): WorkbenchPreferences {
     language: inferLanguage(),
     sortKey: "recent",
     guiOpacity: WORKBENCH_GUI_OPACITY_MAX,
+    audioOutputVolume: WORKBENCH_AUDIO_OUTPUT_VOLUME_MAX,
+    audioOutputDevice: "system-default",
   };
 }
 
@@ -45,6 +53,14 @@ function isSortKey(value: unknown): value is WorkbenchSortKey {
   return value === "recent" || value === "title";
 }
 
+function normalizeAudioOutputDevice(value: unknown, fallback = "system-default") {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
 function normalizeGuiOpacity(value: unknown, fallback = WORKBENCH_GUI_OPACITY_MAX) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
@@ -53,6 +69,20 @@ function normalizeGuiOpacity(value: unknown, fallback = WORKBENCH_GUI_OPACITY_MA
   return Math.min(
     WORKBENCH_GUI_OPACITY_MAX,
     Math.max(WORKBENCH_GUI_OPACITY_MIN, Math.round(numeric)),
+  );
+}
+
+function normalizeAudioOutputVolume(
+  value: unknown,
+  fallback = WORKBENCH_AUDIO_OUTPUT_VOLUME_MAX,
+) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(
+    WORKBENCH_AUDIO_OUTPUT_VOLUME_MAX,
+    Math.max(WORKBENCH_AUDIO_OUTPUT_VOLUME_MIN, Math.round(numeric)),
   );
 }
 
@@ -74,12 +104,23 @@ export function readStoredWorkbenchPreferences(): WorkbenchPreferences {
     if (!raw) {
       return fallback;
     }
-    const parsed = JSON.parse(raw) as Partial<WorkbenchPreferences>;
+    const parsed = JSON.parse(raw) as Partial<WorkbenchPreferences> & {
+      audioInputDevice?: unknown;
+    };
+    const storedAudioOutputDevice = parsed.audioOutputDevice ?? parsed.audioInputDevice;
     return {
       themeMode: isThemeMode(parsed.themeMode) ? parsed.themeMode : fallback.themeMode,
       language: isLanguage(parsed.language) ? parsed.language : fallback.language,
       sortKey: isSortKey(parsed.sortKey) ? parsed.sortKey : fallback.sortKey,
       guiOpacity: normalizeGuiOpacity(parsed.guiOpacity, fallback.guiOpacity),
+      audioOutputVolume: normalizeAudioOutputVolume(
+        parsed.audioOutputVolume,
+        fallback.audioOutputVolume,
+      ),
+      audioOutputDevice: normalizeAudioOutputDevice(
+        storedAudioOutputDevice,
+        fallback.audioOutputDevice,
+      ),
     };
   } catch {
     return fallback;

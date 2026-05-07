@@ -100,10 +100,15 @@ export interface WorkbenchCopy {
   sceneAssetsLoading: string;
   sceneAssetsSaving: string;
   guiOpacityLabel: string;
+  audioSettingsLabel: string;
+  audioOutputVolumeLabel: string;
+  audioOutputDeviceLabel: string;
+  audioOutputSystemDefaultName: string;
   themeModeLabel: string;
   languageLabel: string;
   defaultSortLabel: string;
   guiOpacityValue: (value: number) => string;
+  audioOutputVolumeValue: (value: number) => string;
   themeModeName: (mode: WorkbenchThemeMode) => string;
   languageName: (value: WorkbenchLanguage) => string;
   sortName: (value: WorkbenchSortKey) => string;
@@ -178,10 +183,15 @@ const zhCnCopy: WorkbenchCopy = {
   sceneAssetsLoading: "读取中…",
   sceneAssetsSaving: "保存中…",
   guiOpacityLabel: "GUI 透明度",
+  audioSettingsLabel: "音频设置",
+  audioOutputVolumeLabel: "音频输出音量",
+  audioOutputDeviceLabel: "音频输出设备",
+  audioOutputSystemDefaultName: "系统默认输出",
   themeModeLabel: "外观",
   languageLabel: "语言",
   defaultSortLabel: "默认排序",
   guiOpacityValue: (value: number) => `${value}%`,
+  audioOutputVolumeValue: (value: number) => `${value}%`,
   themeModeName: (mode: WorkbenchThemeMode) => {
     switch (mode) {
       case "light":
@@ -333,10 +343,15 @@ const englishCopy: WorkbenchCopy = {
   sceneAssetsLoading: "Loading…",
   sceneAssetsSaving: "Saving…",
   guiOpacityLabel: "GUI Opacity",
+  audioSettingsLabel: "Audio Settings",
+  audioOutputVolumeLabel: "Audio Output Volume",
+  audioOutputDeviceLabel: "Audio Output Device",
+  audioOutputSystemDefaultName: "System Default Output",
   themeModeLabel: "Appearance",
   languageLabel: "Language",
   defaultSortLabel: "Default Sort",
   guiOpacityValue: (value: number) => `${value}%`,
+  audioOutputVolumeValue: (value: number) => `${value}%`,
   themeModeName: (mode: WorkbenchThemeMode) => {
     switch (mode) {
       case "light":

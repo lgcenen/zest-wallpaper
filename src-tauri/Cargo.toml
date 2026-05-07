@@ -41,6 +41,8 @@ objc2-avf-audio = { version = "0.3.2", features = ["AVAudioPlayer"] }
 objc2-av-foundation = { version = "0.3.2", features = ["AVAnimation", "AVAsset", "AVAssetImageGenerator", "AVAudioPlayer", "AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVPlayerLooper", "objc2-core-graphics", "objc2-core-media", "objc2-core-video"] }
 objc2-av-kit = { version = "0.3.2", default-features = false, features = ["AVPlayerView", "objc2-app-kit", "objc2-av-foundation"] }
 objc2-core-foundation = "0.3.2"
+objc2-core-audio = { version = "0.3.2", features = ["AudioHardware"] }
+objc2-core-audio-types = "0.3.2"
 objc2-core-graphics = { version = "0.3.2", features = ["CGBitmapContext", "CGColorSpace", "CGContext", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage", "CGSession", "CGWindowLevel"] }
 objc2-core-text = { version = "0.3.2", features = ["CTFontDescriptor", "CTFontManager"] }
 objc2-core-media = { version = "0.3.2", features = ["CMTime"] }

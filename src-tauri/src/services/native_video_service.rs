@@ -8,7 +8,10 @@ use tauri::{AppHandle, Manager};
 
 use crate::{
     models::{WallpaperRuntime, WallpaperRuntimeRecord},
-    services::{diagnostic_service, window_service},
+    services::{
+        diagnostic_service, runtime_audio_settings_service::normalize_output_volume_percent,
+        window_service,
+    },
 };
 
 #[cfg(target_os = "macos")]
@@ -26,15 +29,26 @@ use objc2_av_foundation::{
 #[cfg(target_os = "macos")]
 use objc2_av_kit::{AVPlayerView, AVPlayerViewControlsStyle};
 #[cfg(target_os = "macos")]
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSURL};
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSURL};
 
 const DIAGNOSTIC_SUBSYSTEM: &str = "native-video";
 const MISSING_SOURCE_CODE: &str = "missing-source";
 const SYNC_FAILED_CODE: &str = "sync-failed";
 
-#[derive(Default)]
 pub struct NativeVideoServiceState {
     runtime: Mutex<NativeVideoRuntime>,
+    output_volume: Mutex<f64>,
+    output_device_uid: Mutex<Option<String>>,
+}
+
+impl Default for NativeVideoServiceState {
+    fn default() -> Self {
+        Self {
+            runtime: Mutex::new(NativeVideoRuntime::default()),
+            output_volume: Mutex::new(1.0),
+            output_device_uid: Mutex::new(None),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -96,9 +110,18 @@ pub fn sync_native_video_playback(
         };
 
         let spec = desired_video_playback_spec(app, runtime_record, paused)?;
+        let output_volume = *state
+            .output_volume
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let output_device_uid = state
+            .output_device_uid
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clone();
         let mut runtime = state.runtime.lock().map_err(|error| error.to_string())?;
         let plan = plan_native_video_runtime(&runtime.snapshot(), spec.as_ref());
-        apply_runtime_plan(&mut runtime, app, plan)
+        apply_runtime_plan(&mut runtime, app, plan, output_volume, output_device_uid)
     })();
     match &result {
         Ok(()) => {
@@ -116,6 +139,52 @@ pub fn sync_native_video_playback(
         }
     }
     result
+}
+
+pub fn set_native_video_output_volume(app: &AppHandle, volume: f64) -> Result<(), String> {
+    let normalized = normalize_output_volume_percent(volume);
+    let Some(state) = app.try_state::<NativeVideoServiceState>() else {
+        return Ok(());
+    };
+
+    {
+        let mut current = state
+            .output_volume
+            .lock()
+            .map_err(|error| error.to_string())?;
+        *current = normalized;
+    }
+
+    let runtime = state.runtime.lock().map_err(|error| error.to_string())?;
+    if let Some(session) = runtime.session.as_ref() {
+        session.set_output_volume(normalized);
+    }
+
+    Ok(())
+}
+
+pub fn set_native_video_output_device(
+    app: &AppHandle,
+    device_uid: Option<String>,
+) -> Result<(), String> {
+    let Some(state) = app.try_state::<NativeVideoServiceState>() else {
+        return Ok(());
+    };
+
+    {
+        let mut current = state
+            .output_device_uid
+            .lock()
+            .map_err(|error| error.to_string())?;
+        *current = device_uid.clone();
+    }
+
+    let runtime = state.runtime.lock().map_err(|error| error.to_string())?;
+    if let Some(session) = runtime.session.as_ref() {
+        session.set_output_device(device_uid);
+    }
+
+    Ok(())
 }
 
 fn desired_video_playback_spec(
@@ -260,6 +329,8 @@ fn apply_runtime_plan(
     runtime: &mut NativeVideoRuntime,
     app: &AppHandle,
     plan: NativeVideoRuntimePlan,
+    output_volume: f64,
+    output_device_uid: Option<String>,
 ) -> Result<(), String> {
     for label in &plan.remove_labels {
         runtime.remove_view(label);
@@ -289,6 +360,8 @@ fn apply_runtime_plan(
                 &source_path,
                 paused,
                 looping_enabled,
+                output_volume,
+                output_device_uid.clone(),
             )?);
         }
         SessionPlan::UpdatePause { paused } => {
@@ -301,6 +374,8 @@ fn apply_runtime_plan(
     let (Some(session), views) = (runtime.session.as_ref(), &mut runtime.views) else {
         return Ok(());
     };
+    session.set_output_volume(output_volume);
+    session.set_output_device(output_device_uid);
     for label in &plan.ensure_labels {
         ensure_view_attached(views, app, label, session)?;
     }
@@ -368,13 +443,25 @@ struct NativeVideoSessionHandle {
 }
 
 impl NativeVideoSessionHandle {
-    fn create(source_path: &str, paused: bool, looping_enabled: bool) -> Result<Self, String> {
+    fn create(
+        source_path: &str,
+        paused: bool,
+        looping_enabled: bool,
+        output_volume: f64,
+        output_device_uid: Option<String>,
+    ) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
         {
             let source_path_string = source_path.to_string();
             let host = run_on_main(move |mtm| {
-                NativeVideoSessionHost::create(&source_path_string, paused, mtm)
-                    .map(|host| MainThreadBound::new(host, mtm))
+                NativeVideoSessionHost::create(
+                    &source_path_string,
+                    paused,
+                    output_volume,
+                    output_device_uid.as_deref(),
+                    mtm,
+                )
+                .map(|host| MainThreadBound::new(host, mtm))
             })?;
 
             return Ok(Self {
@@ -387,6 +474,7 @@ impl NativeVideoSessionHandle {
 
         #[cfg(not(target_os = "macos"))]
         {
+            let _ = output_device_uid;
             Ok(Self {
                 source_path: source_path.to_string(),
                 paused,
@@ -403,6 +491,32 @@ impl NativeVideoSessionHandle {
             let host = self.host.get(unsafe { MainThreadMarker::new_unchecked() });
             host.set_paused(paused);
         });
+    }
+
+    fn set_output_volume(&self, output_volume: f64) {
+        #[cfg(target_os = "macos")]
+        run_on_main(|_mtm| {
+            let host = self.host.get(unsafe { MainThreadMarker::new_unchecked() });
+            host.set_output_volume(output_volume);
+        });
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = output_volume;
+        }
+    }
+
+    fn set_output_device(&self, output_device_uid: Option<String>) {
+        #[cfg(target_os = "macos")]
+        run_on_main(move |_mtm| {
+            let host = self.host.get(unsafe { MainThreadMarker::new_unchecked() });
+            host.set_output_device(output_device_uid.as_deref());
+        });
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = output_device_uid;
+        }
     }
 
     fn teardown(self) {
@@ -481,18 +595,25 @@ struct NativeVideoSessionHost {
 
 #[cfg(target_os = "macos")]
 impl NativeVideoSessionHost {
-    fn create(source_path: &str, paused: bool, mtm: MainThreadMarker) -> Result<Self, String> {
+    fn create(
+        source_path: &str,
+        paused: bool,
+        output_volume: f64,
+        output_device_uid: Option<&str>,
+        mtm: MainThreadMarker,
+    ) -> Result<Self, String> {
         let url = NSURL::from_file_path(source_path)
             .ok_or_else(|| format!("native video runtime rejected invalid path: {source_path}"))?;
         let item = unsafe { AVPlayerItem::playerItemWithURL(&url, mtm) };
         let player = unsafe { AVQueuePlayer::new(MainThreadMarker::new_unchecked()) };
         unsafe {
-            player.setMuted(true);
-            player.setVolume(0.0);
+            player.setMuted(output_volume <= 0.001);
+            player.setVolume(output_volume as f32);
             player.setPreventsDisplaySleepDuringVideoPlayback(false);
         }
         let looper = unsafe { AVPlayerLooper::playerLooperWithPlayer_templateItem(&player, &item) };
         let host = Self { player, looper };
+        host.set_output_device(output_device_uid);
         host.set_paused(paused);
         Ok(host)
     }
@@ -504,6 +625,22 @@ impl NativeVideoSessionHost {
             } else {
                 self.player.play();
             }
+        }
+    }
+
+    fn set_output_volume(&self, output_volume: f64) {
+        let normalized = output_volume.clamp(0.0, 1.0);
+        unsafe {
+            self.player.setMuted(normalized <= 0.001);
+            self.player.setVolume(normalized as f32);
+        }
+    }
+
+    fn set_output_device(&self, output_device_uid: Option<&str>) {
+        let output_device_uid = output_device_uid.map(NSString::from_str);
+        unsafe {
+            self.player
+                .setAudioOutputDeviceUniqueID(output_device_uid.as_deref());
         }
     }
 

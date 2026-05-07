@@ -8,16 +8,20 @@ import {
   fetchExternalImage,
   getAppVersion,
   importWallpaper,
+  listRuntimeAudioOutputDevices,
   listWallpapers,
   openExternalUrl,
   pauseResumeDynamic,
   removeWallpaper,
+  setRuntimeAudioOutputDevice,
+  setRuntimeAudioOutputVolume,
   setWallpaperProperties,
   toAssetUrl,
 } from "../gateway";
 import type {
   PlayerRuntimeState,
   PropertySection,
+  RuntimeAudioOutputDevice,
   RuntimeDiagnostic,
   SceneRuntimeSettingsSnapshot,
   WallpaperProperty,
@@ -49,7 +53,11 @@ import {
   WORKBENCH_GUI_OPACITY_MAX,
   WORKBENCH_GUI_OPACITY_MIN,
   WORKBENCH_GUI_OPACITY_STEP,
+  WORKBENCH_AUDIO_OUTPUT_VOLUME_MAX,
+  WORKBENCH_AUDIO_OUTPUT_VOLUME_MIN,
+  WORKBENCH_AUDIO_OUTPUT_VOLUME_STEP,
   useWorkbenchPreferences,
+  type WorkbenchAudioOutputDevice,
   type WorkbenchLanguage,
   type WorkbenchSortKey,
   type WorkbenchThemeMode,
@@ -303,6 +311,9 @@ function SettingsPopover({
   language,
   sortKey,
   guiOpacity,
+  audioOutputVolume,
+  audioOutputDevice,
+  audioOutputDeviceOptions,
   sceneRuntimeSettings,
   sceneRuntimeSettingsLoading,
   sceneRuntimeSettingsSaving,
@@ -312,6 +323,8 @@ function SettingsPopover({
   onLanguageChange,
   onSortKeyChange,
   onGuiOpacityChange,
+  onAudioOutputVolumeChange,
+  onAudioOutputDeviceChange,
   onChooseSceneAssets,
   onClearSceneAssets,
   onChooseCacheDir,
@@ -323,6 +336,9 @@ function SettingsPopover({
   language: WorkbenchLanguage;
   sortKey: WorkbenchSortKey;
   guiOpacity: number;
+  audioOutputVolume: number;
+  audioOutputDevice: WorkbenchAudioOutputDevice;
+  audioOutputDeviceOptions: WorkbenchSelectOption[];
   sceneRuntimeSettings: SceneRuntimeSettingsSnapshot;
   sceneRuntimeSettingsLoading: boolean;
   sceneRuntimeSettingsSaving: boolean;
@@ -332,6 +348,8 @@ function SettingsPopover({
   onLanguageChange: (value: WorkbenchLanguage) => void;
   onSortKeyChange: (value: WorkbenchSortKey) => void;
   onGuiOpacityChange: (value: number) => void;
+  onAudioOutputVolumeChange: (value: number) => void;
+  onAudioOutputDeviceChange: (value: WorkbenchAudioOutputDevice) => void;
   onChooseSceneAssets: () => void;
   onClearSceneAssets: () => void;
   onChooseCacheDir: () => void;
@@ -429,6 +447,41 @@ function SettingsPopover({
               <strong className="settings-range-value">{copy.guiOpacityValue(guiOpacity)}</strong>
             </div>
           </label>
+
+          <section className="settings-audio" aria-label={copy.audioSettingsLabel}>
+            <div className="settings-section-heading">
+              <strong>{copy.audioSettingsLabel}</strong>
+            </div>
+
+            <label className="settings-field">
+              <span>{copy.audioOutputVolumeLabel}</span>
+              <div className="settings-range-row">
+                <input
+                  className="property-range settings-range"
+                  type="range"
+                  min={WORKBENCH_AUDIO_OUTPUT_VOLUME_MIN}
+                  max={WORKBENCH_AUDIO_OUTPUT_VOLUME_MAX}
+                  step={WORKBENCH_AUDIO_OUTPUT_VOLUME_STEP}
+                  value={audioOutputVolume}
+                  aria-label={copy.audioOutputVolumeLabel}
+                  onInput={(event) =>
+                    onAudioOutputVolumeChange(Number((event.target as HTMLInputElement).value))
+                  }
+                  onChange={(event) => onAudioOutputVolumeChange(Number(event.target.value))}
+                />
+                <strong className="settings-range-value">
+                  {copy.audioOutputVolumeValue(audioOutputVolume)}
+                </strong>
+              </div>
+            </label>
+
+            <SelectField
+              label={copy.audioOutputDeviceLabel}
+              value={audioOutputDevice}
+              options={audioOutputDeviceOptions}
+              onChange={(value) => onAudioOutputDeviceChange(value)}
+            />
+          </section>
 
           <div className="settings-runtime">
             <label className="settings-field">
@@ -915,6 +968,7 @@ function LibraryPane({
   copy,
   resolvedTheme,
   preferences,
+  audioOutputDeviceOptions,
   sceneRuntimeSettings,
   sceneRuntimeSettingsLoading,
   sceneRuntimeSettingsSaving,
@@ -926,6 +980,8 @@ function LibraryPane({
   onThemeModeChange,
   onLanguageChange,
   onGuiOpacityChange,
+  onAudioOutputVolumeChange,
+  onAudioOutputDeviceChange,
   onChooseSceneAssets,
   onClearSceneAssets,
   onChooseCacheDir,
@@ -951,7 +1007,10 @@ function LibraryPane({
     language: WorkbenchLanguage;
     sortKey: WorkbenchSortKey;
     guiOpacity: number;
+    audioOutputVolume: number;
+    audioOutputDevice: WorkbenchAudioOutputDevice;
   };
+  audioOutputDeviceOptions: WorkbenchSelectOption[];
   sceneRuntimeSettings: SceneRuntimeSettingsSnapshot;
   sceneRuntimeSettingsLoading: boolean;
   sceneRuntimeSettingsSaving: boolean;
@@ -963,6 +1022,8 @@ function LibraryPane({
   onThemeModeChange: (value: WorkbenchThemeMode) => void;
   onLanguageChange: (value: WorkbenchLanguage) => void;
   onGuiOpacityChange: (value: number) => void;
+  onAudioOutputVolumeChange: (value: number) => void;
+  onAudioOutputDeviceChange: (value: WorkbenchAudioOutputDevice) => void;
   onChooseSceneAssets: () => void;
   onClearSceneAssets: () => void;
   onChooseCacheDir: () => void;
@@ -1089,6 +1150,9 @@ function LibraryPane({
                 language={preferences.language}
                 sortKey={preferences.sortKey}
                 guiOpacity={preferences.guiOpacity}
+                audioOutputVolume={preferences.audioOutputVolume}
+                audioOutputDevice={preferences.audioOutputDevice}
+                audioOutputDeviceOptions={audioOutputDeviceOptions}
                 sceneRuntimeSettings={sceneRuntimeSettings}
                 sceneRuntimeSettingsLoading={sceneRuntimeSettingsLoading}
                 sceneRuntimeSettingsSaving={sceneRuntimeSettingsSaving}
@@ -1098,6 +1162,8 @@ function LibraryPane({
                 onLanguageChange={onLanguageChange}
                 onSortKeyChange={onSortChange}
                 onGuiOpacityChange={onGuiOpacityChange}
+                onAudioOutputVolumeChange={onAudioOutputVolumeChange}
+                onAudioOutputDeviceChange={onAudioOutputDeviceChange}
                 onChooseSceneAssets={onChooseSceneAssets}
                 onClearSceneAssets={onClearSceneAssets}
                 onChooseCacheDir={onChooseCacheDir}
@@ -1319,6 +1385,9 @@ export default function WorkbenchApp() {
     clearCache,
   } = useSceneRuntimeSettings();
   const copy = useMemo(() => getWorkbenchCopy(preferences.language), [preferences.language]);
+  const [audioOutputDevices, setAudioOutputDevices] = useState<RuntimeAudioOutputDevice[]>([
+    { id: "system-default", name: "System Default Output", isSystemDefault: true },
+  ]);
   const [wallpapers, setWallpapers] = useState<WallpaperRuntimeRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState<"auto" | "manual">("auto");
@@ -1341,6 +1410,22 @@ export default function WorkbenchApp() {
   const activeWallpaper = playerState.active ?? null;
   const activeWallpaperId = activeWallpaper?.id ?? null;
   const paused = playerState.paused;
+  const audioOutputDeviceOptions = useMemo(() => {
+    const options = audioOutputDevices.map((device) => ({
+      value: device.id,
+      label: device.isSystemDefault ? copy.audioOutputSystemDefaultName : device.name,
+    }));
+    if (
+      preferences.audioOutputDevice &&
+      !options.some((option) => option.value === preferences.audioOutputDevice)
+    ) {
+      options.push({
+        value: preferences.audioOutputDevice,
+        label: preferences.audioOutputDevice,
+      });
+    }
+    return options;
+  }, [audioOutputDevices, copy.audioOutputSystemDefaultName, preferences.audioOutputDevice]);
 
   useWorkbenchController({
     enabled: true,
@@ -1369,6 +1454,24 @@ export default function WorkbenchApp() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    listRuntimeAudioOutputDevices()
+      .then((devices) => {
+        if (!cancelled && devices.length > 0) {
+          setAudioOutputDevices(devices);
+        }
+      })
+      .catch((error) => {
+        console.warn("Failed to list runtime audio output devices", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!sceneRuntimeSettingsError) {
       return;
     }
@@ -1380,6 +1483,20 @@ export default function WorkbenchApp() {
       },
     });
   }, [sceneRuntimeSettingsError, setBanner]);
+
+  useEffect(() => {
+    void setRuntimeAudioOutputVolume(preferences.audioOutputVolume).catch((error) => {
+      console.warn("Failed to update runtime audio output volume", error);
+    });
+  }, [preferences.audioOutputVolume]);
+
+  useEffect(() => {
+    const deviceId =
+      preferences.audioOutputDevice === "system-default" ? null : preferences.audioOutputDevice;
+    void setRuntimeAudioOutputDevice(deviceId).catch((error) => {
+      console.warn("Failed to update runtime audio output device", error);
+    });
+  }, [preferences.audioOutputDevice]);
 
   const orderedWallpapers = useMemo(() => {
     const next = [...wallpapers];
@@ -1911,6 +2028,7 @@ export default function WorkbenchApp() {
         copy={copy}
         resolvedTheme={resolvedTheme}
         preferences={preferences}
+        audioOutputDeviceOptions={audioOutputDeviceOptions}
         sceneRuntimeSettings={sceneRuntimeSettings}
         sceneRuntimeSettingsLoading={sceneRuntimeSettingsLoading}
         sceneRuntimeSettingsSaving={sceneRuntimeSettingsSaving}
@@ -1922,6 +2040,8 @@ export default function WorkbenchApp() {
         onThemeModeChange={(value) => updatePreference("themeMode", value)}
         onLanguageChange={(value) => updatePreference("language", value)}
         onGuiOpacityChange={(value) => updatePreference("guiOpacity", value)}
+        onAudioOutputVolumeChange={(value) => updatePreference("audioOutputVolume", value)}
+        onAudioOutputDeviceChange={(value) => updatePreference("audioOutputDevice", value)}
         onChooseSceneAssets={() => void handleChooseSceneAssets()}
         onClearSceneAssets={() => void handleClearSceneAssets()}
         onChooseCacheDir={() => void handleChooseCacheDir()}

@@ -17,6 +17,7 @@ use crate::{
         audio_input_service::{self, AudioSnapshot},
         diagnostic_service,
         input_service::SharedInputSnapshot,
+        runtime_audio_settings_service::normalize_output_volume_percent,
         web_runtime_service, window_service,
     },
 };
@@ -47,9 +48,18 @@ const DIAGNOSTIC_SUBSYSTEM: &str = "native-web";
 const MISSING_ENTRY_CODE: &str = "missing-entry";
 const SYNC_FAILED_CODE: &str = "sync-failed";
 
-#[derive(Default)]
 pub struct NativeWebServiceState {
     runtime: Mutex<NativeWebRuntime>,
+    output_volume: Mutex<f64>,
+}
+
+impl Default for NativeWebServiceState {
+    fn default() -> Self {
+        Self {
+            runtime: Mutex::new(NativeWebRuntime::default()),
+            output_volume: Mutex::new(1.0),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -221,8 +231,12 @@ pub fn sync_native_web_runtime(
             let plan = plan_native_web_runtime(&runtime.snapshot(), spec.as_ref());
             prepare_runtime_actions(&mut runtime, plan)
         };
+        let output_volume = *state
+            .output_volume
+            .lock()
+            .map_err(|error| error.to_string())?;
 
-        execute_runtime_actions(app, &state, actions)
+        execute_runtime_actions(app, &state, actions, output_volume)
     })();
     match &result {
         Ok(()) => {
@@ -240,6 +254,39 @@ pub fn sync_native_web_runtime(
         }
     }
     result
+}
+
+pub fn set_native_web_output_volume(app: &AppHandle, volume: f64) -> Result<(), String> {
+    let normalized = normalize_output_volume_percent(volume);
+    let Some(state) = app.try_state::<NativeWebServiceState>() else {
+        return Ok(());
+    };
+
+    {
+        let mut current = state
+            .output_volume
+            .lock()
+            .map_err(|error| error.to_string())?;
+        *current = normalized;
+    }
+
+    let views = {
+        let runtime = state.runtime.lock().map_err(|error| error.to_string())?;
+        runtime.views.values().cloned().collect::<Vec<_>>()
+    };
+    for view in views {
+        view.set_output_volume(normalized)?;
+    }
+
+    Ok(())
+}
+
+pub fn set_native_web_output_device(
+    _app: &AppHandle,
+    _device_uid: Option<String>,
+) -> Result<(), String> {
+    // WKWebView does not expose a per-view audio sink; Web playback follows the system default.
+    Ok(())
 }
 
 pub fn dispatch_shared_input(
@@ -527,6 +574,7 @@ fn execute_runtime_actions(
     app: &AppHandle,
     state: &NativeWebServiceState,
     actions: NativeWebRuntimeActions,
+    output_volume: f64,
 ) -> Result<(), String> {
     for view in &actions.teardown_views {
         view.teardown();
@@ -538,11 +586,13 @@ fn execute_runtime_actions(
 
     for (label, view) in &actions.sync_views {
         view.sync(app, label, &spec)?;
+        view.set_output_volume(output_volume)?;
     }
 
     for label in &actions.create_labels {
         let view = Arc::new(NativeWebViewHandle::create(app)?);
         view.sync(app, label, &spec)?;
+        view.set_output_volume(output_volume)?;
 
         let inserted = {
             let mut runtime = state.runtime.lock().map_err(|error| error.to_string())?;
@@ -920,6 +970,22 @@ impl NativeWebViewHandle {
         }
     }
 
+    fn set_output_volume(&self, output_volume: f64) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            return run_on_main(|mtm| {
+                let host = self.host.get(mtm);
+                host.set_output_volume(output_volume)
+            });
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = output_volume;
+            Ok(())
+        }
+    }
+
     fn teardown(&self) {
         #[cfg(target_os = "macos")]
         run_on_main(|mtm| {
@@ -1188,6 +1254,16 @@ impl NativeWebViewHost {
             && state.audio_dispatch_allowed(spec.paused))
     }
 
+    fn set_output_volume(&self, output_volume: f64) -> Result<(), String> {
+        let script = build_web_output_volume_script(output_volume);
+        let script = NSString::from_str(&script);
+        unsafe {
+            self.view
+                .evaluateJavaScript_completionHandler(&script, None);
+        }
+        Ok(())
+    }
+
     fn retry_pending_bootstrap(&self, spec: &WebRuntimeSpec, now: Instant) -> Result<(), String> {
         let batch = {
             let mut state = self
@@ -1316,6 +1392,51 @@ fn build_bridge_dispatch_script(batch: &WebBridgeDispatchBatch) -> Result<Option
     )))
 }
 
+fn build_web_output_volume_script(output_volume: f64) -> String {
+    let normalized = if output_volume.is_finite() {
+        output_volume.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    format!(
+        r#"(() => {{
+  const volume = {normalized:.4};
+  const applyVolume = (root = document) => {{
+    const nodes = root && typeof root.querySelectorAll === 'function'
+      ? root.querySelectorAll('audio, video')
+      : [];
+    for (const node of nodes) {{
+      node.volume = volume;
+      node.muted = volume <= 0.001;
+    }}
+  }};
+  window.__wallpaperAudioOutputVolume = volume;
+  window.__wallpaperApplyAudioOutputVolume = applyVolume;
+  applyVolume();
+  if (!window.__wallpaperAudioOutputVolumeObserver && typeof MutationObserver === 'function') {{
+    window.__wallpaperAudioOutputVolumeObserver = new MutationObserver((records) => {{
+      for (const record of records) {{
+        for (const node of record.addedNodes || []) {{
+          if (node && node.nodeType === 1) {{
+            if (node.matches && node.matches('audio, video')) {{
+              node.volume = window.__wallpaperAudioOutputVolume;
+              node.muted = window.__wallpaperAudioOutputVolume <= 0.001;
+            }}
+            applyVolume(node);
+          }}
+        }}
+      }}
+    }});
+    window.__wallpaperAudioOutputVolumeObserver.observe(document.documentElement, {{
+      childList: true,
+      subtree: true
+    }});
+  }}
+  return true;
+}})();"#
+    )
+}
+
 fn clamp(value: f64, min: f64, max: f64) -> f64 {
     value.max(min).min(max)
 }
@@ -1349,14 +1470,31 @@ mod tests {
     };
 
     use super::{
-        bootstrap_hash, build_bridge_dispatch_script, plan_native_web_runtime,
-        project_shared_input_to_view_bounds, resolve_active_web_entry_path, CursorPayload,
-        NativeWebBridgeState, NativeWebRuntimeSnapshot, WebBridgeBootstrapPayload,
-        WebBridgeDispatchBatch, WebRuntimeSpec, WebSessionPlan, BOOTSTRAP_RETRY_INTERVAL,
+        bootstrap_hash, build_bridge_dispatch_script, build_web_output_volume_script,
+        plan_native_web_runtime, project_shared_input_to_view_bounds,
+        resolve_active_web_entry_path, CursorPayload, NativeWebBridgeState,
+        NativeWebRuntimeSnapshot, WebBridgeBootstrapPayload, WebBridgeDispatchBatch,
+        WebRuntimeSpec, WebSessionPlan, BOOTSTRAP_RETRY_INTERVAL,
     };
     use crate::services::audio_input_service::AudioSnapshot;
     use crate::services::input_service::{InputModifierSnapshot, SharedInputSnapshot};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn web_output_volume_script_controls_existing_and_new_media_elements() {
+        let script = build_web_output_volume_script(0.35);
+        assert!(script.contains("const volume = 0.3500"));
+        assert!(script.contains("querySelectorAll('audio, video')"));
+        assert!(script.contains("node.volume = volume"));
+        assert!(script.contains("node.muted = volume <= 0.001"));
+        assert!(script.contains("MutationObserver"));
+
+        let muted_script = build_web_output_volume_script(0.0);
+        assert!(muted_script.contains("const volume = 0.0000"));
+
+        let fallback_script = build_web_output_volume_script(f64::NAN);
+        assert!(fallback_script.contains("const volume = 1.0000"));
+    }
 
     fn runtime_spec(
         runtime_url: &str,

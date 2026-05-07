@@ -1480,6 +1480,31 @@ html[data-workbench-theme][data-theme="light"] .workbench-shell .primary-button 
   padding-top: 2px;
 }
 
+.workbench-shell .settings-audio {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0 2px;
+  border-top: 1px solid var(--wb-line);
+}
+
+.workbench-shell .settings-section-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.workbench-shell .settings-section-heading strong {
+  color: var(--wb-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workbench-shell .settings-section-heading p {
+  margin: 0;
+  color: var(--wb-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .workbench-shell .settings-field {
   display: grid;
   gap: 6px;
