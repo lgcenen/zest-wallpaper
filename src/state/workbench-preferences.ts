@@ -4,7 +4,6 @@ export type WorkbenchThemeMode = "light" | "dark" | "system";
 export type WorkbenchResolvedTheme = "light" | "dark";
 export type WorkbenchLanguage = "zh-CN" | "en";
 export type WorkbenchSortKey = "recent" | "title";
-export type WorkbenchAudioOutputDevice = string;
 export const WORKBENCH_GUI_OPACITY_MIN = 55;
 export const WORKBENCH_GUI_OPACITY_MAX = 100;
 export const WORKBENCH_GUI_OPACITY_STEP = 5;
@@ -18,7 +17,6 @@ export interface WorkbenchPreferences {
   sortKey: WorkbenchSortKey;
   guiOpacity: number;
   audioOutputVolume: number;
-  audioOutputDevice: WorkbenchAudioOutputDevice;
 }
 
 const STORAGE_KEY = "wallpaper-workbench.preferences";
@@ -37,7 +35,6 @@ function defaultPreferences(): WorkbenchPreferences {
     sortKey: "recent",
     guiOpacity: WORKBENCH_GUI_OPACITY_MAX,
     audioOutputVolume: WORKBENCH_AUDIO_OUTPUT_VOLUME_MAX,
-    audioOutputDevice: "system-default",
   };
 }
 
@@ -51,14 +48,6 @@ function isLanguage(value: unknown): value is WorkbenchLanguage {
 
 function isSortKey(value: unknown): value is WorkbenchSortKey {
   return value === "recent" || value === "title";
-}
-
-function normalizeAudioOutputDevice(value: unknown, fallback = "system-default") {
-  if (typeof value !== "string") {
-    return fallback;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : fallback;
 }
 
 function normalizeGuiOpacity(value: unknown, fallback = WORKBENCH_GUI_OPACITY_MAX) {
@@ -104,10 +93,7 @@ export function readStoredWorkbenchPreferences(): WorkbenchPreferences {
     if (!raw) {
       return fallback;
     }
-    const parsed = JSON.parse(raw) as Partial<WorkbenchPreferences> & {
-      audioInputDevice?: unknown;
-    };
-    const storedAudioOutputDevice = parsed.audioOutputDevice ?? parsed.audioInputDevice;
+    const parsed = JSON.parse(raw) as Partial<WorkbenchPreferences>;
     return {
       themeMode: isThemeMode(parsed.themeMode) ? parsed.themeMode : fallback.themeMode,
       language: isLanguage(parsed.language) ? parsed.language : fallback.language,
@@ -116,10 +102,6 @@ export function readStoredWorkbenchPreferences(): WorkbenchPreferences {
       audioOutputVolume: normalizeAudioOutputVolume(
         parsed.audioOutputVolume,
         fallback.audioOutputVolume,
-      ),
-      audioOutputDevice: normalizeAudioOutputDevice(
-        storedAudioOutputDevice,
-        fallback.audioOutputDevice,
       ),
     };
   } catch {

@@ -5,9 +5,8 @@ use tauri::{AppHandle, State};
 use crate::{
     models::SceneRuntimeSettingsSnapshot,
     services::{
-        native_video_service, native_web_service,
-        runtime_audio_settings_service::{self, RuntimeAudioOutputDevice},
-        scene_native_renderer_service, scene_runtime_settings_service,
+        native_video_service, native_web_service, scene_native_renderer_service,
+        scene_runtime_settings_service,
     },
     store::AppState,
 };
@@ -105,23 +104,6 @@ pub fn set_runtime_audio_output_volume(app: AppHandle, volume: f64) -> Result<()
     scene_native_renderer_service::set_scene_audio_output_volume(&app, volume)?;
     native_video_service::set_native_video_output_volume(&app, volume)?;
     native_web_service::set_native_web_output_volume(&app, volume)?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_runtime_audio_output_devices() -> Result<Vec<RuntimeAudioOutputDevice>, String> {
-    Ok(runtime_audio_settings_service::list_audio_output_devices())
-}
-
-#[tauri::command]
-pub fn set_runtime_audio_output_device(
-    app: AppHandle,
-    device_id: Option<String>,
-) -> Result<(), String> {
-    let uid = runtime_audio_settings_service::normalize_output_device_uid(device_id);
-    scene_native_renderer_service::set_scene_audio_output_device(&app, uid.clone())?;
-    native_video_service::set_native_video_output_device(&app, uid.clone())?;
-    native_web_service::set_native_web_output_device(&app, uid)?;
     Ok(())
 }
 

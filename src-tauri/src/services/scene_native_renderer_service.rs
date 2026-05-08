@@ -202,7 +202,6 @@ fragment float4 scene_fragment(
 pub struct NativeSceneRendererServiceState {
     runtime: Mutex<NativeSceneRendererRuntime>,
     audio_output_volume: Mutex<f64>,
-    audio_output_device_uid: Mutex<Option<String>>,
     #[cfg(target_os = "macos")]
     soundscape: Mutex<Option<MainThreadBound<NativeSceneSoundscape>>>,
 }
@@ -212,7 +211,6 @@ impl Default for NativeSceneRendererServiceState {
         Self {
             runtime: Mutex::new(NativeSceneRendererRuntime::default()),
             audio_output_volume: Mutex::new(1.0),
-            audio_output_device_uid: Mutex::new(None),
             #[cfg(target_os = "macos")]
             soundscape: Mutex::new(None),
         }
@@ -346,39 +344,6 @@ pub fn set_scene_audio_output_volume(app: &AppHandle, volume: f64) -> Result<(),
             }
             Ok::<(), String>(())
         })?;
-    }
-
-    Ok(())
-}
-
-pub fn set_scene_audio_output_device(
-    app: &AppHandle,
-    device_uid: Option<String>,
-) -> Result<(), String> {
-    let Some(state) = app.try_state::<NativeSceneRendererServiceState>() else {
-        return Ok(());
-    };
-
-    {
-        let mut current = state
-            .audio_output_device_uid
-            .lock()
-            .map_err(|error| error.to_string())?;
-        *current = device_uid.clone();
-    }
-
-    #[cfg(target_os = "macos")]
-    run_on_main(move |mtm| {
-        let slot = state.soundscape.lock().map_err(|error| error.to_string())?;
-        if let Some(soundscape) = slot.as_ref() {
-            soundscape.get(mtm).set_output_device(device_uid.as_deref());
-        }
-        Ok::<_, String>(())
-    })?;
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = device_uid;
     }
 
     Ok(())
@@ -1227,11 +1192,6 @@ fn sync_scene_soundscape(
         .audio_output_volume
         .lock()
         .map_err(|error| error.to_string())?;
-    let output_device_uid = state
-        .audio_output_device_uid
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone();
     run_on_main(|mtm| {
         let mut slot = state.soundscape.lock().map_err(|error| error.to_string())?;
         if slot.is_none() {
@@ -1242,12 +1202,7 @@ fn sync_scene_soundscape(
             .expect("soundscape should exist after initialization");
         let soundscape = soundscape.get(mtm);
         match spec {
-            Some(spec) => soundscape.sync(
-                &spec.render_plan.sounds,
-                spec.paused,
-                output_volume,
-                output_device_uid.as_deref(),
-            ),
+            Some(spec) => soundscape.sync(&spec.render_plan.sounds, spec.paused, output_volume),
             None => {
                 soundscape.clear();
                 Ok(Vec::new())
@@ -1553,7 +1508,6 @@ fn create_scene_mtk_view(
 struct NativeSceneSoundscape {
     players: RefCell<BTreeMap<u32, NativeSceneSoundPlayer>>,
     output_volume: RefCell<f64>,
-    output_device_uid: RefCell<Option<String>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1562,7 +1516,6 @@ impl Default for NativeSceneSoundscape {
         Self {
             players: RefCell::new(BTreeMap::new()),
             output_volume: RefCell::new(1.0),
-            output_device_uid: RefCell::new(None),
         }
     }
 }
@@ -1580,10 +1533,8 @@ impl NativeSceneSoundscape {
         sounds: &[SceneRenderSoundItem],
         paused: bool,
         output_volume: f64,
-        output_device_uid: Option<&str>,
     ) -> Result<Vec<NativeSceneWarning>, String> {
         self.set_output_volume(output_volume);
-        self.set_output_device(output_device_uid);
         let current_states = self.playback_states();
         let actions = plan_scene_sound_lifecycle(&current_states, sounds, paused);
         let sounds_by_id = sounds
@@ -1597,12 +1548,8 @@ impl NativeSceneSoundscape {
             match action {
                 SceneSoundLifecycleAction::Start { state } => {
                     if let Some(sound) = sounds_by_id.get(&state.object_id) {
-                        match create_sound_player(
-                            sound,
-                            state.paused,
-                            self.current_output_volume(),
-                            self.current_output_device(),
-                        ) {
+                        match create_sound_player(sound, state.paused, self.current_output_volume())
+                        {
                             Ok(player) => {
                                 players.insert(state.object_id, player);
                             }
@@ -1619,12 +1566,8 @@ impl NativeSceneSoundscape {
                         stop_sound_player(&existing);
                     }
                     if let Some(sound) = sounds_by_id.get(&state.object_id) {
-                        match create_sound_player(
-                            sound,
-                            state.paused,
-                            self.current_output_volume(),
-                            self.current_output_device(),
-                        ) {
+                        match create_sound_player(sound, state.paused, self.current_output_volume())
+                        {
                             Ok(player) => {
                                 players.insert(state.object_id, player);
                             }
@@ -1715,23 +1658,8 @@ impl NativeSceneSoundscape {
         }
     }
 
-    fn set_output_device(&self, output_device_uid: Option<&str>) {
-        let normalized = output_device_uid.map(ToOwned::to_owned);
-        let previous = self.output_device_uid.replace(normalized.clone());
-        if previous == normalized || (previous.is_none() && normalized.is_none()) {
-            return;
-        }
-        for player in self.players.borrow_mut().values_mut() {
-            apply_sound_player_output_device(player, normalized.as_deref());
-        }
-    }
-
     fn current_output_volume(&self) -> f64 {
         *self.output_volume.borrow()
-    }
-
-    fn current_output_device(&self) -> Option<String> {
-        self.output_device_uid.borrow().clone()
     }
 
     fn playback_states(&self) -> BTreeMap<u32, SceneSoundRuntimeState> {
@@ -5664,7 +5592,6 @@ fn create_sound_player(
     sound: &SceneRenderSoundItem,
     paused: bool,
     output_volume: f64,
-    output_device_uid: Option<String>,
 ) -> Result<NativeSceneSoundPlayer, String> {
     let Some(path_string) = sound.asset_path.to_str() else {
         return Err(format!(
@@ -5687,22 +5614,8 @@ fn create_sound_player(
         state: SceneSoundRuntimeState::from_sound_item(sound, paused),
         player,
     };
-    if output_device_uid.is_some() {
-        apply_sound_player_output_device(&mut sound_player, output_device_uid.as_deref());
-    }
     set_sound_player_paused(&mut sound_player, paused);
     Ok(sound_player)
-}
-
-#[cfg(target_os = "macos")]
-fn apply_sound_player_output_device(
-    player: &mut NativeSceneSoundPlayer,
-    output_device_uid: Option<&str>,
-) {
-    let output_device_uid = output_device_uid.map(NSString::from_str);
-    unsafe {
-        player.player.setCurrentDevice(output_device_uid.as_deref());
-    }
 }
 
 #[cfg(target_os = "macos")]

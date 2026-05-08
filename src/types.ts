@@ -1,11 +1,5 @@
 export type WallpaperType = "scene" | "video" | "web" | "application" | "unknown";
 
-export interface RuntimeAudioOutputDevice {
-  id: string;
-  name: string;
-  isSystemDefault: boolean;
-}
-
 export type PropertyKind =
   | "bool"
   | "slider"

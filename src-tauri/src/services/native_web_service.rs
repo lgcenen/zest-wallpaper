@@ -281,14 +281,6 @@ pub fn set_native_web_output_volume(app: &AppHandle, volume: f64) -> Result<(), 
     Ok(())
 }
 
-pub fn set_native_web_output_device(
-    _app: &AppHandle,
-    _device_uid: Option<String>,
-) -> Result<(), String> {
-    // WKWebView does not expose a per-view audio sink; Web playback follows the system default.
-    Ok(())
-}
-
 pub fn dispatch_shared_input(
     app: &AppHandle,
     snapshot: &SharedInputSnapshot,
