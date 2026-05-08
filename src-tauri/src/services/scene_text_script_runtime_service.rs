@@ -832,10 +832,10 @@ mod tests {
         let properties = BTreeMap::new();
         let now = Local.with_ymd_and_hms(2026, 4, 18, 17, 0, 0).unwrap();
 
-        let first = evaluate_scripted_text_layer(Some("demo"), &layer, &properties, &now)
+        let first = evaluate_scripted_text_layer(Some("demo-preserve-runtime-state"), &layer, &properties, &now)
             .expect("first evaluation")
             .expect("first text");
-        let second = evaluate_scripted_text_layer(Some("demo"), &layer, &properties, &now)
+        let second = evaluate_scripted_text_layer(Some("demo-preserve-runtime-state"), &layer, &properties, &now)
             .expect("second evaluation")
             .expect("second text");
 
@@ -852,7 +852,7 @@ mod tests {
         let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
 
         let alice = evaluate_scripted_text_layer(
-            Some("demo"),
+            Some("demo-reapply-user-properties"),
             &layer,
             &BTreeMap::from([(String::from("name"), json!("Alice"))]),
             &now,
@@ -860,7 +860,7 @@ mod tests {
         .expect("alice evaluation")
         .expect("alice text");
         let bob = evaluate_scripted_text_layer(
-            Some("demo"),
+            Some("demo-reapply-user-properties"),
             &layer,
             &BTreeMap::from([(String::from("name"), json!("Bob"))]),
             &now,
@@ -881,10 +881,10 @@ mod tests {
         let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
         let properties = BTreeMap::from([(String::from("name"), json!("Alice"))]);
 
-        let first = evaluate_scripted_text_layer(Some("demo"), &layer, &properties, &now)
+        let first = evaluate_scripted_text_layer(Some("demo-preserve-authored-text"), &layer, &properties, &now)
             .expect("first evaluation")
             .expect("first text");
-        let second = evaluate_scripted_text_layer(Some("demo"), &layer, &properties, &now)
+        let second = evaluate_scripted_text_layer(Some("demo-preserve-authored-text"), &layer, &properties, &now)
             .expect("second evaluation")
             .expect("second text");
 
