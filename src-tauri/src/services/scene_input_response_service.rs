@@ -223,6 +223,26 @@ pub fn project_shared_input_to_scene(
     viewport: SceneInputViewport,
     scene_bounds: SceneInputSceneBounds,
 ) -> SceneInputProjection {
+    project_shared_input_to_scene_with_cover(
+        snapshot,
+        viewport,
+        scene_bounds,
+        0.0,
+        0.0,
+        viewport.width / scene_bounds.width.max(1.0),
+        viewport.height / scene_bounds.height.max(1.0),
+    )
+}
+
+pub fn project_shared_input_to_scene_with_cover(
+    snapshot: Option<&SharedInputSnapshot>,
+    viewport: SceneInputViewport,
+    scene_bounds: SceneInputSceneBounds,
+    scene_origin_x: f64,
+    scene_origin_y: f64,
+    scene_scale_x: f64,
+    scene_scale_y: f64,
+) -> SceneInputProjection {
     let mut diagnostics = Vec::new();
 
     if !viewport.width.is_finite()
@@ -311,14 +331,26 @@ pub fn project_shared_input_to_scene(
     let local_y = (snapshot.system_y - viewport.origin_y).clamp(0.0, viewport.height);
     let normalized_x = local_x / viewport.width;
     let normalized_y = local_y / viewport.height;
+    let safe_scale_x = if scene_scale_x.is_finite() && scene_scale_x.abs() > 0.0001 {
+        scene_scale_x
+    } else {
+        viewport.width / scene_bounds.width.max(1.0)
+    };
+    let safe_scale_y = if scene_scale_y.is_finite() && scene_scale_y.abs() > 0.0001 {
+        scene_scale_y
+    } else {
+        viewport.height / scene_bounds.height.max(1.0)
+    };
+    let cursor_x = ((local_x - scene_origin_x) / safe_scale_x).clamp(0.0, scene_bounds.width);
+    let cursor_y = ((local_y - scene_origin_y) / safe_scale_y).clamp(0.0, scene_bounds.height);
 
     SceneInputProjection {
         target: Some(SceneInputTarget {
             active: true,
             motion_x: (normalized_x - 0.5) * 2.0,
             motion_y: ((1.0 - normalized_y) - 0.5) * 2.0,
-            cursor_x: normalized_x * scene_bounds.width,
-            cursor_y: normalized_y * scene_bounds.height,
+            cursor_x,
+            cursor_y,
         }),
         diagnostics,
     }
@@ -403,10 +435,11 @@ impl SceneInputCoordinatorDiagnostic {
 #[cfg(test)]
 mod tests {
     use super::{
-        project_shared_input_to_scene, scene_camera_offset, scene_camera_shake_offset,
-        SceneInputCoordinator, SceneInputCoordinatorConfig,
-        SceneInputCoordinatorDiagnosticSeverity, SceneInputCoordinatorUpdate, SceneInputResponse,
-        SceneInputResponseState, SceneInputSceneBounds, SceneInputTarget, SceneInputViewport,
+        project_shared_input_to_scene, project_shared_input_to_scene_with_cover,
+        scene_camera_offset, scene_camera_shake_offset, SceneInputCoordinator,
+        SceneInputCoordinatorConfig, SceneInputCoordinatorDiagnosticSeverity,
+        SceneInputCoordinatorUpdate, SceneInputResponse, SceneInputResponseState,
+        SceneInputSceneBounds, SceneInputTarget, SceneInputViewport,
     };
     use crate::services::{
         input_service::SharedInputSnapshot, scene_render_planner_service::SceneRenderCamera,
@@ -520,6 +553,34 @@ mod tests {
         assert!((target.cursor_x - 600.0).abs() < 0.0001);
         assert!((target.cursor_y - 450.0).abs() < 0.0001);
         assert!((target.motion_x + 0.25).abs() < 0.0001);
+        assert!(target.motion_y.abs() < 0.0001);
+    }
+
+    #[test]
+    fn shared_input_projection_cover_maps_cursor_into_cropped_scene_space() {
+        let projection = project_shared_input_to_scene_with_cover(
+            Some(&shared_snapshot(100.0, 200.0, true)),
+            SceneInputViewport {
+                origin_x: 0.0,
+                origin_y: 0.0,
+                width: 800.0,
+                height: 400.0,
+            },
+            SceneInputSceneBounds {
+                width: 1000.0,
+                height: 1000.0,
+            },
+            0.0,
+            -200.0,
+            0.8,
+            0.8,
+        );
+        let target = projection.target.expect("active input target");
+
+        assert!(projection.diagnostics.is_empty());
+        assert!((target.cursor_x - 125.0).abs() < 0.0001);
+        assert!((target.cursor_y - 500.0).abs() < 0.0001);
+        assert!((target.motion_x + 0.75).abs() < 0.0001);
         assert!(target.motion_y.abs() < 0.0001);
     }
 

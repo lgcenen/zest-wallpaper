@@ -322,9 +322,7 @@ fn classify_particle_runtime(
 
         let is_sprite_family = matches!(
             renderer_family,
-            Some(
-                SceneParticleRendererFamily::Sprite | SceneParticleRendererFamily::SpriteTrail
-            )
+            Some(SceneParticleRendererFamily::Sprite | SceneParticleRendererFamily::SpriteTrail)
         );
 
         if !is_sprite_family {

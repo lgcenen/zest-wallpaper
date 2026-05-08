@@ -22,9 +22,9 @@ use crate::{
         scene_audio_coordinator_service::SceneAudioCoordinator,
         scene_diagnostics::{SceneDiagnosticDetail, SceneDiagnosticDomain},
         scene_input_response_service::{
-            project_shared_input_to_scene, SceneInputCoordinator, SceneInputCoordinatorFrame,
-            SceneInputCoordinatorUpdate, SceneInputResponse, SceneInputSceneBounds,
-            SceneInputViewport,
+            project_shared_input_to_scene, project_shared_input_to_scene_with_cover,
+            SceneInputCoordinator, SceneInputCoordinatorFrame, SceneInputCoordinatorUpdate,
+            SceneInputResponse, SceneInputSceneBounds, SceneInputViewport,
         },
         scene_mdl_service::{evaluate_scene_mdl_mesh, parse_scene_mdl_file, SceneMdlDocument},
         scene_now_playing_provider_service,
@@ -6089,12 +6089,27 @@ fn scene_projection(
     camera_offset: (f64, f64),
 ) -> SceneProjection {
     let drawable_size = view.drawableSize();
-    let view_width = drawable_size.width.max(1.0);
-    let view_height = drawable_size.height.max(1.0);
-    let fit_scale = (view_width / plan.canvas_width)
-        .min(view_height / plan.canvas_height)
+    scene_projection_for_size(
+        drawable_size.width,
+        drawable_size.height,
+        plan,
+        camera_offset,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn scene_projection_for_size(
+    view_width: f64,
+    view_height: f64,
+    plan: &SceneRenderPlan,
+    camera_offset: (f64, f64),
+) -> SceneProjection {
+    let view_width = view_width.max(1.0);
+    let view_height = view_height.max(1.0);
+    let cover_scale = (view_width / plan.canvas_width)
+        .max(view_height / plan.canvas_height)
         .max(0.001);
-    let camera_scale = fit_scale * plan.camera.zoom.max(0.001);
+    let camera_scale = cover_scale * plan.camera.zoom.max(0.001);
     SceneProjection {
         scene_origin_x: (view_width - plan.canvas_width * camera_scale) / 2.0 + camera_offset.0,
         scene_origin_y: (view_height - plan.canvas_height * camera_scale) / 2.0 + camera_offset.1,
@@ -6179,18 +6194,7 @@ fn build_scene_vertices(
     view_height: f64,
     camera_offset: (f64, f64),
 ) -> [SceneVertex; 6] {
-    let camera_scale = (view_width / plan.canvas_width)
-        .min(view_height / plan.canvas_height)
-        .max(0.001)
-        * plan.camera.zoom.max(0.001);
-    let projection = SceneProjection {
-        scene_origin_x: (view_width - plan.canvas_width * camera_scale) / 2.0 + camera_offset.0,
-        scene_origin_y: (view_height - plan.canvas_height * camera_scale) / 2.0 + camera_offset.1,
-        scene_canvas_height: plan.canvas_height,
-        camera_scale,
-        view_width,
-        view_height,
-    };
+    let projection = scene_projection_for_size(view_width, view_height, plan, camera_offset);
     build_projected_quad_vertices(
         quad_primitive_from_render_quad(item.quad, SceneRenderColor::default()),
         &projection,
@@ -6409,7 +6413,9 @@ fn scene_input_projection_for_view(
     };
     let frame = window.frame();
     let snapshot = input_service::current_input_snapshot(app).ok();
-    project_shared_input_to_scene(
+    let projection =
+        scene_projection_for_size(frame.size.width, frame.size.height, plan, (0.0, 0.0));
+    project_shared_input_to_scene_with_cover(
         snapshot.as_ref(),
         SceneInputViewport {
             origin_x: frame.origin.x,
@@ -6421,6 +6427,10 @@ fn scene_input_projection_for_view(
             width: plan.canvas_width,
             height: plan.canvas_height,
         },
+        projection.scene_origin_x,
+        projection.scene_origin_y,
+        projection.camera_scale,
+        projection.camera_scale,
     )
 }
 
@@ -7729,6 +7739,38 @@ mod tests {
             .iter()
             .zip(baseline.iter())
             .all(|(shifted, baseline)| shifted.position == baseline.position));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scene_projection_uses_cover_scaling_for_mismatched_canvas_aspect_ratio() {
+        let mut spec = sample_spec("scene-a", &["player"], 1);
+        spec.render_plan.canvas_width = 4000.0;
+        spec.render_plan.canvas_height = 2336.0;
+        spec.render_plan.visuals[0].quad.left = 0.0;
+        spec.render_plan.visuals[0].quad.top = 0.0;
+        spec.render_plan.visuals[0].quad.width = 4000.0;
+        spec.render_plan.visuals[0].quad.height = 2336.0;
+
+        let vertices = build_scene_vertices(
+            &spec.render_plan.visuals[0],
+            &spec.render_plan,
+            2048.0,
+            1152.0,
+            (0.0, 0.0),
+        );
+
+        let min_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        let max_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(min_y < -1.0);
+        assert!(max_y > 1.0);
     }
 
     #[cfg(target_os = "macos")]

@@ -823,7 +823,10 @@ mod tests {
         scheduler.advance(None, &[item.clone()], 1200.0);
 
         let primitives = scheduler.petal_primitives(&item, 1080.0, 1200.0);
-        assert!(!primitives.is_empty(), "should emit particles with negative sign");
+        assert!(
+            !primitives.is_empty(),
+            "should emit particles with negative sign"
+        );
 
         let state = scheduler.autonomous_states.get(&item.object_id).unwrap();
         let all_zero = state
@@ -963,9 +966,9 @@ mod tests {
         scheduler.advance(None, &[item.clone()], 1000.0);
 
         let primitives = scheduler.petal_primitives(&item, 1080.0, 1000.0);
-        let has_offset = primitives.iter().any(|p| {
-            (p.uv_offset[0] - 0.0).abs() > 0.01 || (p.uv_offset[1] - 0.0).abs() > 0.01
-        });
+        let has_offset = primitives
+            .iter()
+            .any(|p| (p.uv_offset[0] - 0.0).abs() > 0.01 || (p.uv_offset[1] - 0.0).abs() > 0.01);
         assert!(
             has_offset,
             "uv_scrolling should produce non-zero uv_offset after elapsed time"

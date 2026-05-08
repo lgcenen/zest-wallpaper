@@ -1018,12 +1018,14 @@ fn validate_phase10d_pass_target_ordering(effect: &SceneEffectPlan) -> Result<()
         let target_name = pass.target_name.as_deref().unwrap_or("");
 
         for binding in &pass.bindings {
-            let Some(ScenePhase10InputSource::NamedTarget(target_ref)) = effect_binding_input_source(
-                effect,
-                pass,
-                binding,
-                ScenePhase10InputSource::LocalCurrentVisual,
-            ) else {
+            let Some(ScenePhase10InputSource::NamedTarget(target_ref)) =
+                effect_binding_input_source(
+                    effect,
+                    pass,
+                    binding,
+                    ScenePhase10InputSource::LocalCurrentVisual,
+                )
+            else {
                 continue;
             };
             let normalized_ref = normalized_contract_key(&target_ref);
@@ -2859,10 +2861,7 @@ mod tests {
             .find(|issue| issue.code == super::SceneGraphIssueCode::GraphTargetMissing)
             .expect("graph target missing");
         assert_eq!(issue.severity, super::SceneGraphIssueSeverity::Fatal);
-        assert_eq!(
-            issue.diagnostic_code,
-            Some("graph-target-missing")
-        );
+        assert_eq!(issue.diagnostic_code, Some("graph-target-missing"));
         assert!(issue
             .detail
             .as_deref()
@@ -3361,9 +3360,11 @@ mod tests {
         let issue = report
             .issues
             .iter()
-            .find(|issue| issue.code == super::SceneGraphIssueCode::InvalidEffect
-                && issue.diagnostic_code == Some("effect-graph-scope-blocked")
-                && matches!(issue.severity, super::SceneGraphIssueSeverity::Fatal))
+            .find(|issue| {
+                issue.code == super::SceneGraphIssueCode::InvalidEffect
+                    && issue.diagnostic_code == Some("effect-graph-scope-blocked")
+                    && matches!(issue.severity, super::SceneGraphIssueSeverity::Fatal)
+            })
             .expect("fatal graph-scope-blocked issue");
         assert!(issue
             .detail
@@ -3447,15 +3448,10 @@ mod tests {
         let issue = report
             .issues
             .iter()
-            .find(|issue| {
-                issue.code == super::SceneGraphIssueCode::GraphCycleOrOrderInvalid
-            })
+            .find(|issue| issue.code == super::SceneGraphIssueCode::GraphCycleOrOrderInvalid)
             .expect("graph cycle or order invalid");
         assert_eq!(issue.severity, super::SceneGraphIssueSeverity::Fatal);
-        assert_eq!(
-            issue.diagnostic_code,
-            Some("graph-cycle-or-order-invalid")
-        );
+        assert_eq!(issue.diagnostic_code, Some("graph-cycle-or-order-invalid"));
         assert!(issue
             .detail
             .as_deref()
@@ -3534,9 +3530,10 @@ mod tests {
         assert!(!report.is_blocked());
         assert_eq!(report.graph.visuals.len(), 1);
         assert!(report.graph.visuals[0].effect_chain.len() >= 1);
-        assert!(report.issues.iter().all(|issue| {
-            issue.code != super::SceneGraphIssueCode::GraphCycleOrOrderInvalid
-        }));
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| { issue.code != super::SceneGraphIssueCode::GraphCycleOrOrderInvalid }));
     }
 
     #[test]
@@ -3613,12 +3610,14 @@ mod tests {
         assert!(!report.is_blocked());
         assert_eq!(report.graph.visuals.len(), 1);
         assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
-        assert!(report.issues.iter().all(|issue| {
-            issue.code != super::SceneGraphIssueCode::GraphCycleOrOrderInvalid
-        }));
-        assert!(report.issues.iter().all(|issue| {
-            issue.code != super::SceneGraphIssueCode::GraphTargetMissing
-        }));
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| { issue.code != super::SceneGraphIssueCode::GraphCycleOrOrderInvalid }));
+        assert!(report
+            .issues
+            .iter()
+            .all(|issue| { issue.code != super::SceneGraphIssueCode::GraphTargetMissing }));
     }
 
     #[test]
@@ -3764,18 +3763,13 @@ mod tests {
         let report = build_scene_phase10_graph(scene, &resolver);
 
         assert!(report.is_blocked());
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| {
-                issue.diagnostic_code == Some("effect-unsupported")
-                    && issue.resource_present_but_unsupported
-            }));
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.code == super::SceneGraphIssueCode::InvalidEffect
-                || issue.code == super::SceneGraphIssueCode::GraphConstructionIncomplete));
+        assert!(report.issues.iter().any(|issue| {
+            issue.diagnostic_code == Some("effect-unsupported")
+                && issue.resource_present_but_unsupported
+        }));
+        assert!(report.issues.iter().any(|issue| issue.code
+            == super::SceneGraphIssueCode::InvalidEffect
+            || issue.code == super::SceneGraphIssueCode::GraphConstructionIncomplete));
     }
 
     #[test]

@@ -146,9 +146,7 @@ pub fn extract_pkg(pkg_path: &Path, output_dir: &Path) -> Result<Package> {
             .checked_add(entry.length as u64)
             .context("Package extraction total size overflows address space")?;
         if total_extracted > MAX_PACKAGE_TOTAL_BYTES {
-            bail!(
-                "Package extraction total size exceeds limit of {MAX_PACKAGE_TOTAL_BYTES} bytes"
-            );
+            bail!("Package extraction total size exceeds limit of {MAX_PACKAGE_TOTAL_BYTES} bytes");
         }
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;

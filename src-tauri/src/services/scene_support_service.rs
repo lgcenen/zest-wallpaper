@@ -433,27 +433,32 @@ fn support_error_from_graph_issue(issue: SceneGraphIssue) -> SceneSupportError {
         SceneGraphIssueCode::GraphInputMissing => {
             ("graph-input-missing", SceneDiagnosticDomain::Visual)
         }
-        SceneGraphIssueCode::GraphCycleOrOrderInvalid => {
-            ("graph-cycle-or-order-invalid", SceneDiagnosticDomain::Visual)
-        }
-        SceneGraphIssueCode::GraphCopybackgroundUnavailable => {
-            ("graph-copybackground-unavailable", SceneDiagnosticDomain::Visual)
-        }
+        SceneGraphIssueCode::GraphCycleOrOrderInvalid => (
+            "graph-cycle-or-order-invalid",
+            SceneDiagnosticDomain::Visual,
+        ),
+        SceneGraphIssueCode::GraphCopybackgroundUnavailable => (
+            "graph-copybackground-unavailable",
+            SceneDiagnosticDomain::Visual,
+        ),
         SceneGraphIssueCode::GraphMaskTargetMissing => {
             ("graph-mask-target-missing", SceneDiagnosticDomain::Visual)
         }
-        SceneGraphIssueCode::GraphConstructionIncomplete => {
-            ("graph-construction-incomplete", SceneDiagnosticDomain::Visual)
-        }
+        SceneGraphIssueCode::GraphConstructionIncomplete => (
+            "graph-construction-incomplete",
+            SceneDiagnosticDomain::Visual,
+        ),
         SceneGraphIssueCode::MorphMetadataNotConsumed => {
             ("morph-metadata-not-consumed", SceneDiagnosticDomain::Visual)
         }
-        SceneGraphIssueCode::ClippingMetadataNotConsumed => {
-            ("clipping-metadata-not-consumed", SceneDiagnosticDomain::Visual)
-        }
-        SceneGraphIssueCode::AttachmentMetadataNotConsumed => {
-            ("attachment-metadata-not-consumed", SceneDiagnosticDomain::Visual)
-        }
+        SceneGraphIssueCode::ClippingMetadataNotConsumed => (
+            "clipping-metadata-not-consumed",
+            SceneDiagnosticDomain::Visual,
+        ),
+        SceneGraphIssueCode::AttachmentMetadataNotConsumed => (
+            "attachment-metadata-not-consumed",
+            SceneDiagnosticDomain::Visual,
+        ),
         SceneGraphIssueCode::InlineMdlMeshNoBones => {
             ("inline-mdl-mesh-no-bones", SceneDiagnosticDomain::Visual)
         }

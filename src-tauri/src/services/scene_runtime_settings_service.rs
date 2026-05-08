@@ -292,11 +292,7 @@ fn is_overbroad_directory_path(path: &Path, home_dir: Option<&Path>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        env, fs,
-        path::Path,
-        sync::Mutex,
-    };
+    use std::{env, fs, path::Path, sync::Mutex};
 
     use chrono::Utc;
     use tempfile::tempdir;
@@ -490,7 +486,10 @@ mod tests {
         let home = Path::new("/Users/tester");
 
         assert!(is_overbroad_directory_path(Path::new("/"), Some(home)));
-        assert!(is_overbroad_directory_path(Path::new("/Volumes"), Some(home)));
+        assert!(is_overbroad_directory_path(
+            Path::new("/Volumes"),
+            Some(home)
+        ));
         assert!(is_overbroad_directory_path(
             Path::new("/Volumes/ExternalDisk"),
             Some(home)

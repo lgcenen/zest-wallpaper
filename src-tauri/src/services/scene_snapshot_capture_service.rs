@@ -402,10 +402,10 @@ impl ProjectedQuad {
     ) -> Self {
         let view_width = view_width as f64;
         let view_height = view_height as f64;
-        let fit_scale = (view_width / plan.canvas_width)
-            .min(view_height / plan.canvas_height)
+        let cover_scale = (view_width / plan.canvas_width)
+            .max(view_height / plan.canvas_height)
             .max(0.001);
-        let camera_scale = fit_scale * plan.camera.zoom.max(0.001);
+        let camera_scale = cover_scale * plan.camera.zoom.max(0.001);
         let origin_x = (view_width - plan.canvas_width * camera_scale) / 2.0;
         let origin_y = (view_height - plan.canvas_height * camera_scale) / 2.0;
 
@@ -675,6 +675,55 @@ mod tests {
                 pixel[0] > 180 && pixel[1] > 180 && pixel[2] > 180
             })
         }));
+    }
+
+    #[test]
+    fn captures_scene_with_cover_projection_for_mismatched_canvas_aspect_ratio() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        fs::create_dir_all(&managed).expect("managed dir");
+        let red = managed.join("red.png");
+        write_solid_png(&red, [255, 0, 0, 255]);
+        let output = managed.join(".snapshot-cover.png.tmp");
+        let scene = SceneRuntimeDocument {
+            runtime_owner_key: None,
+            source: SceneManifest::default(),
+            evaluated: crate::models::SceneEvaluatedDocument {
+                canvas_width: 4000.0,
+                canvas_height: 2336.0,
+                clear_color: Some("0 0 0 1".to_string()),
+                camera: EvaluatedSceneCamera {
+                    zoom: 1.0,
+                    center: [0.0, 0.0],
+                    camera_shake: false,
+                    camera_shake_amplitude: 0.0,
+                    camera_shake_speed: 0.0,
+                    parallax_mouse_influence: 0.0,
+                },
+                parallax: Default::default(),
+                objects: BTreeMap::from([(
+                    1,
+                    image_object(1, "Cover", [0.0, 0.0, 4000.0, 2336.0], &red),
+                )]),
+                render_list: vec![1],
+                evaluated_at: Utc::now(),
+                diagnostics: Vec::new(),
+            },
+            now_playing: Default::default(),
+        };
+        let resolver = SceneResourceResolver::for_managed_root_with_builtin_root(
+            &managed,
+            default_builtin_scene_assets_root(),
+        );
+
+        capture_scene_runtime_snapshot_with_size(&scene, &resolver, &output, 200, 120)
+            .expect("capture");
+
+        let snapshot = image::load_from_memory(&fs::read(&output).expect("snapshot bytes"))
+            .expect("snapshot")
+            .to_rgba8();
+        assert_eq!(snapshot.get_pixel(0, 60).0, [255, 0, 0, 255]);
+        assert_eq!(snapshot.get_pixel(199, 60).0, [255, 0, 0, 255]);
     }
 
     #[test]

@@ -633,7 +633,11 @@ pub fn build_scene_render_plan_with_resolver(
             camera_shake: scene.evaluated.camera.camera_shake,
             camera_shake_amplitude: scene.evaluated.camera.camera_shake_amplitude.max(0.0),
             camera_shake_speed: scene.evaluated.camera.camera_shake_speed.max(0.0),
-            parallax_mouse_influence: scene.evaluated.camera.parallax_mouse_influence.max(0.0),
+            parallax_mouse_influence: if scene.evaluated.parallax.enabled {
+                scene.evaluated.camera.parallax_mouse_influence.max(0.0)
+            } else {
+                0.0
+            },
         },
         draw_order,
         visuals,
@@ -1177,14 +1181,8 @@ fn plan_particle_item(
         instantaneous: emitter
             .map(|emitter| emitter.instantaneous)
             .unwrap_or(false),
-        start_time_ms: runtime
-            .system
-            .start_time
-            .unwrap_or(0.0)
-            .max(0.0),
-        sign: emitter
-            .and_then(|emitter| emitter.sign)
-            .unwrap_or(1.0),
+        start_time_ms: runtime.system.start_time.unwrap_or(0.0).max(0.0),
+        sign: emitter.and_then(|emitter| emitter.sign).unwrap_or(1.0),
         spawn_radius: emitter
             .map(|emitter| {
                 let min = emitter.distance_min.unwrap_or(0.0).max(0.0);
@@ -1637,11 +1635,7 @@ fn plan_sprite_particle_config(
         instantaneous: emitter
             .map(|emitter| emitter.instantaneous)
             .unwrap_or(false),
-        sequence_multiplier: runtime
-            .system
-            .sequence_multiplier
-            .unwrap_or(0.0)
-            .max(0.0),
+        sequence_multiplier: runtime.system.sequence_multiplier.unwrap_or(0.0).max(0.0),
     })
 }
 
@@ -2661,12 +2655,12 @@ mod tests {
     use crate::models::{
         EvaluatedAudioState, EvaluatedSceneCamera, EvaluatedSceneObject, EvaluatedSceneObjectBase,
         EvaluatedSceneTransform, EvaluatedTextLayout, EvaluatedTextState, EvaluatedTextStyle,
-        SceneAssetKind, SceneEvaluatedDocument, SceneManifest, SceneParticleChildKind,
-        SceneParticleChildRuntime, SceneParticleControlPointRuntime, SceneParticleEmitterRuntime,
-        SceneParticleInstanceOverride, SceneParticleKind, SceneParticleRendererFamily,
-        SceneParticleRendererRuntime, SceneParticleRuntime, SceneParticleRuntimeAdapter,
-        SceneParticleScheduleMode, SceneParticleStageRuntime, SceneParticleSystemRuntime,
-        SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer,
+        SceneAssetKind, SceneEvaluatedDocument, SceneManifest, SceneParallax,
+        SceneParticleChildKind, SceneParticleChildRuntime, SceneParticleControlPointRuntime,
+        SceneParticleEmitterRuntime, SceneParticleInstanceOverride, SceneParticleKind,
+        SceneParticleRendererFamily, SceneParticleRendererRuntime, SceneParticleRuntime,
+        SceneParticleRuntimeAdapter, SceneParticleScheduleMode, SceneParticleStageRuntime,
+        SceneParticleSystemRuntime, SceneRuntimeDocument, SceneTextBehavior, SceneTextLayer,
     };
 
     use super::{
@@ -2699,7 +2693,11 @@ mod tests {
                     camera_shake_speed: 1.4,
                     parallax_mouse_influence: 0.25,
                 },
-                parallax: Default::default(),
+                parallax: SceneParallax {
+                    enabled: true,
+                    amount: None,
+                    delay: None,
+                },
                 objects: objects.into_iter().collect::<BTreeMap<_, _>>(),
                 render_list,
                 evaluated_at: Utc::now(),
@@ -3800,7 +3798,9 @@ mod tests {
         let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
 
         assert!(!report.is_blocked());
-        let child_ori = report.plan.sprite_particles[0].children[0].config.orientation;
+        let child_ori = report.plan.sprite_particles[0].children[0]
+            .config
+            .orientation;
         let parent_ori = report.plan.sprite_particles[0].config.orientation;
         assert!(
             child_ori > parent_ori,
@@ -4237,6 +4237,21 @@ mod tests {
         };
 
         assert!(plan.has_renderable_output());
+    }
+
+    #[test]
+    fn render_plan_zeroes_mouse_influence_when_scene_parallax_is_disabled() {
+        let mut scene = runtime_scene_with_objects(Vec::new(), Vec::new());
+        scene.evaluated.camera.parallax_mouse_influence = 0.5;
+        scene.evaluated.parallax = SceneParallax {
+            enabled: false,
+            amount: Some(0.5),
+            delay: Some(0.1),
+        };
+
+        let report = build_scene_render_plan(&scene);
+
+        assert_eq!(report.plan.camera.parallax_mouse_influence, 0.0);
     }
 
     #[test]

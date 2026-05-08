@@ -210,7 +210,10 @@ where
     } else {
         "Night"
     };
-    let ascii_count = content.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+    let ascii_count = content
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .count();
     let chinese_count = content
         .chars()
         .filter(|ch| ('\u{4e00}'..='\u{9fff}').contains(ch))

@@ -146,7 +146,11 @@ impl SceneMdlMeshFrame {
                     .get(global_index as usize)
                     .copied()
                     .unwrap_or(Vec3::ZERO);
-                let uv = self.uvs.get(global_index as usize).copied().unwrap_or(Vec2::ZERO);
+                let uv = self
+                    .uvs
+                    .get(global_index as usize)
+                    .copied()
+                    .unwrap_or(Vec2::ZERO);
                 local_positions.push(pos);
                 local_uvs.push(uv);
                 idx

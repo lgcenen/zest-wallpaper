@@ -466,19 +466,18 @@ fn primitive_from_particle(
         .map(|range| range[0] + (range[1] - range[0]) * age)
         .unwrap_or(1.0)
         .max(0.0);
-    let (uv_rect, aspect_ratio) = if particle.sequence_multiplier > 0.0
-        && particle.texture_frames.len() > 1
-    {
-        let elapsed_s = age_ms / 1000.0;
-        let frame_idx = (elapsed_s * particle.sequence_multiplier
-            * particle.texture_frames.len() as f64)
-            .floor() as usize
-            % particle.texture_frames.len();
-        let frame = &particle.texture_frames[frame_idx];
-        (frame.uv_rect, frame.aspect_ratio)
-    } else {
-        (particle.uv_rect, particle.aspect_ratio)
-    };
+    let (uv_rect, aspect_ratio) =
+        if particle.sequence_multiplier > 0.0 && particle.texture_frames.len() > 1 {
+            let elapsed_s = age_ms / 1000.0;
+            let frame_idx =
+                (elapsed_s * particle.sequence_multiplier * particle.texture_frames.len() as f64)
+                    .floor() as usize
+                    % particle.texture_frames.len();
+            let frame = &particle.texture_frames[frame_idx];
+            (frame.uv_rect, frame.aspect_ratio)
+        } else {
+            (particle.uv_rect, particle.aspect_ratio)
+        };
     let height = (particle.size * size_factor).max(0.5);
     let height = if let Some(ref osc) = particle.size_oscillation {
         let wave = oscillation_wave(osc, age_ms / 1000.0);
@@ -912,7 +911,10 @@ mod tests {
 
         assert!(!p1.is_empty());
         assert!(!p2.is_empty());
-        let has_uv_change = p1.iter().zip(p2.iter()).any(|(a, b)| a.uv_rect != b.uv_rect);
+        let has_uv_change = p1
+            .iter()
+            .zip(p2.iter())
+            .any(|(a, b)| a.uv_rect != b.uv_rect);
         assert!(
             has_uv_change,
             "sequence_multiplier should cycle frame UV over time"
