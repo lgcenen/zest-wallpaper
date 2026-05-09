@@ -1062,6 +1062,8 @@ mod tests {
                 alpha: 255,
             },
             material_path: Some("materials/rope.material".to_string()),
+            texture_path: None,
+            blend_mode: crate::services::scene_render_planner_service::SceneRenderBlendMode::Additive,
             uv_scrolling: [0.25, -0.15],
             fade_alpha: 0.2,
         }

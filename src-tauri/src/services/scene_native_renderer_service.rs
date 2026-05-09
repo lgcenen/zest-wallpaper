@@ -1890,6 +1890,21 @@ impl NativeSceneMetalRenderer {
                 }
             }
         }
+        for item in &plan.rope_particles {
+            let Some(texture_path) = item.texture_path.as_ref() else {
+                continue;
+            };
+            if texture_path == Path::new("__rope-white__") {
+                continue;
+            }
+            match self.ensure_phase10_texture_loaded(texture_path, &mut required_keys) {
+                Ok(()) => {}
+                Err(error) => warnings.push(NativeSceneWarning::texture_load(
+                    texture_path,
+                    format!("Rope particle texture could not be prepared: {error}"),
+                )),
+            }
+        }
 
         let (prepared_phase10_graph, phase10_warnings) =
             self.prepare_phase10_graph(&phase10_graph, &mut required_keys)?;
@@ -4191,11 +4206,19 @@ impl NativeSceneMetalRenderer {
         item: &SceneRenderRopeParticleItem,
         now_ms: f64,
     ) {
+        let texture = item
+            .texture_path
+            .as_ref()
+            .filter(|path| path.as_path() != Path::new("__rope-white__"))
+            .and_then(|path| {
+                let key = phase10_texture_cache_key(path);
+                self.texture_cache.get(&key).cloned()
+            });
         for segment in self.rope_particle_scheduler.primitives(item, now_ms) {
             self.draw_quad(
                 encoder,
-                white_texture,
-                SceneRenderBlendMode::Additive,
+                texture.as_ref().map(|texture| texture.as_ref()).unwrap_or(white_texture),
+                item.blend_mode,
                 projection,
                 quad_primitive_from_rope_particle(segment),
             );
@@ -6871,6 +6894,8 @@ mod tests {
                 alpha: 255,
             },
             material_path: Some("materials/rope.material".to_string()),
+            texture_path: Some(PathBuf::from("/tmp/rope.png")),
+            blend_mode: SceneRenderBlendMode::Additive,
             uv_scrolling: [0.25, -0.1],
             fade_alpha: 0.15,
         }

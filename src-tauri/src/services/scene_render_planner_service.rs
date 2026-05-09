@@ -237,6 +237,9 @@ pub struct SceneRenderRopeParticleItem {
     pub lifetime_ms: f64,
     pub color: SceneRenderColor,
     pub material_path: Option<String>,
+    #[cfg_attr(test, allow(dead_code))]
+    pub texture_path: Option<PathBuf>,
+    pub blend_mode: SceneRenderBlendMode,
     pub uv_scrolling: [f64; 2],
     pub fade_alpha: f64,
 }
@@ -588,7 +591,8 @@ pub fn build_scene_render_plan_with_resolver(
                 let runtime = source_particle_runtimes.get(&base.id).copied();
 
                 if runtime_prefers_first_class_rope_particles(runtime) {
-                    let Some(rope_item) = plan_rope_particle_item(base, color.as_deref(), runtime, &mut issues)
+                    let Some(rope_item) =
+                        plan_rope_particle_item(base, color.as_deref(), runtime, resolver, &mut issues)
                     else {
                         continue;
                     };
@@ -1275,6 +1279,7 @@ fn plan_rope_particle_item(
     base: &crate::models::EvaluatedSceneObjectBase,
     color: Option<&str>,
     runtime: Option<&SceneParticleRuntime>,
+    resolver: Option<&SceneResourceResolver>,
     issues: &mut Vec<SceneRenderIssue>,
 ) -> Option<SceneRenderRopeParticleItem> {
     let runtime = runtime?;
@@ -1320,6 +1325,12 @@ fn plan_rope_particle_item(
         return None;
     }
 
+    let material = match resolve_rope_particle_material(base.id, &base.name, runtime, resolver, issues)
+    {
+        RopeParticleMaterialResolution::Supported(material) => material,
+        RopeParticleMaterialResolution::Unsupported => return None,
+    };
+
     Some(SceneRenderRopeParticleItem {
         object_id: base.id,
         object_name: base.name.clone(),
@@ -1342,6 +1353,11 @@ fn plan_rope_particle_item(
             contract.alpha,
         ),
         material_path: contract.material_path.clone(),
+        texture_path: material.as_ref().map(|material| material.texture_path.clone()),
+        blend_mode: material
+            .as_ref()
+            .map(|material| material.blend_mode)
+            .unwrap_or(SceneRenderBlendMode::Additive),
         uv_scrolling: contract.uv_scrolling,
         fade_alpha: contract.fade_alpha,
     })
@@ -1822,6 +1838,16 @@ struct SpriteParticleMaterial {
     blend_mode: SceneRenderBlendMode,
 }
 
+struct RopeParticleMaterial {
+    texture_path: PathBuf,
+    blend_mode: SceneRenderBlendMode,
+}
+
+enum RopeParticleMaterialResolution {
+    Supported(Option<RopeParticleMaterial>),
+    Unsupported,
+}
+
 fn resolve_sprite_particle_material(
     object_id: u32,
     object_name: &str,
@@ -1979,6 +2005,145 @@ fn resolve_sprite_particle_material(
                 .and_then(Value::as_str),
         ),
     })
+}
+
+fn resolve_rope_particle_material(
+    object_id: u32,
+    object_name: &str,
+    runtime: &SceneParticleRuntime,
+    resolver: Option<&SceneResourceResolver>,
+    issues: &mut Vec<SceneRenderIssue>,
+) -> RopeParticleMaterialResolution {
+    let Some(material_path) = runtime
+        .adapter
+        .rope_contract
+        .as_ref()
+        .and_then(|contract| contract.material_path.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return RopeParticleMaterialResolution::Supported(None);
+    };
+    let Some(resolver) = resolver else {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some("Rope particle material resolution requires Scene resource roots.".to_string()),
+            ),
+        );
+        return RopeParticleMaterialResolution::Unsupported;
+    };
+    let lookup = resolver.inspect_relative_path(material_path);
+    let Some(material_file) = lookup.matched_path else {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::missing_asset_file(
+                SceneRenderIssueSeverity::Warning,
+                object_id,
+                object_name,
+                "rope particle material",
+                material_path.to_string(),
+            ),
+        );
+        return RopeParticleMaterialResolution::Supported(None);
+    };
+    let material_json = match read_json_value(&material_file) {
+        Ok(value) => value,
+        Err(error) => {
+            push_unique_issue(
+                issues,
+                SceneRenderIssue::unsupported_particle_runtime(object_id, object_name, Some(error)),
+            );
+            return RopeParticleMaterialResolution::Unsupported;
+        }
+    };
+    let passes = particle_material_pass_values(&material_json);
+    if passes.len() != 1 {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some("Rope particle material bridge only supports a single pass.".to_string()),
+            ),
+        );
+        return RopeParticleMaterialResolution::Unsupported;
+    }
+    if particle_material_requires_phase10(&material_json, passes.first()) {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some(
+                    "Rope particle material declares shader/material features reserved for phase-10."
+                        .to_string(),
+                ),
+            ),
+        );
+        return RopeParticleMaterialResolution::Unsupported;
+    }
+    let pass = &passes[0];
+    let shader = pass
+        .get("shader")
+        .and_then(Value::as_str)
+        .or_else(|| material_json.get("shader").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !(shader.is_empty() || shader.contains("genericparticle") || shader.contains("rope")) {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some(format!(
+                    "Rope particle material shader {shader:?} is outside the phase-09f minimal bridge."
+                )),
+            ),
+        );
+        return RopeParticleMaterialResolution::Unsupported;
+    }
+    let textures = pass
+        .get("textures")
+        .or_else(|| material_json.get("textures"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if textures.len() > 1 {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                object_id,
+                object_name,
+                Some("Rope particle material bridge only supports a single base texture.".to_string()),
+            ),
+        );
+        return RopeParticleMaterialResolution::Unsupported;
+    }
+    let texture_path = textures
+        .first()
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|texture_name| {
+            let lookup = resolver.inspect_texture_candidates(
+                Some(material_path),
+                Some(material_file.as_path()),
+                texture_name,
+            );
+            lookup.matched_paths.first().cloned()
+        });
+
+    RopeParticleMaterialResolution::Supported(Some(RopeParticleMaterial {
+        texture_path: texture_path.unwrap_or_else(|| PathBuf::from("__rope-white__")),
+        blend_mode: parse_particle_material_blend_mode(
+            pass.get("blending")
+                .or_else(|| material_json.get("blending"))
+                .and_then(Value::as_str),
+        ),
+    }))
 }
 
 fn sprite_particle_texture_frames(texture_path: &Path) -> Vec<SceneSpriteParticleFrame> {
@@ -3321,6 +3486,20 @@ mod tests {
         .expect("child particle");
     }
 
+    fn write_rope_particle_material_fixture(managed_root: &std::path::Path) {
+        let source = managed_root.join("source");
+        fs::create_dir_all(source.join("materials")).expect("materials dir");
+        fs::create_dir_all(source.join("textures")).expect("textures dir");
+        fs::write(
+            source.join("materials/rope.material"),
+            r#"{"shader":"rope","textures":["textures/rope.png"],"blending":"additive"}"#,
+        )
+        .expect("rope material");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 4, Rgba([255, 255, 255, 255])))
+            .save(source.join("textures/rope.png"))
+            .expect("rope texture");
+    }
+
     fn unsupported_particle_runtime(object_id: u32) -> SceneParticleRuntime {
         SceneParticleRuntime {
             object_id,
@@ -3543,6 +3722,13 @@ mod tests {
 
     #[test]
     fn render_plan_promotes_supported_rope_runtime_to_first_class_rope_item() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_rope_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
         let mut particle = particle_object(4, "Rope", SceneParticleKind::LineTrail);
         if let EvaluatedSceneObject::Particle { base, .. } = &mut particle {
             base.transform.position = [0.0, 0.0, 0.0];
@@ -3555,7 +3741,7 @@ mod tests {
             SceneParticleScheduleMode::Autonomous,
         )];
 
-        let report = build_scene_render_plan(&scene);
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
 
         assert!(!report.is_blocked());
         assert!(report.issues.is_empty());
@@ -3611,6 +3797,73 @@ mod tests {
             .iter()
             .any(|issue| issue.code == SceneRenderIssueCode::NoRenderableVisuals));
         assert!(report.is_blocked());
+    }
+
+    #[test]
+    fn rope_material_bridge_resolves_single_texture_and_blend_mode() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_rope_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut particle = particle_object(4, "Rope", SceneParticleKind::LineTrail);
+        if let EvaluatedSceneObject::Particle { base, .. } = &mut particle {
+            base.transform.position = [0.0, 0.0, 0.0];
+            base.transform.rotation = 0.0;
+        }
+        let mut scene = runtime_scene_with_objects(vec![(4, particle)], vec![4]);
+        scene.source.particle_runtimes = vec![supported_rope_particle_runtime(
+            4,
+            SceneParticleRendererFamily::Rope,
+            SceneParticleScheduleMode::Autonomous,
+        )];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        assert!(report.issues.is_empty());
+        let item = &report.plan.rope_particles[0];
+        assert_eq!(item.blend_mode, SceneRenderBlendMode::Additive);
+        assert!(
+            item.texture_path
+                .as_ref()
+                .is_some_and(|path| path.ends_with("textures/rope.png"))
+        );
+    }
+
+    #[test]
+    fn rope_material_bridge_rejects_phase10_texture_variants() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_rope_particle_material_fixture(&managed_root);
+        fs::write(
+            managed_root.join("source/materials/rope.material"),
+            r#"{"shader":"rope","textures":["textures/rope.png","textures/normal.png"],"blending":"additive"}"#,
+        )
+        .expect("complex rope material");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Rope", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+        scene.source.particle_runtimes = vec![supported_rope_particle_runtime(
+            4,
+            SceneParticleRendererFamily::RopeTrail,
+            SceneParticleScheduleMode::InputDriven,
+        )];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(report.plan.rope_particles.is_empty());
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == SceneRenderIssueCode::UnsupportedParticleRuntime));
     }
 
     #[test]
