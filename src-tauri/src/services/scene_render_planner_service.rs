@@ -37,6 +37,7 @@ pub enum SceneRenderIssueSeverity {
 pub enum SceneRenderIssueCode {
     UnsupportedVisualAsset,
     UnsupportedParticleRuntime,
+    ParticleNoRenderableOutput,
     MissingAssetPath,
     MissingAssetFile,
     MissingRenderBounds,
@@ -865,6 +866,22 @@ impl SceneRenderIssue {
         }
     }
 
+    fn particle_no_renderable_output(object_id: u32, object_name: &str, detail: &str) -> Self {
+        Self {
+            severity: SceneRenderIssueSeverity::Fatal,
+            code: SceneRenderIssueCode::ParticleNoRenderableOutput,
+            message: format!(
+                "{} did not produce drawable rope/particle output in the native runtime.",
+                quoted(object_name)
+            ),
+            object_id: Some(object_id),
+            object_name: Some(object_name.to_string()),
+            object_kind: Some("particle".to_string()),
+            resource_path: None,
+            detail: Some(detail.to_string()),
+        }
+    }
+
     fn no_renderable_visuals() -> Self {
         Self {
             severity: SceneRenderIssueSeverity::Fatal,
@@ -1313,13 +1330,10 @@ fn plan_rope_particle_item(
     if control_points.len() < 2 || contract.segment_count == 0 || contract.width <= 0.0 {
         push_unique_issue(
             issues,
-            SceneRenderIssue::unsupported_particle_runtime(
+            SceneRenderIssue::particle_no_renderable_output(
                 base.id,
                 &base.name,
-                Some(
-                    "Rope runtime did not produce enough control-point topology for drawable segments."
-                        .to_string(),
-                ),
+                "Rope runtime did not produce enough control-point topology for drawable segments.",
             ),
         );
         return None;
@@ -3791,7 +3805,7 @@ mod tests {
         assert!(report
             .issues
             .iter()
-            .any(|issue| issue.code == SceneRenderIssueCode::UnsupportedParticleRuntime));
+            .any(|issue| issue.code == SceneRenderIssueCode::ParticleNoRenderableOutput));
         assert!(report
             .issues
             .iter()

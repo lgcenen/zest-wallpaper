@@ -361,6 +361,10 @@ fn support_error_from_render_issue(
             SceneDiagnosticDomain::Particle,
             "particle-resource-unsupported",
         ),
+        SceneRenderIssueCode::ParticleNoRenderableOutput => (
+            SceneDiagnosticDomain::Particle,
+            "particle-output-empty",
+        ),
         SceneRenderIssueCode::MissingAssetPath | SceneRenderIssueCode::MissingAssetFile => {
             match object_kind {
                 "sound" => (
@@ -374,6 +378,10 @@ fn support_error_from_render_issue(
                 "visual" => (
                     SceneDiagnosticDomain::Visual,
                     "visual-asset-reference-unresolved",
+                ),
+                _ if object_kind.contains("particle") => (
+                    SceneDiagnosticDomain::Particle,
+                    "particle-resource-reference-unresolved",
                 ),
                 _ => (
                     SceneDiagnosticDomain::Scene,
@@ -2425,6 +2433,131 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "particle-resource-reference-unresolved"));
+    }
+
+    #[test]
+    fn phase_09f_support_report_marks_unresolved_rope_material_as_particle_resource_unresolved() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let extracted_root = managed_root.join("extracted");
+
+        fs::create_dir_all(extracted_root.join("particles")).expect("particles dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        fs::write(
+            extracted_root.join("scene.json"),
+            r#"{
+              "objects": [
+                {
+                  "id": 8,
+                  "name": "Rope",
+                  "particle": "particles/rope.json"
+                }
+              ]
+            }"#,
+        )
+        .expect("scene json");
+        fs::write(
+            extracted_root.join("particles").join("rope.json"),
+            r#"{
+              "material": "materials/missing-rope.material",
+              "emitter": [{"name": "root", "rate": 24}],
+              "renderer": [{"name": "rope", "length": 8}]
+            }"#,
+        )
+        .expect("particle json");
+
+        let mut record = scene_record(&managed_root);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted_root.join("scene.json"),
+                &extracted_root,
+                &BTreeMap::new(),
+            )
+            .expect("parse scene manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let report = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => {
+                analyze_scene_support_with_builtin_root(&record, &builtin_root, Some(scene))
+            }
+            _ => panic!("expected scene runtime"),
+        };
+
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "particle-resource-reference-unresolved"));
+    }
+
+    #[test]
+    fn phase_09f_support_report_distinguishes_rope_no_output_from_rope_unsupported() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let extracted_root = managed_root.join("extracted");
+
+        fs::create_dir_all(extracted_root.join("particles")).expect("particles dir");
+        fs::create_dir_all(extracted_root.join("materials")).expect("materials dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        fs::write(
+            extracted_root.join("scene.json"),
+            r#"{
+              "objects": [
+                {
+                  "id": 8,
+                  "name": "Rope",
+                  "particle": "particles/rope.json"
+                }
+              ]
+            }"#,
+        )
+        .expect("scene json");
+        fs::write(
+            extracted_root.join("particles").join("rope.json"),
+            r#"{
+              "material": "materials/rope.material",
+              "emitter": [{"name": "root", "rate": 24}],
+              "renderer": [{"name": "rope", "length": 8}],
+              "controlpoint": [{"id": 0, "offset": "0 0 0"}]
+            }"#,
+        )
+        .expect("particle json");
+        fs::write(
+            extracted_root.join("materials").join("rope.material"),
+            r#"{"shader":"rope","textures":["textures/rope.png"],"blending":"additive"}"#,
+        )
+        .expect("rope material");
+
+        let mut record = scene_record(&managed_root);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted_root.join("scene.json"),
+                &extracted_root,
+                &BTreeMap::new(),
+            )
+            .expect("parse scene manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let report = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => {
+                analyze_scene_support_with_builtin_root(&record, &builtin_root, Some(scene))
+            }
+            _ => panic!("expected scene runtime"),
+        };
+
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.code == "particle-output-empty"));
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.code == "scene-output-empty"));
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "particle-resource-unsupported"));
     }
 
     #[test]
