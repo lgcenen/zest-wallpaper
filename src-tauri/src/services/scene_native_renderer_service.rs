@@ -30,7 +30,7 @@ use crate::{
         scene_now_playing_provider_service,
         scene_particle_scheduler_service::{
             SceneParticleCursor, SceneParticlePrimitive, SceneParticleScheduler,
-            SceneRopeParticleScheduler,
+            SceneRopeParticlePrimitive, SceneRopeParticleScheduler,
         },
         scene_render_graph_service::{
             build_scene_phase10_graph, ScenePhase10EffectPassNode, ScenePhase10GraphPlan,
@@ -1895,7 +1895,7 @@ impl NativeSceneMetalRenderer {
             self.prepare_phase10_graph(&phase10_graph, &mut required_keys)?;
         warnings.extend(phase10_warnings);
 
-        if !plan.audios.is_empty() || !plan.particles.is_empty() {
+        if !plan.audios.is_empty() || !plan.particles.is_empty() || !plan.rope_particles.is_empty() {
             self.ensure_procedural_texture(
                 WHITE_TEXTURE_KEY,
                 build_white_texture_image(),
@@ -2279,7 +2279,19 @@ impl NativeSceneMetalRenderer {
                     );
                 }
                 SceneRenderDrawKind::RopeParticle => {
-                    let _ = rope_particle_items.get(&draw_item.object_id);
+                    let (Some(item), Some(white_texture)) = (
+                        rope_particle_items.get(&draw_item.object_id),
+                        white_texture.as_ref(),
+                    ) else {
+                        continue;
+                    };
+                    self.draw_rope_particle_item(
+                        &encoder,
+                        white_texture.as_ref(),
+                        &projection,
+                        item,
+                        now_ms_f64,
+                    );
                 }
                 SceneRenderDrawKind::SpriteParticle => {
                     let Some(item) = sprite_particle_items.get(&draw_item.object_id) else {
@@ -4168,6 +4180,25 @@ impl NativeSceneMetalRenderer {
                     );
                 }
             }
+        }
+    }
+
+    fn draw_rope_particle_item(
+        &mut self,
+        encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+        white_texture: &ProtocolObject<dyn MTLTexture>,
+        projection: &SceneProjection,
+        item: &SceneRenderRopeParticleItem,
+        now_ms: f64,
+    ) {
+        for segment in self.rope_particle_scheduler.primitives(item, now_ms) {
+            self.draw_quad(
+                encoder,
+                white_texture,
+                SceneRenderBlendMode::Additive,
+                projection,
+                quad_primitive_from_rope_particle(segment),
+            );
         }
     }
 
@@ -6231,6 +6262,35 @@ fn quad_primitive_from_particle(primitive: SceneParticlePrimitive) -> SceneQuadP
 }
 
 #[cfg(target_os = "macos")]
+fn quad_primitive_from_rope_particle(primitive: SceneRopeParticlePrimitive) -> SceneQuadPrimitive {
+    let dx = primitive.end[0] - primitive.start[0];
+    let dy = primitive.end[1] - primitive.start[1];
+    let length = (dx * dx + dy * dy).sqrt().max(1.0);
+    let center_x = (primitive.start[0] + primitive.end[0]) / 2.0;
+    let center_y = (primitive.start[1] + primitive.end[1]) / 2.0;
+    let uv_rect = [
+        primitive.uv_offset[0] as f32,
+        primitive.uv_offset[1] as f32,
+        1.0,
+        1.0,
+    ];
+    SceneQuadPrimitive {
+        left: center_x - length / 2.0,
+        top: center_y - primitive.width / 2.0,
+        width: length,
+        height: primitive.width.max(1.0),
+        rotation: -dy.atan2(dx),
+        opacity: primitive.opacity,
+        flip_x: false,
+        flip_y: false,
+        uv_rect,
+        color: primitive.color,
+        transform_origin_x: center_x,
+        transform_origin_y: center_y,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn quad_primitive_from_sprite_particle(
     primitive: SceneSpriteParticlePrimitive,
 ) -> SceneQuadPrimitive {
@@ -6508,14 +6568,15 @@ mod tests {
     use crate::services::scene_render_planner_service::{
         SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderCamera,
         SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderParticleItem, SceneRenderPlan,
-        SceneRenderQuad, SceneRenderSourceKind, SceneRenderTextFontBinding, SceneRenderTextItem,
-        SceneRenderVisualItem,
+        SceneRenderQuad, SceneRenderRopeControlPointItem, SceneRenderRopeParticleItem,
+        SceneRenderSourceKind, SceneRenderTextFontBinding, SceneRenderTextItem, SceneRenderVisualItem,
     };
 
     #[cfg(target_os = "macos")]
     use super::{
         build_scene_pipeline_states, build_scene_vertices, load_phase10_texture_image,
         load_phase10_texture_source, particle_plan_signature, phase10_texture_path_candidates,
+        quad_primitive_from_rope_particle,
         scene_text_font_cache_key, should_retain_visual_in_draw_plan, text_texture_cache_key,
         unpremultiply_rgba_pixels, SceneTextHorizontalAlign,
     };
@@ -6778,6 +6839,43 @@ mod tests {
         }
     }
 
+    fn sample_rope_particle_item() -> SceneRenderRopeParticleItem {
+        SceneRenderRopeParticleItem {
+            object_id: 41,
+            object_name: "Rope".to_string(),
+            renderer_family: crate::models::SceneParticleRendererFamily::Rope,
+            schedule_mode: crate::models::SceneParticleScheduleMode::InputDriven,
+            control_points: vec![
+                SceneRenderRopeControlPointItem {
+                    id: 0,
+                    position: [10.0, 20.0],
+                    lock_to_pointer: false,
+                },
+                SceneRenderRopeControlPointItem {
+                    id: 1,
+                    position: [90.0, 60.0],
+                    lock_to_pointer: false,
+                },
+            ],
+            segment_count: 8,
+            subdivision: 2,
+            length: 120.0,
+            min_length: 40.0,
+            max_length: 180.0,
+            width: 6.0,
+            lifetime_ms: 1500.0,
+            color: SceneRenderColor {
+                red: 200,
+                green: 240,
+                blue: 255,
+                alpha: 255,
+            },
+            material_path: Some("materials/rope.material".to_string()),
+            uv_scrolling: [0.25, -0.1],
+            fade_alpha: 0.15,
+        }
+    }
+
     #[cfg(target_os = "macos")]
     fn rgba_tex_bytes(pixel: [u8; 4], width: u32, height: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -6892,6 +6990,12 @@ mod tests {
             .iter()
             .map(|item| item.object_id)
             .collect::<std::collections::BTreeSet<_>>();
+        let rope_particle_ids = spec
+            .render_plan
+            .rope_particles
+            .iter()
+            .map(|item| item.object_id)
+            .collect::<std::collections::BTreeSet<_>>();
         let sound_ids = spec
             .render_plan
             .sounds
@@ -6921,6 +7025,9 @@ mod tests {
                 }
                 SceneRenderDrawKind::Particle if particle_ids.contains(&item.object_id) => {
                     sequence.push((item.object_id, SceneRenderDrawKind::Particle));
+                }
+                SceneRenderDrawKind::RopeParticle if rope_particle_ids.contains(&item.object_id) => {
+                    sequence.push((item.object_id, SceneRenderDrawKind::RopeParticle));
                 }
                 SceneRenderDrawKind::SpriteParticle
                     if sprite_particle_ids.contains(&item.object_id) =>
@@ -7488,6 +7595,49 @@ mod tests {
         });
 
         assert_eq!(signature, particle_plan_signature(&next));
+    }
+
+    #[test]
+    fn runtime_submission_sequence_includes_rope_particles() {
+        let mut spec = sample_spec("scene-rope", &["player"], 0);
+        spec.render_plan.draw_order = vec![SceneRenderDrawItem {
+            object_id: 41,
+            kind: SceneRenderDrawKind::RopeParticle,
+        }];
+        spec.render_plan.visuals.clear();
+        spec.render_plan.rope_particles = vec![sample_rope_particle_item()];
+
+        assert_eq!(
+            render_submission_sequence(&spec),
+            vec![(41, SceneRenderDrawKind::RopeParticle)]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rope_segment_quad_uses_continuous_segment_geometry() {
+        let primitive = super::SceneRopeParticlePrimitive {
+            start: [10.0, 20.0],
+            end: [70.0, 50.0],
+            width: 6.0,
+            opacity: 0.75,
+            color: SceneRenderColor {
+                red: 200,
+                green: 240,
+                blue: 255,
+                alpha: 255,
+            },
+            uv_offset: [0.25, -0.1],
+        };
+        let quad = quad_primitive_from_rope_particle(primitive);
+
+        assert!(quad.width > 60.0, "rope quad should span full segment length");
+        assert!((quad.height - 6.0).abs() < 0.001);
+        assert!((quad.transform_origin_x - 40.0).abs() < 0.001);
+        assert!((quad.transform_origin_y - 35.0).abs() < 0.001);
+        assert!(quad.rotation.abs() > 0.1, "rope quad should rotate with segment direction");
+        assert_eq!(quad.uv_rect[0], 0.25);
+        assert_eq!(quad.uv_rect[1], -0.1);
     }
 
     #[cfg(target_os = "macos")]
