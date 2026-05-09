@@ -2264,6 +2264,7 @@ impl NativeSceneMetalRenderer {
                         now_ms_f64,
                     );
                 }
+                SceneRenderDrawKind::RopeParticle => {}
                 SceneRenderDrawKind::SpriteParticle => {
                     let Some(item) = sprite_particle_items.get(&draw_item.object_id) else {
                         continue;
@@ -2780,6 +2781,7 @@ impl NativeSceneMetalRenderer {
             }
             SceneRenderDrawKind::Audio
             | SceneRenderDrawKind::Particle
+            | SceneRenderDrawKind::RopeParticle
             | SceneRenderDrawKind::SpriteParticle
             | SceneRenderDrawKind::Sound => None,
         }
@@ -4767,6 +4769,7 @@ fn phase10_background_source_order(
             }
             SceneRenderDrawKind::Audio
             | SceneRenderDrawKind::Particle
+            | SceneRenderDrawKind::RopeParticle
             | SceneRenderDrawKind::SpriteParticle
             | SceneRenderDrawKind::Sound
             | SceneRenderDrawKind::Visual
@@ -6543,6 +6546,7 @@ mod tests {
                 texts: Vec::new(),
                 audios: Vec::new(),
                 particles: Vec::new(),
+                rope_particles: Vec::new(),
                 sprite_particles: Vec::new(),
                 sounds: Vec::new(),
             },
@@ -6617,6 +6621,7 @@ mod tests {
                 texts: Vec::new(),
                 audios: Vec::new(),
                 particles: Vec::new(),
+                rope_particles: Vec::new(),
                 sprite_particles: Vec::new(),
                 sounds: (0..sound_count)
                     .map(|index| {
@@ -6706,6 +6711,7 @@ mod tests {
                 subdivision: 1,
                 rope_length: 0.0,
             }],
+            rope_particles: Vec::new(),
             sprite_particles: Vec::new(),
             sounds: Vec::new(),
         }

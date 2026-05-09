@@ -215,6 +215,33 @@ pub struct SceneRenderParticleItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SceneRenderRopeControlPointItem {
+    pub id: u32,
+    pub position: [f64; 2],
+    pub lock_to_pointer: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneRenderRopeParticleItem {
+    pub object_id: u32,
+    pub object_name: String,
+    pub renderer_family: SceneParticleRendererFamily,
+    pub schedule_mode: SceneParticleScheduleMode,
+    pub control_points: Vec<SceneRenderRopeControlPointItem>,
+    pub segment_count: u32,
+    pub subdivision: u32,
+    pub length: f64,
+    pub min_length: f64,
+    pub max_length: f64,
+    pub width: f64,
+    pub lifetime_ms: f64,
+    pub color: SceneRenderColor,
+    pub material_path: Option<String>,
+    pub uv_scrolling: [f64; 2],
+    pub fade_alpha: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SceneSpriteParticleFrame {
     pub uv_rect: [f32; 4],
     pub aspect_ratio: f64,
@@ -293,6 +320,7 @@ pub enum SceneRenderDrawKind {
     Text,
     Audio,
     Particle,
+    RopeParticle,
     SpriteParticle,
     Sound,
 }
@@ -314,6 +342,7 @@ pub struct SceneRenderPlan {
     pub texts: Vec<SceneRenderTextItem>,
     pub audios: Vec<SceneRenderAudioItem>,
     pub particles: Vec<SceneRenderParticleItem>,
+    pub rope_particles: Vec<SceneRenderRopeParticleItem>,
     pub sprite_particles: Vec<SceneRenderSpriteParticleItem>,
     pub sounds: Vec<SceneRenderSoundItem>,
 }
@@ -324,6 +353,7 @@ impl SceneRenderPlan {
             || !self.texts.is_empty()
             || !self.audios.is_empty()
             || !self.particles.is_empty()
+            || !self.rope_particles.is_empty()
             || !self.sprite_particles.is_empty()
             || !self.sounds.is_empty()
     }
@@ -408,6 +438,7 @@ pub fn build_scene_render_plan_with_resolver(
     let mut texts = Vec::new();
     let mut audios = Vec::new();
     let mut particles = Vec::new();
+    let mut rope_particles = Vec::new();
     let mut sprite_particles = Vec::new();
     let mut sounds = Vec::new();
     let mut draw_order = Vec::new();
@@ -556,6 +587,19 @@ pub fn build_scene_render_plan_with_resolver(
                 }
                 let runtime = source_particle_runtimes.get(&base.id).copied();
 
+                if runtime_prefers_first_class_rope_particles(runtime) {
+                    let Some(rope_item) = plan_rope_particle_item(base, color.as_deref(), runtime, &mut issues)
+                    else {
+                        continue;
+                    };
+                    rope_particles.push(rope_item);
+                    draw_order.push(SceneRenderDrawItem {
+                        object_id: base.id,
+                        kind: SceneRenderDrawKind::RopeParticle,
+                    });
+                    continue;
+                }
+
                 if runtime_prefers_first_class_sprite_particles(runtime) {
                     let Some(sprite_item) =
                         plan_sprite_particle_item(base, runtime, resolver, &mut issues)
@@ -644,6 +688,7 @@ pub fn build_scene_render_plan_with_resolver(
         texts,
         audios,
         particles,
+        rope_particles,
         sprite_particles,
         sounds,
     };
@@ -662,6 +707,12 @@ fn runtime_prefers_first_class_sprite_particles(runtime: Option<&SceneParticleRu
             .map(|renderer| renderer.family),
         Some(SceneParticleRendererFamily::Sprite | SceneParticleRendererFamily::SpriteTrail)
     )
+}
+
+fn runtime_prefers_first_class_rope_particles(runtime: Option<&SceneParticleRuntime>) -> bool {
+    runtime
+        .and_then(|runtime| runtime.adapter.rope_contract.as_ref())
+        .is_some()
 }
 
 pub fn build_scene_render_text_update_with_resolver(
@@ -1218,6 +1269,132 @@ fn plan_particle_item(
             .unwrap_or(0.0)
             .max(0.0),
     })
+}
+
+fn plan_rope_particle_item(
+    base: &crate::models::EvaluatedSceneObjectBase,
+    color: Option<&str>,
+    runtime: Option<&SceneParticleRuntime>,
+    issues: &mut Vec<SceneRenderIssue>,
+) -> Option<SceneRenderRopeParticleItem> {
+    let runtime = runtime?;
+    if !runtime.adapter.supported {
+        let detail = runtime.adapter.reason.clone().or_else(|| {
+            runtime
+                .diagnostics
+                .first()
+                .map(|diagnostic| diagnostic.message.clone())
+        });
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(base.id, &base.name, detail),
+        );
+        return None;
+    }
+
+    let Some(contract) = runtime.adapter.rope_contract.as_ref() else {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                base.id,
+                &base.name,
+                Some("Particle runtime did not expose a rope contract.".to_string()),
+            ),
+        );
+        return None;
+    };
+
+    let control_points = resolve_rope_control_points(base, runtime, contract);
+    if control_points.len() < 2 || contract.segment_count == 0 || contract.width <= 0.0 {
+        push_unique_issue(
+            issues,
+            SceneRenderIssue::unsupported_particle_runtime(
+                base.id,
+                &base.name,
+                Some(
+                    "Rope runtime did not produce enough control-point topology for drawable segments."
+                        .to_string(),
+                ),
+            ),
+        );
+        return None;
+    }
+
+    Some(SceneRenderRopeParticleItem {
+        object_id: base.id,
+        object_name: base.name.clone(),
+        renderer_family: contract.renderer_family,
+        schedule_mode: contract.schedule_mode,
+        control_points,
+        segment_count: contract.segment_count,
+        subdivision: contract.subdivision,
+        length: contract.length,
+        min_length: contract.min_length,
+        max_length: contract.max_length,
+        width: contract.width,
+        lifetime_ms: contract.lifetime_ms,
+        color: parse_scene_color(
+            contract
+                .color
+                .as_deref()
+                .or(runtime.instance_override.color.as_deref())
+                .or(color),
+            contract.alpha,
+        ),
+        material_path: contract.material_path.clone(),
+        uv_scrolling: contract.uv_scrolling,
+        fade_alpha: contract.fade_alpha,
+    })
+}
+
+fn resolve_rope_control_points(
+    base: &crate::models::EvaluatedSceneObjectBase,
+    runtime: &SceneParticleRuntime,
+    contract: &crate::models::SceneRopeParticleRuntimeContract,
+) -> Vec<SceneRenderRopeControlPointItem> {
+    let parent_rotation = base.transform.rotation;
+    let object_rotation =
+        parent_rotation + runtime.object_angles.map(|angles| angles[2]).unwrap_or(0.0);
+    let object_offset = rotate_2d(
+        [
+            runtime.object_origin[0] * base.transform.scale[0],
+            runtime.object_origin[1] * base.transform.scale[1],
+        ],
+        parent_rotation,
+    );
+    let root = [
+        base.transform.position[0] + object_offset[0],
+        base.transform.position[1] + object_offset[1],
+    ];
+
+    let mut resolved = Vec::with_capacity(contract.control_points.len());
+    for control_point in &contract.control_points {
+        let authored = control_point.override_value.unwrap_or(control_point.offset);
+        let local = rotate_2d(
+            [
+                authored[0] * runtime.object_scale[0] * base.transform.scale[0],
+                authored[1] * runtime.object_scale[1] * base.transform.scale[1],
+            ],
+            object_rotation,
+        );
+        let parent_position = control_point
+            .parent_control_point
+            .and_then(|parent_id| {
+                resolved
+                    .iter()
+                    .find(|candidate: &&SceneRenderRopeControlPointItem| candidate.id == parent_id)
+                    .map(|candidate| candidate.position)
+            })
+            .unwrap_or(root);
+        resolved.push(SceneRenderRopeControlPointItem {
+            id: control_point.id,
+            position: [parent_position[0] + local[0], parent_position[1] + local[1]],
+            lock_to_pointer: control_point.lock_to_pointer
+                || control_point.override_binding.is_some(),
+        });
+    }
+
+    resolved
 }
 
 fn plan_sprite_particle_item(
@@ -2938,6 +3115,77 @@ mod tests {
         }
     }
 
+    fn supported_rope_particle_runtime(
+        object_id: u32,
+        family: SceneParticleRendererFamily,
+        schedule_mode: SceneParticleScheduleMode,
+    ) -> SceneParticleRuntime {
+        SceneParticleRuntime {
+            object_id,
+            object_name: "Rope".to_string(),
+            particle_path: "particles/rope.json".to_string(),
+            object_origin: [12.0, -18.0, 0.0],
+            object_scale: [1.0, 1.0, 1.0],
+            object_angles: Some([0.0, 0.0, 0.0]),
+            system: SceneParticleSystemRuntime {
+                material: Some("materials/rope.material".to_string()),
+                emitters: vec![SceneParticleEmitterRuntime {
+                    rate: Some(28.0),
+                    schedule_mode,
+                    ..SceneParticleEmitterRuntime::default()
+                }],
+                ..SceneParticleSystemRuntime::default()
+            },
+            instance_override: SceneParticleInstanceOverride {
+                color: Some("0.2 0.4 1".to_string()),
+                ..SceneParticleInstanceOverride::default()
+            },
+            adapter: SceneParticleRuntimeAdapter {
+                supported: true,
+                draw_kind: Some(SceneParticleKind::LineTrail),
+                rope_contract: Some(crate::models::SceneRopeParticleRuntimeContract {
+                    renderer_family: family,
+                    schedule_mode,
+                    control_points: vec![
+                        crate::models::SceneRopeParticleControlPointRuntime {
+                            id: 0,
+                            offset: [0.0, 0.0, 0.0],
+                            parent_control_point: None,
+                            lock_to_pointer: false,
+                            override_key: None,
+                            override_value: None,
+                            override_binding: None,
+                        },
+                        crate::models::SceneRopeParticleControlPointRuntime {
+                            id: 1,
+                            offset: [80.0, 20.0, 0.0],
+                            parent_control_point: Some(0),
+                            lock_to_pointer: false,
+                            override_key: None,
+                            override_value: None,
+                            override_binding: None,
+                        },
+                    ],
+                    segment_count: 12,
+                    subdivision: 4,
+                    length: 240.0,
+                    min_length: 60.0,
+                    max_length: 360.0,
+                    width: 6.0,
+                    lifetime_ms: 1500.0,
+                    alpha: 0.8,
+                    color: Some("0.2 0.4 1".to_string()),
+                    material_path: Some("materials/rope.material".to_string()),
+                    uv_scrolling: [0.5, -0.25],
+                    fade_alpha: 0.2,
+                }),
+                schedule_mode,
+                reason: None,
+            },
+            diagnostics: Vec::new(),
+        }
+    }
+
     fn supported_sprite_particle_runtime(object_id: u32) -> SceneParticleRuntime {
         SceneParticleRuntime {
             object_id,
@@ -3291,6 +3539,78 @@ mod tests {
         assert_eq!(item.lifetime_ms, 1200.0);
         assert_eq!(item.speed_range, [4.0, 8.0]);
         assert_eq!(item.size, 4.0);
+    }
+
+    #[test]
+    fn render_plan_promotes_supported_rope_runtime_to_first_class_rope_item() {
+        let mut particle = particle_object(4, "Rope", SceneParticleKind::LineTrail);
+        if let EvaluatedSceneObject::Particle { base, .. } = &mut particle {
+            base.transform.position = [0.0, 0.0, 0.0];
+            base.transform.rotation = 0.0;
+        }
+        let mut scene = runtime_scene_with_objects(vec![(4, particle)], vec![4]);
+        scene.source.particle_runtimes = vec![supported_rope_particle_runtime(
+            4,
+            SceneParticleRendererFamily::Rope,
+            SceneParticleScheduleMode::Autonomous,
+        )];
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(!report.is_blocked());
+        assert!(report.issues.is_empty());
+        assert!(report.plan.particles.is_empty());
+        assert_eq!(report.plan.rope_particles.len(), 1);
+        assert_eq!(
+            report.plan.draw_order,
+            vec![SceneRenderDrawItem {
+                object_id: 4,
+                kind: SceneRenderDrawKind::RopeParticle,
+            }]
+        );
+        let item = &report.plan.rope_particles[0];
+        assert_eq!(item.renderer_family, SceneParticleRendererFamily::Rope);
+        assert_eq!(item.schedule_mode, SceneParticleScheduleMode::Autonomous);
+        assert_eq!(item.segment_count, 12);
+        assert_eq!(item.subdivision, 4);
+        assert_eq!(item.length, 240.0);
+        assert_eq!(item.width, 6.0);
+        assert_eq!(item.lifetime_ms, 1500.0);
+        assert_eq!(item.control_points.len(), 2);
+        assert_eq!(item.control_points[0].position, [12.0, -18.0]);
+        assert_eq!(item.control_points[1].position, [92.0, 2.0]);
+        assert_eq!(item.uv_scrolling, [0.5, -0.25]);
+        assert!((item.fade_alpha - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn rope_runtime_without_drawable_topology_keeps_scene_non_renderable() {
+        let mut scene = runtime_scene_with_objects(
+            vec![(4, particle_object(4, "Rope", SceneParticleKind::LineTrail))],
+            vec![4],
+        );
+        let mut runtime = supported_rope_particle_runtime(
+            4,
+            SceneParticleRendererFamily::RopeTrail,
+            SceneParticleScheduleMode::InputDriven,
+        );
+        if let Some(contract) = runtime.adapter.rope_contract.as_mut() {
+            contract.control_points.truncate(1);
+        }
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan(&scene);
+
+        assert!(report.plan.rope_particles.is_empty());
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == SceneRenderIssueCode::UnsupportedParticleRuntime));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == SceneRenderIssueCode::NoRenderableVisuals));
+        assert!(report.is_blocked());
     }
 
     #[test]
@@ -4229,6 +4549,7 @@ mod tests {
             texts: Vec::new(),
             audios: Vec::new(),
             particles: Vec::new(),
+            rope_particles: Vec::new(),
             sprite_particles: Vec::new(),
             sounds: vec![SceneRenderSoundItem {
                 object_id: 5,

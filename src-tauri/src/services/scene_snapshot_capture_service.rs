@@ -178,6 +178,10 @@ fn capture_scene_render_plan_snapshot_with_size(
                 "Scene particle item {} is dynamic and is not captured as a still",
                 draw_item.object_id
             )),
+            SceneRenderDrawKind::RopeParticle => unsupported.push(format!(
+                "Scene rope particle item {} is dynamic and is not captured as a still",
+                draw_item.object_id
+            )),
             SceneRenderDrawKind::SpriteParticle => unsupported.push(format!(
                 "Scene sprite particle item {} is dynamic and is not captured as a still",
                 draw_item.object_id
