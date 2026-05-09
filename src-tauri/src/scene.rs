@@ -24,7 +24,7 @@ use crate::{
         },
     },
     system_texture::resolve_system_texture,
-    tex::{extract_tex_asset, ExtractedTextureAsset},
+    tex::{extract_texture_asset, ExtractedTextureAsset},
 };
 
 #[derive(Debug, Clone, Default)]
@@ -1442,7 +1442,7 @@ fn resolve_visual_asset(
 
         let relative = candidate.strip_prefix(extracted_root).ok()?.to_path_buf();
         let output_path = decoded_root.join(relative).with_extension("");
-        let extracted = extract_tex_asset(&candidate, &output_path).ok();
+        let extracted = extract_texture_asset(&candidate, &output_path).ok();
         texture_cache.insert(candidate.clone(), extracted.clone());
         if let Some(texture) = extracted {
             return Some(texture);

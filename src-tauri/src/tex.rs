@@ -443,6 +443,19 @@ pub fn load_tex_image(source_path: &Path) -> Result<DynamicImage> {
     Ok(crop_texture_image(&header, image))
 }
 
+pub fn load_texture_image(source_path: &Path) -> Result<DynamicImage> {
+    let extension = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    if extension.as_deref() == Some("tex") {
+        return load_tex_image(source_path);
+    }
+
+    image::open(source_path)
+        .with_context(|| format!("Unable to decode image {}", source_path.display()))
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn inspect_tex_resolution(source_path: &Path) -> Result<TexResolution> {
     let (header, mipmap) = load_primary_mipmap(source_path)?;
@@ -496,14 +509,49 @@ pub fn extract_tex_asset(
     })
 }
 
+pub fn extract_texture_asset(
+    source_path: &Path,
+    destination_stem: &Path,
+) -> Result<ExtractedTextureAsset> {
+    let extension = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    if extension.as_deref() == Some("tex") {
+        return extract_tex_asset(source_path, destination_stem);
+    }
+
+    if let Some(parent) = destination_stem.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let image = load_texture_image(source_path)?;
+    let output_path = destination_stem.with_extension("png");
+    image
+        .save(&output_path)
+        .with_context(|| format!("Unable to write {}", output_path.display()))?;
+
+    Ok(ExtractedTextureAsset {
+        kind: SceneAssetKind::Image,
+        output_path,
+        width: image.width().max(1),
+        height: image.height().max(1),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use image::GenericImageView;
+    use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
     use tempfile::tempdir;
 
-    use super::{inspect_tex_resolution, load_tex_image, payload_looks_like_mp4};
+    use crate::models::SceneAssetKind;
+
+    use super::{
+        extract_texture_asset, inspect_tex_resolution, load_tex_image, load_texture_image,
+        payload_looks_like_mp4,
+    };
 
     fn rgba_tex_bytes(pixel: [u8; 4], width: u32, height: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -598,5 +646,47 @@ mod tests {
         assert_eq!(resolution.texture_height, 4);
         assert_eq!(resolution.content_width, 4);
         assert_eq!(resolution.content_height, 2);
+    }
+
+    #[test]
+    fn load_texture_image_decodes_bmp_and_tga_files() {
+        let temp = tempdir().expect("temp dir");
+        let image = DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 1, Rgba([9, 8, 7, 255])));
+        let bmp_path = temp.path().join("sample.bmp");
+        let tga_path = temp.path().join("sample.tga");
+        image
+            .save_with_format(&bmp_path, image::ImageFormat::Bmp)
+            .expect("write bmp");
+        image
+            .save_with_format(&tga_path, image::ImageFormat::Tga)
+            .expect("write tga");
+
+        let bmp = load_texture_image(&bmp_path).expect("decode bmp");
+        let tga = load_texture_image(&tga_path).expect("decode tga");
+
+        assert_eq!(bmp.to_rgba8().get_pixel(0, 0).0, [9, 8, 7, 255]);
+        assert_eq!(tga.to_rgba8().get_pixel(0, 0).0, [9, 8, 7, 255]);
+    }
+
+    #[test]
+    fn extract_texture_asset_normalizes_direct_image_inputs_to_png() {
+        let temp = tempdir().expect("temp dir");
+        let source_path = temp.path().join("sample.bmp");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(3, 2, Rgba([1, 2, 3, 255])))
+            .save_with_format(&source_path, image::ImageFormat::Bmp)
+            .expect("write bmp");
+
+        let extracted = extract_texture_asset(&source_path, &temp.path().join("decoded/sample"))
+            .expect("extract direct image");
+
+        assert_eq!(extracted.kind, SceneAssetKind::Image);
+        assert_eq!(extracted.width, 3);
+        assert_eq!(extracted.height, 2);
+        assert_eq!(
+            extracted.output_path.extension().and_then(|value| value.to_str()),
+            Some("png")
+        );
+        let decoded = image::open(&extracted.output_path).expect("open normalized png");
+        assert_eq!(decoded.to_rgba8().get_pixel(0, 0).0, [1, 2, 3, 255]);
     }
 }
