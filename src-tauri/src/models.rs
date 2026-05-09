@@ -245,7 +245,7 @@ pub enum SceneParticleScheduleMode {
     InputDriven,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum SceneParticleRendererFamily {
     Sprite,

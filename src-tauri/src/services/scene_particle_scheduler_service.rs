@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    models::{SceneParticleKind, SceneParticleScheduleMode},
-    services::scene_render_planner_service::{SceneRenderColor, SceneRenderParticleItem},
+    models::{SceneParticleKind, SceneParticleRendererFamily, SceneParticleScheduleMode},
+    services::scene_render_planner_service::{
+        SceneRenderColor, SceneRenderParticleItem, SceneRenderRopeParticleItem,
+    },
 };
 
 const MAX_FRAME_EMITS: usize = 24;
@@ -27,6 +29,17 @@ pub struct SceneParticlePrimitive {
     pub uv_offset: [f64; 2],
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneRopeParticlePrimitive {
+    pub start: [f64; 2],
+    pub end: [f64; 2],
+    pub width: f64,
+    pub opacity: f64,
+    pub color: SceneRenderColor,
+    pub uv_offset: [f64; 2],
+}
+
 #[derive(Debug, Default)]
 pub struct SceneParticleScheduler {
     last_cursor: Option<SceneParticleCursor>,
@@ -34,6 +47,13 @@ pub struct SceneParticleScheduler {
     input_states: BTreeMap<u32, SceneInputParticleState>,
     autonomous_states: BTreeMap<u32, SceneAutonomousParticleState>,
     random: SceneRandom,
+}
+
+#[derive(Debug, Default)]
+pub struct SceneRopeParticleScheduler {
+    last_cursor: Option<SceneParticleCursor>,
+    last_update_ms: Option<f64>,
+    states: BTreeMap<u32, SceneRopeParticleState>,
 }
 
 #[derive(Debug, Default)]
@@ -50,6 +70,20 @@ struct SceneAutonomousParticleState {
     emission_credit: f64,
     instantaneous_emitted: bool,
     particles: Vec<SceneParticle>,
+}
+
+#[derive(Debug, Default)]
+struct SceneRopeParticleState {
+    control_points: Vec<SceneResolvedRopeControlPoint>,
+    trail_emission_credit: f64,
+    trail_points: Vec<SceneTrailPoint>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneResolvedRopeControlPoint {
+    id: u32,
+    x: f64,
+    y: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -254,6 +288,74 @@ impl SceneParticleScheduler {
     }
 }
 
+impl SceneRopeParticleScheduler {
+    pub fn advance(
+        &mut self,
+        cursor: Option<SceneParticleCursor>,
+        items: &[SceneRenderRopeParticleItem],
+        now_ms: f64,
+    ) {
+        let delta_ms = self
+            .last_update_ms
+            .map(|previous| (now_ms - previous).clamp(0.0, 100.0))
+            .unwrap_or(16.0);
+        self.last_update_ms = Some(now_ms);
+
+        let active_ids = items
+            .iter()
+            .map(|item| item.object_id)
+            .collect::<BTreeSet<_>>();
+        self.states.retain(|object_id, _| active_ids.contains(object_id));
+
+        self.last_cursor = cursor;
+
+        for item in items {
+            let state = self.states.entry(item.object_id).or_default();
+            match item.renderer_family {
+                SceneParticleRendererFamily::Rope => {
+                    state.trail_points.clear();
+                    advance_rope_state(state, cursor, item, delta_ms, now_ms);
+                }
+                SceneParticleRendererFamily::RopeTrail => {
+                    advance_ropetrail_state(state, cursor, item, delta_ms, now_ms);
+                }
+                SceneParticleRendererFamily::Sprite
+                | SceneParticleRendererFamily::SpriteTrail
+                | SceneParticleRendererFamily::Unsupported => {}
+            }
+        }
+    }
+
+    pub fn pause_cursor(&mut self, cursor: Option<SceneParticleCursor>) {
+        self.last_cursor = cursor;
+        self.last_update_ms = None;
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn primitives(
+        &self,
+        item: &SceneRenderRopeParticleItem,
+        now_ms: f64,
+    ) -> Vec<SceneRopeParticlePrimitive> {
+        let Some(state) = self.states.get(&item.object_id) else {
+            return Vec::new();
+        };
+        match item.renderer_family {
+            SceneParticleRendererFamily::Rope => rope_primitives_from_control_points(state, item),
+            SceneParticleRendererFamily::RopeTrail => {
+                rope_trail_primitives_from_state(state, item, now_ms)
+            }
+            SceneParticleRendererFamily::Sprite
+            | SceneParticleRendererFamily::SpriteTrail
+            | SceneParticleRendererFamily::Unsupported => Vec::new(),
+        }
+    }
+}
+
 fn advance_input_item(
     state: &mut SceneInputParticleState,
     previous: Option<SceneParticleCursor>,
@@ -450,6 +552,299 @@ fn emit_autonomous_particles(
     }
 }
 
+fn advance_rope_state(
+    state: &mut SceneRopeParticleState,
+    cursor: Option<SceneParticleCursor>,
+    item: &SceneRenderRopeParticleItem,
+    _delta_ms: f64,
+    _now_ms: f64,
+) {
+    state.control_points = resolve_runtime_rope_control_points(cursor, item);
+}
+
+fn advance_ropetrail_state(
+    state: &mut SceneRopeParticleState,
+    cursor: Option<SceneParticleCursor>,
+    item: &SceneRenderRopeParticleItem,
+    delta_ms: f64,
+    now_ms: f64,
+) {
+    state.control_points = resolve_runtime_rope_control_points(cursor, item);
+    let Some(anchor) = state.control_points.last().copied() else {
+        state.trail_points.clear();
+        return;
+    };
+
+    let current = SceneTrailPoint {
+        x: anchor.x,
+        y: anchor.y,
+        created_at_ms: now_ms,
+    };
+    if state.trail_points.is_empty() {
+        state.trail_points.push(current);
+    } else {
+        emit_rope_trail_points(state, current, item, delta_ms, now_ms);
+    }
+
+    state
+        .trail_points
+        .retain(|point| now_ms - point.created_at_ms < item.lifetime_ms);
+    let max_points = rope_trail_max_points(item);
+    if state.trail_points.len() > max_points {
+        state
+            .trail_points
+            .drain(0..state.trail_points.len().saturating_sub(max_points));
+    }
+}
+
+fn emit_rope_trail_points(
+    state: &mut SceneRopeParticleState,
+    current: SceneTrailPoint,
+    item: &SceneRenderRopeParticleItem,
+    delta_ms: f64,
+    now_ms: f64,
+) {
+    let Some(previous) = state.trail_points.last().copied() else {
+        state.trail_points.push(current);
+        return;
+    };
+    let distance = cursor_distance(
+        SceneParticleCursor {
+            x: previous.x,
+            y: previous.y,
+        },
+        SceneParticleCursor {
+            x: current.x,
+            y: current.y,
+        },
+    );
+    let spacing = rope_trail_point_spacing(item).max(1.0);
+    let min_credit = (delta_ms / 16.0).clamp(0.5, 4.0) * 0.15;
+    state.trail_emission_credit += distance / spacing;
+    state.trail_emission_credit = state.trail_emission_credit.max(min_credit);
+    let emit_count = state
+        .trail_emission_credit
+        .floor()
+        .clamp(0.0, MAX_FRAME_EMITS as f64) as usize;
+    if emit_count == 0 {
+        if now_ms - previous.created_at_ms > spacing * 12.0 {
+            state.trail_points.push(current);
+        }
+        return;
+    }
+    state.trail_emission_credit -= emit_count as f64;
+    for index in 0..emit_count {
+        let t = (index + 1) as f64 / emit_count as f64;
+        state.trail_points.push(SceneTrailPoint {
+            x: previous.x + (current.x - previous.x) * t,
+            y: previous.y + (current.y - previous.y) * t,
+            created_at_ms: now_ms,
+        });
+    }
+}
+
+fn resolve_runtime_rope_control_points(
+    cursor: Option<SceneParticleCursor>,
+    item: &SceneRenderRopeParticleItem,
+) -> Vec<SceneResolvedRopeControlPoint> {
+    let mut resolved = item
+        .control_points
+        .iter()
+        .map(|control_point| SceneResolvedRopeControlPoint {
+            id: control_point.id,
+            x: control_point.position[0],
+            y: control_point.position[1],
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(cursor) = cursor {
+        for control_point in &item.control_points {
+            if !control_point.lock_to_pointer {
+                continue;
+            }
+            if let Some(runtime_point) = resolved.iter_mut().find(|point| point.id == control_point.id)
+            {
+                runtime_point.x = cursor.x;
+                runtime_point.y = cursor.y;
+            }
+        }
+    }
+
+    resolved
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn rope_primitives_from_control_points(
+    state: &SceneRopeParticleState,
+    item: &SceneRenderRopeParticleItem,
+) -> Vec<SceneRopeParticlePrimitive> {
+    if state.control_points.len() < 2 || item.segment_count == 0 || item.width <= 0.0 {
+        return Vec::new();
+    }
+
+    let sampled = sample_rope_path(&control_points_to_polyline(&state.control_points), item.segment_count);
+    rope_segment_primitives(
+        &sampled,
+        item.width,
+        item.color,
+        item.uv_scrolling,
+        item.fade_alpha,
+        0.0,
+        1.0,
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn rope_trail_primitives_from_state(
+    state: &SceneRopeParticleState,
+    item: &SceneRenderRopeParticleItem,
+    now_ms: f64,
+) -> Vec<SceneRopeParticlePrimitive> {
+    if state.trail_points.len() < 2 || item.segment_count == 0 || item.width <= 0.0 {
+        return Vec::new();
+    }
+
+    let points = if item.length > 0.0 {
+        let split_idx = trail_split_index(&state.trail_points, item.length);
+        &state.trail_points[split_idx..]
+    } else {
+        &state.trail_points
+    };
+    let sampled = sample_rope_path(&trail_points_to_polyline(points), item.segment_count);
+    let trail_age_ms = points
+        .last()
+        .map(|point| (now_ms - point.created_at_ms).max(0.0))
+        .unwrap_or(0.0);
+    rope_segment_primitives(
+        &sampled,
+        item.width,
+        item.color,
+        item.uv_scrolling,
+        item.fade_alpha,
+        trail_age_ms,
+        item.lifetime_ms.max(1.0),
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn control_points_to_polyline(points: &[SceneResolvedRopeControlPoint]) -> Vec<[f64; 2]> {
+    points.iter().map(|point| [point.x, point.y]).collect()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn trail_points_to_polyline(points: &[SceneTrailPoint]) -> Vec<[f64; 2]> {
+    points.iter().map(|point| [point.x, point.y]).collect()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn sample_rope_path(polyline: &[[f64; 2]], segment_count: u32) -> Vec<[f64; 2]> {
+    if polyline.len() < 2 {
+        return polyline.to_vec();
+    }
+
+    let total_length = polyline_length(polyline);
+    if total_length <= 0.0 {
+        return polyline.to_vec();
+    }
+
+    let segments = segment_count.clamp(1, 256) as usize;
+    let mut sampled = Vec::with_capacity(segments + 1);
+    for index in 0..=segments {
+        let distance = total_length * index as f64 / segments as f64;
+        sampled.push(sample_polyline_at_distance(polyline, distance));
+    }
+    sampled
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn rope_segment_primitives(
+    sampled: &[[f64; 2]],
+    width: f64,
+    color: SceneRenderColor,
+    uv_scrolling: [f64; 2],
+    fade_alpha: f64,
+    age_ms: f64,
+    lifetime_ms: f64,
+) -> Vec<SceneRopeParticlePrimitive> {
+    let mut primitives = Vec::new();
+    if sampled.len() < 2 {
+        return primitives;
+    }
+
+    let total_segments = sampled.len().saturating_sub(1).max(1);
+    let age_alpha = (1.0 - clamp_f64(age_ms / lifetime_ms, 0.0, 1.0)) * (1.0 - fade_alpha);
+    for (index, window) in sampled.windows(2).enumerate() {
+        let segment_alpha = age_alpha * (1.0 - index as f64 / total_segments as f64 * fade_alpha);
+        if segment_alpha <= 0.0 {
+            continue;
+        }
+        primitives.push(SceneRopeParticlePrimitive {
+            start: window[0],
+            end: window[1],
+            width: width.max(0.5),
+            opacity: segment_alpha.clamp(0.0, 1.0),
+            color: SceneRenderColor {
+                alpha: normalize_alpha(color, segment_alpha),
+                ..color
+            },
+            uv_offset: [
+                ((age_ms / 1000.0) * uv_scrolling[0] + index as f64 / total_segments as f64) % 1.0,
+                ((age_ms / 1000.0) * uv_scrolling[1]) % 1.0,
+            ],
+        });
+    }
+    primitives
+}
+
+fn rope_trail_point_spacing(item: &SceneRenderRopeParticleItem) -> f64 {
+    let min_length = item.min_length.max(0.0);
+    let max_length = item.max_length.max(min_length);
+    let baseline = if max_length > 0.0 {
+        (max_length / item.segment_count.max(1) as f64).max(6.0)
+    } else {
+        item.width.max(1.0) * 2.0
+    };
+    baseline / item.subdivision.max(1) as f64
+}
+
+fn rope_trail_max_points(item: &SceneRenderRopeParticleItem) -> usize {
+    item.segment_count.max(1) as usize * item.subdivision.max(1) as usize + 2
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn polyline_length(polyline: &[[f64; 2]]) -> f64 {
+    polyline
+        .windows(2)
+        .map(|window| {
+            let dx = window[1][0] - window[0][0];
+            let dy = window[1][1] - window[0][1];
+            (dx * dx + dy * dy).sqrt()
+        })
+        .sum()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn sample_polyline_at_distance(polyline: &[[f64; 2]], distance: f64) -> [f64; 2] {
+    let mut remaining = distance.max(0.0);
+    for window in polyline.windows(2) {
+        let dx = window[1][0] - window[0][0];
+        let dy = window[1][1] - window[0][1];
+        let segment_length = (dx * dx + dy * dy).sqrt();
+        if segment_length <= 0.0 {
+            continue;
+        }
+        if remaining <= segment_length {
+            let t = remaining / segment_length;
+            return [
+                window[0][0] + dx * t,
+                window[0][1] + dy * t,
+            ];
+        }
+        remaining -= segment_length;
+    }
+    polyline.last().copied().unwrap_or([0.0, 0.0])
+}
+
 fn advance_particles(particles: &mut Vec<SceneParticle>, delta_ms: f64, now_ms: f64) {
     let delta_seconds = (delta_ms / 1000.0).clamp(0.0, 0.1);
     let delta_scale = (delta_ms / (1000.0 / 60.0)).clamp(0.25, 4.0);
@@ -538,12 +933,15 @@ fn trail_split_index(points: &[SceneTrailPoint], max_length: f64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{SceneParticleKind, SceneParticleScheduleMode};
+    use crate::models::{
+        SceneParticleKind, SceneParticleRendererFamily, SceneParticleScheduleMode,
+    };
     use crate::services::scene_render_planner_service::{
-        SceneRenderColor, SceneRenderParticleItem,
+        SceneRenderColor, SceneRenderParticleItem, SceneRenderRopeControlPointItem,
+        SceneRenderRopeParticleItem,
     };
 
-    use super::{SceneParticleCursor, SceneParticleScheduler};
+    use super::{SceneParticleCursor, SceneParticleScheduler, SceneRopeParticleScheduler};
 
     fn line_item() -> SceneRenderParticleItem {
         SceneRenderParticleItem {
@@ -630,6 +1028,55 @@ mod tests {
             subdivision: 1,
             rope_length: 0.0,
         }
+    }
+
+    fn rope_item() -> SceneRenderRopeParticleItem {
+        SceneRenderRopeParticleItem {
+            object_id: 10,
+            object_name: "Rope".to_string(),
+            renderer_family: SceneParticleRendererFamily::Rope,
+            schedule_mode: SceneParticleScheduleMode::InputDriven,
+            control_points: vec![
+                SceneRenderRopeControlPointItem {
+                    id: 0,
+                    position: [20.0, 30.0],
+                    lock_to_pointer: false,
+                },
+                SceneRenderRopeControlPointItem {
+                    id: 1,
+                    position: [120.0, 30.0],
+                    lock_to_pointer: true,
+                },
+            ],
+            segment_count: 8,
+            subdivision: 2,
+            length: 180.0,
+            min_length: 40.0,
+            max_length: 220.0,
+            width: 6.0,
+            lifetime_ms: 1200.0,
+            color: SceneRenderColor {
+                red: 120,
+                green: 200,
+                blue: 255,
+                alpha: 255,
+            },
+            material_path: Some("materials/rope.material".to_string()),
+            uv_scrolling: [0.25, -0.15],
+            fade_alpha: 0.2,
+        }
+    }
+
+    fn rope_trail_item() -> SceneRenderRopeParticleItem {
+        let mut item = rope_item();
+        item.object_id = 11;
+        item.object_name = "RopeTrail".to_string();
+        item.renderer_family = SceneParticleRendererFamily::RopeTrail;
+        item.length = 90.0;
+        item.segment_count = 12;
+        item.subdivision = 3;
+        item.lifetime_ms = 900.0;
+        item
     }
 
     #[test]
@@ -1063,5 +1510,97 @@ mod tests {
 
         let primitives = scheduler.line_primitives(&item, 1080.0, 1200.0);
         assert!(!primitives.is_empty());
+    }
+
+    #[test]
+    fn rope_scheduler_builds_segments_from_control_points() {
+        let mut scheduler = SceneRopeParticleScheduler::default();
+        let item = rope_item();
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 180.0, y: 60.0 }),
+            std::slice::from_ref(&item),
+            1000.0,
+        );
+
+        let primitives = scheduler.primitives(&item, 1000.0);
+        assert!(!primitives.is_empty());
+        assert!(primitives.len() >= item.segment_count as usize);
+        assert!(primitives.iter().all(|primitive| primitive.width >= item.width));
+        let last = primitives.last().expect("rope segment");
+        assert!(last.end[0] > 150.0, "pointer-locked endpoint should follow cursor");
+    }
+
+    #[test]
+    fn rope_trail_scheduler_accumulates_and_reaps_segments_over_time() {
+        let mut scheduler = SceneRopeParticleScheduler::default();
+        let item = rope_trail_item();
+        for step in 0..8 {
+            scheduler.advance(
+                Some(SceneParticleCursor {
+                    x: 60.0 + step as f64 * 18.0,
+                    y: 80.0 + step as f64 * 4.0,
+                }),
+                std::slice::from_ref(&item),
+                1000.0 + step as f64 * 16.0,
+            );
+        }
+
+        let active = scheduler.primitives(&item, 1128.0);
+        let expired = scheduler.primitives(&item, 2600.0);
+        assert!(!active.is_empty(), "ropetrail should emit drawable segments");
+        assert!(
+            active.len() <= item.segment_count as usize,
+            "ropetrail should clamp trail topology to segment_count"
+        );
+        assert!(
+            expired.iter().all(|primitive| primitive.opacity < 0.05) || expired.is_empty(),
+            "expired ropetrail segments should fully fade out"
+        );
+    }
+
+    #[test]
+    fn rope_scheduler_reset_clears_rope_and_trail_state() {
+        let mut scheduler = SceneRopeParticleScheduler::default();
+        let rope = rope_item();
+        let trail = rope_trail_item();
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 100.0, y: 40.0 }),
+            &[rope.clone(), trail.clone()],
+            1000.0,
+        );
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 140.0, y: 70.0 }),
+            &[rope.clone(), trail.clone()],
+            1016.0,
+        );
+
+        scheduler.reset();
+
+        assert!(scheduler.primitives(&rope, 1016.0).is_empty());
+        assert!(scheduler.primitives(&trail, 1016.0).is_empty());
+    }
+
+    #[test]
+    fn rope_trail_removal_drops_previous_wallpaper_segments() {
+        let mut scheduler = SceneRopeParticleScheduler::default();
+        let trail = rope_trail_item();
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 60.0, y: 60.0 }),
+            std::slice::from_ref(&trail),
+            1000.0,
+        );
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 120.0, y: 60.0 }),
+            std::slice::from_ref(&trail),
+            1016.0,
+        );
+        assert!(!scheduler.primitives(&trail, 1016.0).is_empty());
+
+        scheduler.advance(None, &[], 1032.0);
+
+        assert!(
+            scheduler.primitives(&trail, 1032.0).is_empty(),
+            "removing rope item should clear retained trail state"
+        );
     }
 }

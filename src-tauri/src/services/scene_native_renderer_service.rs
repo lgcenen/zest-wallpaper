@@ -30,6 +30,7 @@ use crate::{
         scene_now_playing_provider_service,
         scene_particle_scheduler_service::{
             SceneParticleCursor, SceneParticlePrimitive, SceneParticleScheduler,
+            SceneRopeParticleScheduler,
         },
         scene_render_graph_service::{
             build_scene_phase10_graph, ScenePhase10EffectPassNode, ScenePhase10GraphPlan,
@@ -39,8 +40,9 @@ use crate::{
             build_scene_render_plan_with_resolver, build_scene_render_text_update_with_resolver,
             SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderColor,
             SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem,
-            SceneRenderPlan, SceneRenderQuad, SceneRenderSoundItem, SceneRenderSourceKind,
-            SceneRenderSpriteParticleItem, SceneRenderTextItem, SceneRenderVisualItem,
+            SceneRenderPlan, SceneRenderQuad, SceneRenderRopeParticleItem, SceneRenderSoundItem,
+            SceneRenderSourceKind, SceneRenderSpriteParticleItem, SceneRenderTextItem,
+            SceneRenderVisualItem,
             SceneTextHorizontalAlign,
         },
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
@@ -1699,6 +1701,7 @@ struct NativeSceneMetalRenderer {
     input_coordinator: SceneInputCoordinator,
     particle_signature: Option<u64>,
     particle_scheduler: SceneParticleScheduler,
+    rope_particle_scheduler: SceneRopeParticleScheduler,
     sprite_particle_scheduler: SceneSpriteParticleScheduler,
     paused: bool,
 }
@@ -1795,6 +1798,7 @@ impl NativeSceneMetalRenderer {
             input_coordinator: SceneInputCoordinator::default(),
             particle_signature: None,
             particle_scheduler: SceneParticleScheduler::default(),
+            rope_particle_scheduler: SceneRopeParticleScheduler::default(),
             sprite_particle_scheduler: SceneSpriteParticleScheduler::default(),
             paused: false,
         })
@@ -1994,6 +1998,7 @@ impl NativeSceneMetalRenderer {
             || self.particle_signature != next_particle_signature
         {
             self.particle_scheduler.reset();
+            self.rope_particle_scheduler.reset();
             self.sprite_particle_scheduler.reset();
         }
         if self.scene_key.as_deref() != Some(scene_key) {
@@ -2078,6 +2083,7 @@ impl NativeSceneMetalRenderer {
         self.audio_coordinator.reset();
         self.input_coordinator.reset();
         self.particle_scheduler.reset();
+        self.rope_particle_scheduler.reset();
         self.sprite_particle_scheduler.reset();
         self.last_frame_at = Instant::now();
         self.animation_time_seconds = 0.0;
@@ -2150,6 +2156,11 @@ impl NativeSceneMetalRenderer {
             .iter()
             .map(|item| (item.object_id, item))
             .collect::<BTreeMap<_, _>>();
+        let rope_particle_items = plan
+            .rope_particles
+            .iter()
+            .map(|item| (item.object_id, item))
+            .collect::<BTreeMap<_, _>>();
         let sprite_particle_items = plan
             .sprite_particles
             .iter()
@@ -2166,6 +2177,9 @@ impl NativeSceneMetalRenderer {
 
         if white_texture.is_some() && !plan.particles.is_empty() {
             self.advance_particle_items(&plan.particles, input_frame.response, now_ms_f64);
+        }
+        if !plan.rope_particles.is_empty() {
+            self.advance_rope_particle_items(&plan.rope_particles, input_frame.response, now_ms_f64);
         }
         if !plan.sprite_particles.is_empty() {
             if !self.paused {
@@ -2264,7 +2278,9 @@ impl NativeSceneMetalRenderer {
                         now_ms_f64,
                     );
                 }
-                SceneRenderDrawKind::RopeParticle => {}
+                SceneRenderDrawKind::RopeParticle => {
+                    let _ = rope_particle_items.get(&draw_item.object_id);
+                }
                 SceneRenderDrawKind::SpriteParticle => {
                     let Some(item) = sprite_particle_items.get(&draw_item.object_id) else {
                         continue;
@@ -4094,6 +4110,22 @@ impl NativeSceneMetalRenderer {
         }
     }
 
+    fn advance_rope_particle_items(
+        &mut self,
+        items: &[SceneRenderRopeParticleItem],
+        input_response: SceneInputResponse,
+        now_ms: f64,
+    ) {
+        let cursor = input_response
+            .cursor()
+            .map(|(x, y)| SceneParticleCursor { x, y });
+        if !self.paused {
+            self.rope_particle_scheduler.advance(cursor, items, now_ms);
+        } else {
+            self.rope_particle_scheduler.pause_cursor(cursor);
+        }
+    }
+
     fn draw_particle_item(
         &mut self,
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
@@ -4979,7 +5011,7 @@ fn sprite_particle_texture_paths(item: &SceneRenderSpriteParticleItem) -> Vec<Pa
 
 #[cfg(target_os = "macos")]
 fn particle_plan_signature(plan: &SceneRenderPlan) -> Option<u64> {
-    if plan.particles.is_empty() && plan.sprite_particles.is_empty() {
+    if plan.particles.is_empty() && plan.rope_particles.is_empty() && plan.sprite_particles.is_empty() {
         return None;
     }
 
@@ -5017,6 +5049,35 @@ fn particle_plan_signature(plan: &SceneRenderPlan) -> Option<u64> {
     for item in &plan.sprite_particles {
         2_u8.hash(&mut hasher);
         hash_sprite_particle_item(&mut hasher, item);
+    }
+    for item in &plan.rope_particles {
+        3_u8.hash(&mut hasher);
+        item.object_id.hash(&mut hasher);
+        item.object_name.hash(&mut hasher);
+        item.renderer_family.hash(&mut hasher);
+        item.schedule_mode.hash(&mut hasher);
+        item.segment_count.hash(&mut hasher);
+        item.subdivision.hash(&mut hasher);
+        item.length.to_bits().hash(&mut hasher);
+        item.min_length.to_bits().hash(&mut hasher);
+        item.max_length.to_bits().hash(&mut hasher);
+        item.width.to_bits().hash(&mut hasher);
+        item.lifetime_ms.to_bits().hash(&mut hasher);
+        item.color.red.hash(&mut hasher);
+        item.color.green.hash(&mut hasher);
+        item.color.blue.hash(&mut hasher);
+        item.color.alpha.hash(&mut hasher);
+        item.uv_scrolling[0].to_bits().hash(&mut hasher);
+        item.uv_scrolling[1].to_bits().hash(&mut hasher);
+        item.fade_alpha.to_bits().hash(&mut hasher);
+        item.material_path.hash(&mut hasher);
+        item.control_points.len().hash(&mut hasher);
+        for control_point in &item.control_points {
+            control_point.id.hash(&mut hasher);
+            control_point.position[0].to_bits().hash(&mut hasher);
+            control_point.position[1].to_bits().hash(&mut hasher);
+            control_point.lock_to_pointer.hash(&mut hasher);
+        }
     }
     Some(hasher.finish())
 }
