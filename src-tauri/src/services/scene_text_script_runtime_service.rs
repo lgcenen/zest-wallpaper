@@ -832,12 +832,22 @@ mod tests {
         let properties = BTreeMap::new();
         let now = Local.with_ymd_and_hms(2026, 4, 18, 17, 0, 0).unwrap();
 
-        let first = evaluate_scripted_text_layer(Some("demo-preserve-runtime-state"), &layer, &properties, &now)
-            .expect("first evaluation")
-            .expect("first text");
-        let second = evaluate_scripted_text_layer(Some("demo-preserve-runtime-state"), &layer, &properties, &now)
-            .expect("second evaluation")
-            .expect("second text");
+        let first = evaluate_scripted_text_layer(
+            Some("demo-preserve-runtime-state"),
+            &layer,
+            &properties,
+            &now,
+        )
+        .expect("first evaluation")
+        .expect("first text");
+        let second = evaluate_scripted_text_layer(
+            Some("demo-preserve-runtime-state"),
+            &layer,
+            &properties,
+            &now,
+        )
+        .expect("second evaluation")
+        .expect("second text");
 
         assert_eq!(first, "1");
         assert_eq!(second, "2");
@@ -881,12 +891,22 @@ mod tests {
         let now = Local.with_ymd_and_hms(2026, 4, 18, 19, 0, 0).unwrap();
         let properties = BTreeMap::from([(String::from("name"), json!("Alice"))]);
 
-        let first = evaluate_scripted_text_layer(Some("demo-preserve-authored-text"), &layer, &properties, &now)
-            .expect("first evaluation")
-            .expect("first text");
-        let second = evaluate_scripted_text_layer(Some("demo-preserve-authored-text"), &layer, &properties, &now)
-            .expect("second evaluation")
-            .expect("second text");
+        let first = evaluate_scripted_text_layer(
+            Some("demo-preserve-authored-text"),
+            &layer,
+            &properties,
+            &now,
+        )
+        .expect("first evaluation")
+        .expect("first text");
+        let second = evaluate_scripted_text_layer(
+            Some("demo-preserve-authored-text"),
+            &layer,
+            &properties,
+            &now,
+        )
+        .expect("second evaluation")
+        .expect("second text");
 
         assert_eq!(first, "Good evening, Alice!");
         assert_eq!(second, "Good evening, Alice!");

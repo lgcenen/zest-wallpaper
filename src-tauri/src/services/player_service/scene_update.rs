@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    thread,
-    time::Duration,
-};
+use std::{collections::BTreeMap, thread, time::Duration};
 
 use chrono::{Local, Timelike};
 use serde::Serialize;
@@ -182,7 +178,10 @@ pub(crate) fn sync_native_runtime_for_active_wallpaper(
         let _ = state;
         return dispatch2::run_on_main(move |_mtm| {
             let state = app.state::<AppState>();
-            let _runtime_sync = state.runtime_sync.lock().map_err(|error| error.to_string())?;
+            let _runtime_sync = state
+                .runtime_sync
+                .lock()
+                .map_err(|error| error.to_string())?;
             match active_runtime_snapshot_for_runtime_sync(&app, &state)? {
                 Some((runtime_record, effective_paused)) => {
                     sync_native_runtime(&app, Some(&runtime_record), effective_paused)
@@ -194,7 +193,10 @@ pub(crate) fn sync_native_runtime_for_active_wallpaper(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _runtime_sync = state.runtime_sync.lock().map_err(|error| error.to_string())?;
+        let _runtime_sync = state
+            .runtime_sync
+            .lock()
+            .map_err(|error| error.to_string())?;
         match active_runtime_snapshot_for_runtime_sync(app, state)? {
             Some((runtime_record, effective_paused)) => {
                 sync_native_runtime(app, Some(&runtime_record), effective_paused)
@@ -209,7 +211,10 @@ fn sync_scene_dynamic_text_update_for_runtime_record(
     state: &AppState,
     runtime_record: &WallpaperRuntimeRecord,
 ) -> Result<(), String> {
-    let _runtime_sync = state.runtime_sync.lock().map_err(|error| error.to_string())?;
+    let _runtime_sync = state
+        .runtime_sync
+        .lock()
+        .map_err(|error| error.to_string())?;
     {
         let player = state.player.lock().map_err(|error| error.to_string())?;
         if player.active_id.as_deref() != Some(runtime_record.id.as_str()) {
@@ -227,7 +232,10 @@ fn sync_scene_runtime_update_for_runtime_record(
     state: &AppState,
     runtime_record: &WallpaperRuntimeRecord,
 ) -> Result<(), String> {
-    let _runtime_sync = state.runtime_sync.lock().map_err(|error| error.to_string())?;
+    let _runtime_sync = state
+        .runtime_sync
+        .lock()
+        .map_err(|error| error.to_string())?;
     let effective_paused = {
         let (active_id, paused) = active_runtime_pause_snapshot(app, state)?;
         if active_id.as_deref() != Some(runtime_record.id.as_str()) {
@@ -258,14 +266,20 @@ pub(super) fn sync_native_runtime_with_transaction_lock(
         let _ = state;
         return dispatch2::run_on_main(move |_mtm| {
             let state = app.state::<AppState>();
-            let _runtime_sync = state.runtime_sync.lock().map_err(|error| error.to_string())?;
+            let _runtime_sync = state
+                .runtime_sync
+                .lock()
+                .map_err(|error| error.to_string())?;
             sync_native_runtime(&app, runtime_record.as_ref(), paused)
         });
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _runtime_sync = state.runtime_sync.lock().map_err(|error| error.to_string())?;
+        let _runtime_sync = state
+            .runtime_sync
+            .lock()
+            .map_err(|error| error.to_string())?;
         sync_native_runtime(app, runtime_record, paused)
     }
 }
@@ -517,7 +531,10 @@ fn active_runtime_snapshot_for_runtime_sync(
         return Ok(None);
     };
     let paused = active_runtime_pause_snapshot(app, state)?.1;
-    Ok(Some((runtime_document_service::runtime_record(&record), paused)))
+    Ok(Some((
+        runtime_document_service::runtime_record(&record),
+        paused,
+    )))
 }
 
 fn active_runtime_pause_snapshot(
@@ -586,7 +603,10 @@ fn scene_signature_objects(
                         behavior,
                     },
                 );
-                dynamic_text.push(SceneDynamicTextSignature { object_id: *object_id, object });
+                dynamic_text.push(SceneDynamicTextSignature {
+                    object_id: *object_id,
+                    object,
+                });
             }
             _ => {
                 structural.insert(

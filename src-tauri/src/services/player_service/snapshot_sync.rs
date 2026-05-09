@@ -1,10 +1,6 @@
 use tauri::AppHandle;
 
-use crate::{
-    models::WallpaperRecord,
-    services::static_snapshot_service,
-    store::AppState,
-};
+use crate::{models::WallpaperRecord, services::static_snapshot_service, store::AppState};
 
 pub(super) fn sync_static_snapshot_for_active_runtime(
     app: &AppHandle,

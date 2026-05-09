@@ -3,9 +3,7 @@ use std::{cell::Cell, sync::MutexGuard, time::Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    models::{
-        WallpaperRecord, WallpaperRuntime, WallpaperRuntimeRecord, WallpaperType,
-    },
+    models::{WallpaperRecord, WallpaperRuntime, WallpaperRuntimeRecord, WallpaperType},
     services::{
         lifecycle_service, scene_manifest_service, scene_support_service,
         static_snapshot_generation_service, static_snapshot_service, window_service,
@@ -42,7 +40,11 @@ pub fn apply_dynamic_wallpaper(
         error
     })?;
     trace.done("scene_preflight_ok");
-    let previous_player = state.player.lock().map_err(|error| error.to_string())?.clone();
+    let previous_player = state
+        .player
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
     let previous_runtime = active_runtime_snapshot(state)?;
     let had_player_windows = !window_service::player_window_labels(app).is_empty();
     let snapshot_stage_logged = Cell::new(false);
@@ -54,7 +56,8 @@ pub fn apply_dynamic_wallpaper(
         state,
         had_player_windows,
         || {
-            let result = snapshot_sync::sync_static_snapshot_for_active_runtime(app, state, &record);
+            let result =
+                snapshot_sync::sync_static_snapshot_for_active_runtime(app, state, &record);
             snapshot_stage_logged.set(true);
             trace.log_result("snapshot_sync_done", &result);
             result
@@ -132,7 +135,12 @@ pub fn restore_player_session(app: &AppHandle, state: &AppState) -> Result<(), S
         effective_paused,
         || lifecycle_service::show_player_windows(app).map_err(|error| error.to_string()),
         |runtime_record, paused| {
-            scene_update::sync_native_runtime_with_transaction_lock(app, state, runtime_record, paused)
+            scene_update::sync_native_runtime_with_transaction_lock(
+                app,
+                state,
+                runtime_record,
+                paused,
+            )
         },
         || snapshot_sync::sync_static_snapshot_for_active_runtime(app, state, &record),
     )?;
@@ -252,7 +260,11 @@ impl ApplyStageTrace {
 }
 
 pub(crate) fn clear_player_session_state(state: &AppState) -> Result<DynamicPlayerState, String> {
-    let previous_player = state.player.lock().map_err(|error| error.to_string())?.clone();
+    let previous_player = state
+        .player
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
     let cleared_player = build_cleared_player_state(&previous_player);
     commit_player_state(state, cleared_player.clone())?;
     persist_player_state_checked(&cleared_player)?;
@@ -279,15 +291,15 @@ pub(super) fn active_record_snapshot(
         return Ok(None);
     };
 
-    let record = match scene_manifest_service::ensure_scene_manifest_current_by_id(state, &active_id)
-    {
-        Ok(record) => record,
-        Err(_) => {
-            let store = state.library.lock().map_err(|error| error.to_string())?;
-            find_record(&store, &active_id)
-                .ok_or_else(|| format!("Wallpaper {active_id} was not found"))?
-        }
-    };
+    let record =
+        match scene_manifest_service::ensure_scene_manifest_current_by_id(state, &active_id) {
+            Ok(record) => record,
+            Err(_) => {
+                let store = state.library.lock().map_err(|error| error.to_string())?;
+                find_record(&store, &active_id)
+                    .ok_or_else(|| format!("Wallpaper {active_id} was not found"))?
+            }
+        };
 
     Ok(Some((record, effective_paused)))
 }

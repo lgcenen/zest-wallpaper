@@ -27,15 +27,15 @@ use crate::{
 };
 
 use super::{
-    ActivePropertyUpdateSyncMode, NativeHostKind, NativeHostSyncDisposition, SceneUpdateCadence,
-    SceneUpdateSyncMode, active_property_update_sync_mode, apply_pause_change,
-    apply_runtime_record_transaction, build_apply_wallpaper_candidate,
-    clear_player_session_state, dispatch_active_property_update_sync,
-    dispatch_scene_update_sync, ensure_apply_record_current_by_id_with,
-    native_host_sync_disposition, push_critical_sync_error,
+    active_property_update_sync_mode, apply_pause_change, apply_runtime_record_transaction,
+    build_apply_wallpaper_candidate, clear_player_session_state,
+    dispatch_active_property_update_sync, dispatch_scene_update_sync,
+    ensure_apply_record_current_by_id_with, native_host_sync_disposition, push_critical_sync_error,
     restore_runtime_record_transaction, scene_requires_periodic_updates, scene_signature,
     scene_update_cadence, scene_update_sync_is_current, scene_update_sync_mode,
     should_emit_scene_update, should_start_scene_update_loop, validate_scene_apply_preflight,
+    ActivePropertyUpdateSyncMode, NativeHostKind, NativeHostSyncDisposition, SceneUpdateCadence,
+    SceneUpdateSyncMode,
 };
 
 fn runtime_record(
@@ -282,7 +282,11 @@ fn scene_signature_ignores_evaluated_timestamp_only_changes() {
         WallpaperRuntime::Scene {
             scene: scene_runtime_with_objects(
                 objects.clone(),
-                vec![source_text_layer(SceneTextBehavior::Clock, Some(true), None)],
+                vec![source_text_layer(
+                    SceneTextBehavior::Clock,
+                    Some(true),
+                    None,
+                )],
                 Utc.with_ymd_and_hms(2026, 4, 12, 13, 0, 0).unwrap(),
             ),
         },
@@ -292,7 +296,11 @@ fn scene_signature_ignores_evaluated_timestamp_only_changes() {
         WallpaperRuntime::Scene {
             scene: scene_runtime_with_objects(
                 objects,
-                vec![source_text_layer(SceneTextBehavior::Clock, Some(true), None)],
+                vec![source_text_layer(
+                    SceneTextBehavior::Clock,
+                    Some(true),
+                    None,
+                )],
                 Utc.with_ymd_and_hms(2026, 4, 12, 13, 0, 1).unwrap(),
             ),
         },
@@ -317,7 +325,11 @@ fn scene_signature_classifies_text_runtime_changes_as_lightweight() {
         WallpaperRuntime::Scene {
             scene: scene_runtime_with_objects(
                 earlier_objects,
-                vec![source_text_layer(SceneTextBehavior::Clock, Some(true), None)],
+                vec![source_text_layer(
+                    SceneTextBehavior::Clock,
+                    Some(true),
+                    None,
+                )],
                 Utc.with_ymd_and_hms(2026, 4, 12, 13, 0, 0).unwrap(),
             ),
         },
@@ -327,7 +339,11 @@ fn scene_signature_classifies_text_runtime_changes_as_lightweight() {
         WallpaperRuntime::Scene {
             scene: scene_runtime_with_objects(
                 later_objects,
-                vec![source_text_layer(SceneTextBehavior::Clock, Some(true), None)],
+                vec![source_text_layer(
+                    SceneTextBehavior::Clock,
+                    Some(true),
+                    None,
+                )],
                 Utc.with_ymd_and_hms(2026, 4, 12, 13, 0, 1).unwrap(),
             ),
         },
@@ -556,7 +572,11 @@ fn scene_update_loop_starts_only_for_dynamic_scene_content() {
         WallpaperRuntime::Scene {
             scene: scene_runtime_with_objects(
                 BTreeMap::from([(7, text_object(SceneTextBehavior::Clock))]),
-                vec![source_text_layer(SceneTextBehavior::Clock, Some(true), None)],
+                vec![source_text_layer(
+                    SceneTextBehavior::Clock,
+                    Some(true),
+                    None,
+                )],
                 Utc::now(),
             ),
         },
@@ -705,7 +725,11 @@ fn apply_time_record_resolution_generates_missing_scene_snapshot() {
 fn scene_update_cadence_prefers_second_precision_then_media_then_minute() {
     let second_runtime = scene_runtime_with_objects(
         BTreeMap::from([(7, text_object(SceneTextBehavior::Clock))]),
-        vec![source_text_layer(SceneTextBehavior::Clock, Some(true), None)],
+        vec![source_text_layer(
+            SceneTextBehavior::Clock,
+            Some(true),
+            None,
+        )],
         Utc::now(),
     );
     let media_runtime = scene_runtime_with_objects(
@@ -756,9 +780,10 @@ fn scene_update_cadence_prefers_script_refresh_interval_when_present() {
 #[test]
 fn scene_update_cadence_tracks_time_aware_script_text_layers() {
     let mut script_layer = source_text_layer(SceneTextBehavior::Script, None, None);
-    script_layer.script_text =
-        Some("'use strict'; export function update() { return new Date().getHours().toString(); }"
-            .to_string());
+    script_layer.script_text = Some(
+        "'use strict'; export function update() { return new Date().getHours().toString(); }"
+            .to_string(),
+    );
     let script_runtime = scene_runtime_with_objects(
         BTreeMap::from([(7, text_object(SceneTextBehavior::Script))]),
         vec![script_layer],
@@ -778,7 +803,11 @@ fn manual_and_auto_pause_state_remain_isolated() {
         ..DynamicPlayerState::default()
     };
 
-    let auto_pause = apply_pause_change(&mut player, None, Some(BTreeSet::from([String::from("player")])));
+    let auto_pause = apply_pause_change(
+        &mut player,
+        None,
+        Some(BTreeSet::from([String::from("player")])),
+    );
     assert!(auto_pause.effective_paused);
     assert!(auto_pause.effective_changed);
     assert!(!auto_pause.manual_paused);
