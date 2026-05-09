@@ -256,6 +256,46 @@ pub enum SceneParticleRendererFamily {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneRopeParticleControlPointRuntime {
+    pub id: u32,
+    #[serde(default)]
+    pub offset: [f64; 3],
+    #[serde(default)]
+    pub parent_control_point: Option<u32>,
+    pub lock_to_pointer: bool,
+    #[serde(default)]
+    pub override_key: Option<String>,
+    #[serde(default)]
+    pub override_value: Option<[f64; 3]>,
+    #[serde(default)]
+    pub override_binding: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneRopeParticleRuntimeContract {
+    pub renderer_family: SceneParticleRendererFamily,
+    pub schedule_mode: SceneParticleScheduleMode,
+    #[serde(default)]
+    pub control_points: Vec<SceneRopeParticleControlPointRuntime>,
+    pub segment_count: u32,
+    pub subdivision: u32,
+    pub length: f64,
+    pub min_length: f64,
+    pub max_length: f64,
+    pub width: f64,
+    pub lifetime_ms: f64,
+    pub alpha: f64,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub material_path: Option<String>,
+    pub uv_scrolling: [f64; 2],
+    pub fade_alpha: f64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum SceneParticleChildKind {
@@ -470,6 +510,8 @@ pub struct SceneParticleRuntimeAdapter {
     pub supported: bool,
     #[serde(default)]
     pub draw_kind: Option<SceneParticleKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_contract: Option<SceneRopeParticleRuntimeContract>,
     #[serde(default)]
     pub schedule_mode: SceneParticleScheduleMode,
     #[serde(default)]

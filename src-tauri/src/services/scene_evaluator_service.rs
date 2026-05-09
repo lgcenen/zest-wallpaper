@@ -2408,6 +2408,7 @@ mod tests {
                 adapter: SceneParticleRuntimeAdapter {
                     supported: true,
                     draw_kind: None,
+                    rope_contract: None,
                     schedule_mode: SceneParticleScheduleMode::Autonomous,
                     reason: None,
                 },

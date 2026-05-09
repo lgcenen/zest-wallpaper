@@ -2930,6 +2930,7 @@ mod tests {
             adapter: SceneParticleRuntimeAdapter {
                 supported: true,
                 draw_kind: Some(draw_kind),
+                rope_contract: None,
                 schedule_mode,
                 reason: None,
             },
@@ -3038,6 +3039,7 @@ mod tests {
             adapter: SceneParticleRuntimeAdapter {
                 supported: true,
                 draw_kind: None,
+                rope_contract: None,
                 schedule_mode: SceneParticleScheduleMode::Autonomous,
                 reason: None,
             },
@@ -3079,6 +3081,7 @@ mod tests {
             adapter: SceneParticleRuntimeAdapter {
                 supported: false,
                 draw_kind: None,
+                rope_contract: None,
                 schedule_mode: SceneParticleScheduleMode::InputDriven,
                 reason: Some("child hierarchy is deferred".to_string()),
             },

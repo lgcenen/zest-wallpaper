@@ -8,7 +8,8 @@ use crate::models::{
     SceneParticleInstanceOverride, SceneParticleKind, SceneParticleRendererFamily,
     SceneParticleRendererRuntime, SceneParticleRuntime, SceneParticleRuntimeAdapter,
     SceneParticleRuntimeDiagnostic, SceneParticleScheduleMode, SceneParticleStageRuntime,
-    SceneParticleSystemRuntime,
+    SceneParticleSystemRuntime, SceneRopeParticleControlPointRuntime,
+    SceneRopeParticleRuntimeContract,
 };
 
 pub fn build_scene_particle_runtime(
@@ -22,10 +23,14 @@ pub fn build_scene_particle_runtime(
     instance_override: SceneParticleInstanceOverride,
 ) -> SceneParticleRuntime {
     let system = particle_json.map(parse_particle_system).unwrap_or_default();
-    let (mut adapter, diagnostics) = classify_particle_runtime(particle_json.is_some(), &system);
+    let (mut adapter, diagnostics) =
+        classify_particle_runtime(particle_json.is_some(), &system, &instance_override);
     if adapter.supported && particle_runtime_uses_input_control_points(&system, &instance_override)
     {
         adapter.schedule_mode = SceneParticleScheduleMode::InputDriven;
+        if let Some(contract) = adapter.rope_contract.as_mut() {
+            contract.schedule_mode = SceneParticleScheduleMode::InputDriven;
+        }
     }
 
     SceneParticleRuntime {
@@ -217,6 +222,7 @@ fn parse_stage(value: &Value) -> Option<SceneParticleStageRuntime> {
 fn classify_particle_runtime(
     has_particle_json: bool,
     system: &SceneParticleSystemRuntime,
+    instance_override: &SceneParticleInstanceOverride,
 ) -> (
     SceneParticleRuntimeAdapter,
     Vec<SceneParticleRuntimeDiagnostic>,
@@ -372,10 +378,20 @@ fn classify_particle_runtime(
             diagnostics.extend(sprite_stage_semi_adapted_diagnostics(system));
         }
 
+        let mut rope_contract = renderer
+            .filter(|renderer| rope_renderer_family(renderer.family))
+            .map(|renderer| {
+                build_rope_particle_contract(system, renderer, schedule_mode, instance_override)
+            });
+        if let Some(contract) = rope_contract.as_mut() {
+            apply_rope_control_point_overrides(contract, &instance_override);
+        }
+
         (
             SceneParticleRuntimeAdapter {
                 supported: true,
                 draw_kind,
+                rope_contract,
                 schedule_mode,
                 reason: None,
             },
@@ -505,6 +521,7 @@ fn unsupported_adapter(reason: impl Into<String>) -> SceneParticleRuntimeAdapter
     SceneParticleRuntimeAdapter {
         supported: false,
         draw_kind: None,
+        rope_contract: None,
         schedule_mode: SceneParticleScheduleMode::InputDriven,
         reason: Some(reason.into()),
     }
@@ -519,6 +536,230 @@ fn particle_draw_kind(family: SceneParticleRendererFamily) -> Option<ScenePartic
         | SceneParticleRendererFamily::Sprite
         | SceneParticleRendererFamily::Unsupported => None,
     }
+}
+
+fn rope_renderer_family(family: SceneParticleRendererFamily) -> bool {
+    matches!(
+        family,
+        SceneParticleRendererFamily::Rope | SceneParticleRendererFamily::RopeTrail
+    )
+}
+
+fn build_rope_particle_contract(
+    system: &SceneParticleSystemRuntime,
+    renderer: &SceneParticleRendererRuntime,
+    schedule_mode: SceneParticleScheduleMode,
+    instance_override: &SceneParticleInstanceOverride,
+) -> SceneRopeParticleRuntimeContract {
+    let authored_lifetime_ms = stage_range(
+        &system.initializers,
+        &["lifetimerandom", "lifetime", "life"],
+        &["lifemin", "lifetimemin", "minlife", "min"],
+        &["lifemax", "lifetimemax", "maxlife", "max"],
+        [1_000.0, 1_600.0],
+    )[1];
+    let authored_width = stage_range(
+        &system.initializers,
+        &["sizerandom", "size"],
+        &["sizemin", "minsize", "min"],
+        &["sizemax", "maxsize", "max"],
+        [1.0, 4.0],
+    )[1];
+    let authored_alpha = stage_range(
+        &system.initializers,
+        &["alpharandom", "alpha"],
+        &["alphamin", "minalpha", "min"],
+        &["alphamax", "maxalpha", "max"],
+        [1.0, 1.0],
+    )[1]
+    .clamp(0.0, 1.0);
+    let length = renderer
+        .length
+        .or(renderer.max_length)
+        .unwrap_or(180.0)
+        .max(0.0);
+    let min_length = renderer.min_length.unwrap_or(0.0).max(0.0);
+    let max_length = renderer
+        .max_length
+        .unwrap_or(length.max(min_length))
+        .max(length)
+        .max(min_length);
+
+    SceneRopeParticleRuntimeContract {
+        renderer_family: renderer.family,
+        schedule_mode,
+        control_points: build_rope_control_points(system),
+        segment_count: renderer
+            .segments
+            .or(renderer.subdivision)
+            .unwrap_or(8)
+            .clamp(1, 256),
+        subdivision: renderer.subdivision.unwrap_or(1).clamp(1, 64),
+        length,
+        min_length,
+        max_length,
+        width: instance_override
+            .size
+            .unwrap_or(authored_width)
+            .max(0.1),
+        lifetime_ms: instance_override
+            .lifetime
+            .map(normalize_particle_lifetime_ms)
+            .unwrap_or_else(|| normalize_particle_lifetime_ms(authored_lifetime_ms)),
+        alpha: instance_override.alpha.unwrap_or(authored_alpha).clamp(0.0, 1.0),
+        color: instance_override.color.clone().or_else(|| {
+            stage_string(
+                &system.initializers,
+                &["colorrandom", "colourrandom", "color"],
+                &["colormax", "maxcolor", "colourmax", "max", "color"],
+            )
+        }),
+        material_path: system.material.clone(),
+        uv_scrolling: renderer.uv_scrolling.unwrap_or([0.0, 0.0]),
+        fade_alpha: renderer.fade_alpha.unwrap_or(0.0).clamp(0.0, 1.0),
+    }
+}
+
+fn build_rope_control_points(
+    system: &SceneParticleSystemRuntime,
+) -> Vec<SceneRopeParticleControlPointRuntime> {
+    if system.control_points.is_empty() {
+        return vec![
+            SceneRopeParticleControlPointRuntime {
+                id: 0,
+                ..SceneRopeParticleControlPointRuntime::default()
+            },
+            SceneRopeParticleControlPointRuntime {
+                id: 1,
+                ..SceneRopeParticleControlPointRuntime::default()
+            },
+        ];
+    }
+
+    system
+        .control_points
+        .iter()
+        .enumerate()
+        .map(|(index, control_point)| SceneRopeParticleControlPointRuntime {
+            id: control_point.id.unwrap_or(index as u32),
+            offset: control_point.offset.unwrap_or([0.0, 0.0, 0.0]),
+            parent_control_point: control_point.parent_control_point,
+            lock_to_pointer: control_point.lock_to_pointer,
+            override_key: None,
+            override_value: None,
+            override_binding: None,
+        })
+        .collect()
+}
+
+fn apply_rope_control_point_overrides(
+    contract: &mut SceneRopeParticleRuntimeContract,
+    instance_override: &SceneParticleInstanceOverride,
+) {
+    for override_point in &instance_override.control_points {
+        let Some(index) = control_point_override_index(&override_point.key) else {
+            continue;
+        };
+        while contract.control_points.len() <= index {
+            contract
+                .control_points
+                .push(SceneRopeParticleControlPointRuntime {
+                    id: contract.control_points.len() as u32,
+                    ..SceneRopeParticleControlPointRuntime::default()
+                });
+        }
+        let control_point = &mut contract.control_points[index];
+        control_point.override_key = Some(override_point.key.clone());
+        control_point.override_value = override_point.value;
+        control_point.override_binding = override_point.binding.clone();
+    }
+}
+
+fn control_point_override_index(key: &str) -> Option<usize> {
+    let lower = key.trim().to_ascii_lowercase();
+    let suffix = lower.strip_prefix("controlpoint")?;
+    if suffix.is_empty() {
+        return Some(0);
+    }
+    suffix
+        .trim_start_matches(|character: char| character == '_' || character == '-')
+        .parse::<usize>()
+        .ok()
+}
+
+fn stage_range(
+    stages: &[SceneParticleStageRuntime],
+    name_tokens: &[&str],
+    min_keys: &[&str],
+    max_keys: &[&str],
+    default: [f64; 2],
+) -> [f64; 2] {
+    let Some(stage) = find_stage(stages, name_tokens) else {
+        return default;
+    };
+    let min = stage_f64(stage, min_keys).unwrap_or(default[0]);
+    let max = stage_f64(stage, max_keys).unwrap_or(default[1]).max(min);
+    [min, max]
+}
+
+fn stage_string(
+    stages: &[SceneParticleStageRuntime],
+    name_tokens: &[&str],
+    keys: &[&str],
+) -> Option<String> {
+    let stage = find_stage(stages, name_tokens)?;
+    keys.iter()
+        .find_map(|key| lookup_stage_value(stage, key).and_then(value_as_string))
+}
+
+fn find_stage<'a>(
+    stages: &'a [SceneParticleStageRuntime],
+    name_tokens: &[&str],
+) -> Option<&'a SceneParticleStageRuntime> {
+    stages.iter().find(|stage| {
+        let name = stage.name.to_ascii_lowercase();
+        name_tokens
+            .iter()
+            .any(|token| name.contains(&token.to_ascii_lowercase()))
+    })
+}
+
+fn stage_f64(stage: &SceneParticleStageRuntime, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| lookup_stage_value(stage, key).and_then(value_as_f64))
+}
+
+fn lookup_stage_value<'a>(stage: &'a SceneParticleStageRuntime, key: &str) -> Option<&'a Value> {
+    stage
+        .fields
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+        .map(|(_, value)| value)
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn value_as_string(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    if let Some(array) = value.as_array() {
+        return Some(
+            array
+                .iter()
+                .filter_map(value_as_f64)
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    value_as_f64(value).map(|value| value.to_string())
+}
+
+fn normalize_particle_lifetime_ms(value: f64) -> f64 {
+    if value > 100.0 { value } else { value * 1000.0 }.clamp(50.0, 60_000.0)
 }
 
 fn particle_renderer_family(name: Option<&str>) -> SceneParticleRendererFamily {
@@ -1071,6 +1312,133 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"),
             "oscillatealpha should not produce unsupported stage diagnostic"
+        );
+    }
+
+    #[test]
+    fn rope_runtime_exposes_first_class_rope_contract_fields() {
+        let particle = json!({
+            "material": "materials/rope.material",
+            "emitter": [{"name": "root", "rate": 24}],
+            "renderer": [{
+                "name": "ropetrail",
+                "length": 120,
+                "minlength": 40,
+                "maxlength": 200,
+                "subdivision": 6,
+                "segments": 18,
+                "uvscrolling": "0.25 -0.5",
+                "fadealpha": 0.35
+            }],
+            "initializer": [
+                {"name": "lifetimerandom", "min": 0.4, "max": 1.4},
+                {"name": "sizerandom", "min": 2, "max": 5},
+                {"name": "colorrandom", "max": "0.1 0.2 0.8"},
+                {"name": "alpharandom", "min": 0.5, "max": 0.75}
+            ],
+            "controlpoint": [
+                {"id": 0, "offset": "1 2 0"},
+                {"id": 3, "offset": "4 5 0", "parentcontrolpoint": 0}
+            ]
+        });
+
+        let runtime = build_authored_particle_runtime_for_resource(
+            "particles/rope.json".to_string(),
+            &particle,
+        );
+
+        let contract = runtime
+            .adapter
+            .rope_contract
+            .as_ref()
+            .expect("rope contract");
+        assert!(runtime.adapter.supported);
+        assert_eq!(contract.renderer_family, SceneParticleRendererFamily::RopeTrail);
+        assert_eq!(contract.segment_count, 18);
+        assert_eq!(contract.subdivision, 6);
+        assert_eq!(contract.length, 120.0);
+        assert_eq!(contract.min_length, 40.0);
+        assert_eq!(contract.max_length, 200.0);
+        assert_eq!(contract.width, 5.0);
+        assert_eq!(contract.lifetime_ms, 1400.0);
+        assert!((contract.alpha - 0.75).abs() < 0.001);
+        assert_eq!(contract.color.as_deref(), Some("0.1 0.2 0.8"));
+        assert_eq!(
+            contract.material_path.as_deref(),
+            Some("materials/rope.material")
+        );
+        assert_eq!(contract.uv_scrolling, [0.25, -0.5]);
+        assert!((contract.fade_alpha - 0.35).abs() < 0.001);
+        assert_eq!(contract.control_points.len(), 2);
+        assert_eq!(contract.control_points[0].id, 0);
+        assert_eq!(contract.control_points[0].offset, [1.0, 2.0, 0.0]);
+        assert_eq!(contract.control_points[1].id, 3);
+        assert_eq!(contract.control_points[1].parent_control_point, Some(0));
+    }
+
+    #[test]
+    fn rope_runtime_projects_instanceoverride_control_points_into_contract() {
+        let particle = json!({
+            "emitter": [{"name": "root", "rate": 32}],
+            "renderer": [{"name": "rope"}],
+            "controlpoint": [{"id": 0, "offset": "1 2 0"}]
+        });
+        let instance_override = SceneParticleInstanceOverride {
+            size: Some(7.0),
+            alpha: Some(0.45),
+            lifetime: Some(2.5),
+            color: Some("0.4 0.6 0.9".to_string()),
+            control_points: vec![
+                super::scene_particle_control_point_override(
+                    "controlpoint1".to_string(),
+                    Some([32.0, -12.0, 0.0]),
+                    Some("cursorAnchor".to_string()),
+                ),
+                super::scene_particle_control_point_override(
+                    "controlpoint3".to_string(),
+                    Some([99.0, 12.0, 0.0]),
+                    None,
+                ),
+            ],
+            ..SceneParticleInstanceOverride::default()
+        };
+
+        let runtime = build_scene_particle_runtime(
+            27,
+            "Rope Override".to_string(),
+            "particles/rope.json".to_string(),
+            Some(&particle),
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            None,
+            instance_override,
+        );
+
+        let contract = runtime
+            .adapter
+            .rope_contract
+            .as_ref()
+            .expect("rope contract");
+        assert_eq!(contract.width, 7.0);
+        assert_eq!(contract.lifetime_ms, 2500.0);
+        assert!((contract.alpha - 0.45).abs() < 0.001);
+        assert_eq!(contract.color.as_deref(), Some("0.4 0.6 0.9"));
+        assert_eq!(contract.control_points.len(), 4);
+        assert_eq!(
+            contract.control_points[1].override_key.as_deref(),
+            Some("controlpoint1")
+        );
+        assert_eq!(
+            contract.control_points[1].override_binding.as_deref(),
+            Some("cursorAnchor")
+        );
+        assert_eq!(
+            contract.control_points[1].override_value,
+            Some([32.0, -12.0, 0.0])
+        );
+        assert_eq!(
+            contract.control_points[3].override_value,
+            Some([99.0, 12.0, 0.0])
         );
     }
 
