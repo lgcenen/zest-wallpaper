@@ -469,6 +469,86 @@ fragment float4 phase10_effect_fragment(
     float4 rotated = sample_input(input_texture, texture_sampler, tex_coord);
     float4 original = sample_input(input_texture, texture_sampler, primary_uv);
     sampled = mix(original, rotated, mask);
+#elif PHASE10_EFFECT_SWING
+    float2 p0 = uniforms.user0.xy;
+    float2 p1 = uniforms.user0.zw;
+    float2 axis_delta = p1 - p0;
+    float axis_length = max(length(axis_delta), 0.0001);
+    float2 axis = axis_delta / axis_length;
+    float2 axis_ortho = float2(-axis.y, axis.x);
+    float2 center = mix(p0, p1, clamp(uniforms.angle, 0.0, 1.0));
+    float2 uv_delta = primary_uv - center;
+    float distance_along_axis = dot(axis, uv_delta);
+    float distance_ortho = dot(axis_ortho, uv_delta);
+    float anim = sin(uniforms.time * max(uniforms.speed, 0.001) + distance_along_axis * 6.28318530718);
+#if NOISE
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        float noise = aux2_texture.sample(
+            texture_sampler,
+            fract(float2(uniforms.time * 0.08333333, uniforms.time * 0.02777777) * max(uniforms.user1.y, 0.001))
+        ).r * 6.28318530718;
+        anim = clamp(anim + sin(noise) * uniforms.user1.z, -1.0, 1.0);
+    }
+#endif
+    float size_mod = max(uniforms.radius * (1.0 - abs(anim) * uniforms.intensity * 0.5), 0.0001);
+    float feather = max(uniforms.user1.x, 0.00001);
+    float distance_right = dot(primary_uv - p1, axis);
+    float distance_left = dot(primary_uv - p0, axis);
+    float mask = smoothstep(feather, 0.0, distance_right) * smoothstep(-feather, 0.0, distance_left);
+    mask *= smoothstep(size_mod + feather, size_mod - feather, distance_ortho);
+#if DOUBLESIDED
+    mask *= smoothstep(size_mod + feather, size_mod - feather, -distance_ortho);
+#else
+    mask *= step(0.0, distance_ortho);
+#endif
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        mask *= aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float2 uv_distort = axis * anim * distance_ortho * distance_along_axis * uniforms.intensity;
+    uv_distort += axis_ortho * anim * anim * distance_ortho * uniforms.intensity * 0.5;
+    sampled = sample_input(input_texture, texture_sampler, mix(primary_uv, primary_uv + uv_distort, mask));
+#elif PHASE10_EFFECT_TWIRL
+    float2 center = uniforms.user0.xy;
+    float2 tex_coord = primary_uv - center;
+#if ELLIPTICAL
+    tex_coord = rotate2d(tex_coord, uniforms.angle);
+    tex_coord.x *= max(uniforms.user0.z, 0.0001);
+#endif
+    float dist = length(tex_coord);
+    float feather = smoothstep(uniforms.radius + uniforms.user0.w + 0.00001, uniforms.radius - uniforms.user0.w, dist);
+#if INNER
+    float falloff = uniforms.radius / max(dist, 0.0001);
+#else
+    float falloff = dist / max(uniforms.radius, 0.0001);
+#endif
+    float anim = uniforms.intensity * sin(uniforms.time * max(uniforms.speed, 0.001)) * falloff;
+#if NOISE
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        float noise = aux2_texture.sample(
+            texture_sampler,
+            fract(float2(uniforms.time * 0.08333333, uniforms.time * 0.02777777) * max(uniforms.user1.x, 0.001))
+        ).r * 6.28318530718;
+        anim += sin(noise) * uniforms.user1.y * falloff;
+    }
+#endif
+    tex_coord = rotate2d(tex_coord, anim);
+#if ELLIPTICAL
+    tex_coord.x /= max(uniforms.user0.z, 0.0001);
+    tex_coord = rotate2d(tex_coord, -uniforms.angle);
+#endif
+    tex_coord += center;
+#if REPEAT
+    tex_coord = fract(tex_coord);
+#endif
+    float mask = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        mask *= aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    sampled = mix(sample_input(input_texture, texture_sampler, primary_uv), sample_input(input_texture, texture_sampler, tex_coord), feather * mask);
 #elif PHASE10_EFFECT_CHROMATIC_ABERRATION
     float2 center = uniforms.user0.xy;
     float center_falloff = clamp(uniforms.user0.z, 0.0, 1.0);
@@ -575,6 +655,22 @@ fragment float4 phase10_effect_fragment(
     float edge_mix = min(1.0, max(0.0, g - uniforms.radius) * uniforms.angle);
     float3 combined_color = mix(uniforms.user0.rgb, uniforms.color.rgb, edge_mix) * uniforms.speed;
     sampled.rgb = apply_tint_blend(sampled.rgb, combined_color, clamp(uniforms.intensity, 0.0, 1.0));
+#elif PHASE10_EFFECT_IRIS
+    float mask = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        mask *= aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float2 offset = (primary_uv - float2(0.5)) * (uniforms.user0.xy / max(uniforms.screen_size, float2(1.0)));
+    float4 iris = sample_input(input_texture, texture_sampler, primary_uv + offset * mask);
+#if BACKGROUND
+    float iris_mask = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv + offset * mask, float2(0.0), float2(1.0))).r
+        : 1.0;
+    iris.rgb = mix(uniforms.color.rgb, iris.rgb, iris_mask);
+#endif
+    sampled = iris;
 #elif PHASE10_EFFECT_CLOUDMOTION
     float mask = 1.0;
 #if MASK

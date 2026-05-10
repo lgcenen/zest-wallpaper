@@ -40,10 +40,13 @@ pub enum SceneCompatEffectKind {
     Skew,
     Perspective,
     Spin,
+    Swing,
+    Twirl,
     ChromaticAberration,
     ColorKey,
     FishEye,
     EdgeDetection,
+    Iris,
     CloudMotion,
     Clouds,
     WaterFlow,
@@ -627,6 +630,52 @@ const SPIN_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     runtime_binding_layout: SPIN_TEXTURE_SLOTS,
 };
 
+const SWING_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Swing,
+    family: "swing",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[("DOUBLESIDED", 0), ("MASK", 0), ("NOISE", 0)],
+    supported_uniforms: &[
+        "amount",
+        "center",
+        "feather",
+        "noiseamount",
+        "noisespeed",
+        "point0",
+        "point1",
+        "size",
+        "speed",
+    ],
+    runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
+};
+
+const TWIRL_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Twirl,
+    family: "twirl",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[
+        ("ELLIPTICAL", 1),
+        ("INNER", 0),
+        ("MASK", 0),
+        ("NOISE", 0),
+        ("REPEAT", 1),
+    ],
+    supported_uniforms: &[
+        "amount",
+        "angle",
+        "center",
+        "feather",
+        "noiseamount",
+        "noisespeed",
+        "ratio",
+        "size",
+        "speed",
+    ],
+    runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
+};
+
 const CHROMATIC_ABERRATION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::ChromaticAberration,
     family: "chromaticaberration",
@@ -679,6 +728,16 @@ const EDGEDETECTION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectC
         "outlinecolor",
     ],
     runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
+};
+
+const IRIS_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Iris,
+    family: "iris",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1],
+    supported_combo_defaults: &[("BACKGROUND", 0), ("MASK", 0)],
+    supported_uniforms: &["color", "scale"],
+    runtime_binding_layout: OPACITY_TEXTURE_SLOTS,
 };
 
 const CLOUDMOTION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
@@ -1631,10 +1690,13 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "skew" => Some(&SKEW_CONTRACT),
         "perspective" => Some(&PERSPECTIVE_CONTRACT),
         "spin" => Some(&SPIN_CONTRACT),
+        "swing" => Some(&SWING_CONTRACT),
+        "twirl" => Some(&TWIRL_CONTRACT),
         "chromaticaberration" => Some(&CHROMATIC_ABERRATION_CONTRACT),
         "colorkey" => Some(&COLORKEY_CONTRACT),
         "fisheye" => Some(&FISHEYE_CONTRACT),
         "edgedetection" => Some(&EDGEDETECTION_CONTRACT),
+        "iris" => Some(&IRIS_CONTRACT),
         "cloudmotion" => Some(&CLOUDMOTION_CONTRACT),
         "clouds" => Some(&CLOUDS_CONTRACT),
         "waterflow" => Some(&WATERFLOW_CONTRACT),
@@ -1667,10 +1729,13 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::Skew => Some(&SKEW_CONTRACT),
         SceneCompatEffectKind::Perspective => Some(&PERSPECTIVE_CONTRACT),
         SceneCompatEffectKind::Spin => Some(&SPIN_CONTRACT),
+        SceneCompatEffectKind::Swing => Some(&SWING_CONTRACT),
+        SceneCompatEffectKind::Twirl => Some(&TWIRL_CONTRACT),
         SceneCompatEffectKind::ChromaticAberration => Some(&CHROMATIC_ABERRATION_CONTRACT),
         SceneCompatEffectKind::ColorKey => Some(&COLORKEY_CONTRACT),
         SceneCompatEffectKind::FishEye => Some(&FISHEYE_CONTRACT),
         SceneCompatEffectKind::EdgeDetection => Some(&EDGEDETECTION_CONTRACT),
+        SceneCompatEffectKind::Iris => Some(&IRIS_CONTRACT),
         SceneCompatEffectKind::CloudMotion => Some(&CLOUDMOTION_CONTRACT),
         SceneCompatEffectKind::Clouds => Some(&CLOUDS_CONTRACT),
         SceneCompatEffectKind::WaterFlow => Some(&WATERFLOW_CONTRACT),
@@ -1788,6 +1853,12 @@ fn compat_effect_shader_defines(
         SceneCompatEffectKind::Spin => {
             defines.insert("PHASE10_EFFECT_SPIN".to_string(), 1);
         }
+        SceneCompatEffectKind::Swing => {
+            defines.insert("PHASE10_EFFECT_SWING".to_string(), 1);
+        }
+        SceneCompatEffectKind::Twirl => {
+            defines.insert("PHASE10_EFFECT_TWIRL".to_string(), 1);
+        }
         SceneCompatEffectKind::ChromaticAberration => {
             defines.insert("PHASE10_EFFECT_CHROMATIC_ABERRATION".to_string(), 1);
         }
@@ -1799,6 +1870,9 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::EdgeDetection => {
             defines.insert("PHASE10_EFFECT_EDGEDETECTION".to_string(), 1);
+        }
+        SceneCompatEffectKind::Iris => {
+            defines.insert("PHASE10_EFFECT_IRIS".to_string(), 1);
         }
         SceneCompatEffectKind::CloudMotion => {
             defines.insert("PHASE10_EFFECT_CLOUDMOTION".to_string(), 1);
@@ -2760,10 +2834,13 @@ mod tests {
             (SceneCompatEffectKind::Skew, vec![0]),
             (SceneCompatEffectKind::Perspective, vec![0]),
             (SceneCompatEffectKind::Spin, vec![0, 1]),
+            (SceneCompatEffectKind::Swing, vec![0, 1, 2]),
+            (SceneCompatEffectKind::Twirl, vec![0, 1, 2]),
             (SceneCompatEffectKind::ChromaticAberration, vec![0, 1]),
             (SceneCompatEffectKind::ColorKey, vec![0]),
             (SceneCompatEffectKind::FishEye, vec![0]),
             (SceneCompatEffectKind::EdgeDetection, vec![0]),
+            (SceneCompatEffectKind::Iris, vec![0, 1]),
             (SceneCompatEffectKind::CloudMotion, vec![0, 1, 2]),
             (SceneCompatEffectKind::Clouds, vec![0, 1, 2]),
             (SceneCompatEffectKind::WaterFlow, vec![0, 1, 2]),
@@ -2877,6 +2954,20 @@ mod tests {
         assert!(spin.supported_uniforms.contains(&"center"));
         assert!(spin.supported_uniforms.contains(&"spincenter"));
 
+        let swing = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Swing)
+            .expect("swing contract");
+        assert!(swing.supported_combo_defaults.contains(&("DOUBLESIDED", 0)));
+        assert!(swing.supported_combo_defaults.contains(&("NOISE", 0)));
+        assert!(swing.supported_uniforms.contains(&"point0"));
+        assert!(swing.supported_uniforms.contains(&"point1"));
+
+        let twirl = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Twirl)
+            .expect("twirl contract");
+        assert!(twirl.supported_combo_defaults.contains(&("ELLIPTICAL", 1)));
+        assert!(twirl.supported_combo_defaults.contains(&("INNER", 0)));
+        assert!(twirl.supported_uniforms.contains(&"ratio"));
+        assert!(twirl.supported_uniforms.contains(&"angle"));
+
         let chromatic = super::phase10b_effect_contract_for_kind(
             SceneCompatEffectKind::ChromaticAberration,
         )
@@ -2906,6 +2997,11 @@ mod tests {
             .supported_combo_defaults
             .contains(&("BLENDMODE", 0)));
         assert!(edgedetection.supported_uniforms.contains(&"outlinecolor"));
+
+        let iris = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Iris)
+            .expect("iris contract");
+        assert!(iris.supported_combo_defaults.contains(&("BACKGROUND", 0)));
+        assert!(iris.supported_uniforms.contains(&"scale"));
 
         let cloudmotion = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::CloudMotion)
             .expect("cloudmotion contract");

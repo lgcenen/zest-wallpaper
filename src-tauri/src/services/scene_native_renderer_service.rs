@@ -3702,6 +3702,51 @@ impl NativeSceneMetalRenderer {
                 uniforms.user0[3] =
                     phase10_uniform_float(&uniform_values, &["feather"], uniforms.user0[3]);
             }
+            Some(SceneCompatEffectKind::Swing) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["amount"], 0.2);
+                uniforms.speed = phase10_uniform_float(&uniform_values, &["speed"], 1.0);
+                uniforms.radius =
+                    phase10_uniform_float(&uniform_values, &["size"], 0.4);
+                uniforms.angle =
+                    phase10_uniform_float(&uniform_values, &["center"], 0.5);
+                uniforms.user0 = phase10_uniform_vec4(
+                    &uniform_values,
+                    &["point0"],
+                    [0.25, 0.5, 0.75, 0.5],
+                );
+                let point1 = phase10_uniform_vec2(&uniform_values, &["point1"], [0.75, 0.5]);
+                uniforms.user0[2] = point1[0];
+                uniforms.user0[3] = point1[1];
+                uniforms.user1[0] =
+                    phase10_uniform_float(&uniform_values, &["feather"], 0.01);
+                uniforms.user1[1] =
+                    phase10_uniform_float(&uniform_values, &["noisespeed"], 0.15);
+                uniforms.user1[2] =
+                    phase10_uniform_float(&uniform_values, &["noiseamount"], 0.2);
+            }
+            Some(SceneCompatEffectKind::Twirl) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["amount"], 0.2);
+                uniforms.speed = phase10_uniform_float(&uniform_values, &["speed"], 1.0);
+                uniforms.radius =
+                    phase10_uniform_float(&uniform_values, &["size"], 0.5);
+                uniforms.angle =
+                    phase10_uniform_float(&uniform_values, &["angle"], 0.0);
+                uniforms.user0 = phase10_uniform_vec4(
+                    &uniform_values,
+                    &["center"],
+                    [0.5, 0.5, 1.0, 0.002],
+                );
+                uniforms.user0[2] =
+                    phase10_uniform_float(&uniform_values, &["ratio"], 1.0);
+                uniforms.user0[3] =
+                    phase10_uniform_float(&uniform_values, &["feather"], 0.002);
+                uniforms.user1[0] =
+                    phase10_uniform_float(&uniform_values, &["noisespeed"], 0.15);
+                uniforms.user1[1] =
+                    phase10_uniform_float(&uniform_values, &["noiseamount"], 0.5);
+            }
             Some(SceneCompatEffectKind::ChromaticAberration) => {
                 uniforms.user0 = phase10_uniform_vec4(
                     &uniform_values,
@@ -3802,6 +3847,18 @@ impl NativeSceneMetalRenderer {
                 );
                 uniforms.color = color1;
                 uniforms.user0 = [color2[0], color2[1], color2[2], 1.0];
+            }
+            Some(SceneCompatEffectKind::Iris) => {
+                uniforms.user0 = phase10_uniform_vec4(
+                    &uniform_values,
+                    &["scale"],
+                    [20.0, 20.0, 0.0, 0.0],
+                );
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["color", "eyecolor"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
             }
             Some(SceneCompatEffectKind::CloudMotion) => {
                 uniforms.intensity = phase10_uniform_float(

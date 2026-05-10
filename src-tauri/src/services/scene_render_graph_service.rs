@@ -1426,6 +1426,14 @@ fn phase10b_combo_value_supported(
             "mask" | "repeat" => matches!(combo_value, 0 | 1),
             _ => false,
         },
+        "swing" => match normalized.as_str() {
+            "doublesided" | "mask" | "noise" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "twirl" => match normalized.as_str() {
+            "elliptical" | "inner" | "mask" | "noise" | "repeat" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
         "chromaticaberration" => match normalized.as_str() {
             "mask" => matches!(combo_value, 0 | 1),
             "mode" => matches!(combo_value, 0 | 1 | 2 | 3),
@@ -1441,6 +1449,10 @@ fn phase10b_combo_value_supported(
             matches!(normalized.as_str(), "blendmode")
                 && matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32)
         }
+        "iris" => match normalized.as_str() {
+            "background" | "mask" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
         "cloudmotion" => matches!(normalized.as_str(), "mask") && matches!(combo_value, 0 | 1),
         "clouds" => match normalized.as_str() {
             "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
@@ -1509,7 +1521,12 @@ fn phase10b_combo_required_texture_slot(
         "foliagesway" if normalized == "mask" => Some(1),
         "opacity" if normalized == "mask" => Some(1),
         "spin" if normalized == "mask" => Some(1),
+        "swing" if normalized == "mask" => Some(1),
+        "swing" if normalized == "noise" => Some(2),
+        "twirl" if normalized == "mask" => Some(1),
+        "twirl" if normalized == "noise" => Some(2),
         "chromaticaberration" if normalized == "mask" => Some(1),
+        "iris" if normalized == "mask" => Some(1),
         "cloudmotion" if normalized == "mask" => Some(1),
         "clouds" if normalized == "mask" => Some(2),
         "nitro" if normalized == "mask" => Some(2),
@@ -3204,6 +3221,328 @@ mod tests {
             assert_eq!(report.graph.visuals.len(), 1);
             assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
             assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+        }
+    }
+
+    #[test]
+    fn phase10_graph_supports_batch2_group_e_authored_effect_shader_families() {
+        for (family, shader_ref, pass_json, material_json, texture_files) in [
+            (
+                "swing",
+                "effects/swing",
+                r#"{"combos":{"DOUBLESIDED":0,"MASK":0,"NOISE":0},"constantshadervalues":{"amount":0.55,"center":0.5,"feather":0.0,"point0":"-0.24110 0.16707","point1":"1.26832 0.16961","size":1.4249905,"speed":4.11}}"#,
+                r#"{"passes":[{"shader":"effects/swing"}]}"#,
+                vec![],
+            ),
+            (
+                "twirl",
+                "effects/twirl",
+                r#"{"combos":{"ELLIPTICAL":0,"INNER":1,"NOISE":0,"REPEAT":0,"MASK":0},"constantshadervalues":{"amount":0.23,"angle":0.0,"center":"0.50194 0.46310","feather":0.0,"ratio":1.0,"size":0.83391356,"speed":1.0}}"#,
+                r#"{"passes":[{"shader":"effects/twirl"}]}"#,
+                vec![],
+            ),
+            (
+                "iris",
+                "effects/iris",
+                r#"{"combos":{"BACKGROUND":0,"MASK":1},"constantshadervalues":{"scale":"20 20"}}"#,
+                r#"{"passes":[{"shader":"effects/iris","textures":[null,"textures/mask.png"]}]}"#,
+                vec!["textures/mask.png"],
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":224,
+                          "name":"{family}",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[
+                            {{
+                              "file":"effects/{family}/effect.json",
+                              "visible":true,
+                              "passes":[{pass_json}]
+                            }}
+                          ]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                material_json.as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+            for texture_file in texture_files {
+                write(&extracted.join(texture_file), b"png");
+            }
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            assert!(!report.is_blocked(), "{family} should be supported: {:?}", report.issues);
+            assert!(report
+                .issues
+                .iter()
+                .all(|issue| issue.diagnostic_code != Some("effect-unsupported")));
+            assert_eq!(report.graph.visuals.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+        }
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_e_combo_value_outside_contract() {
+        for (family, shader_ref, material_json, expected_fragment) in [
+            (
+                "swing",
+                "effects/swing",
+                r#"{"passes":[{"shader":"effects/swing","combos":{"DOUBLESIDED":2,"MASK":0,"NOISE":0}}]}"#,
+                "combo DOUBLESIDED=2",
+            ),
+            (
+                "twirl",
+                "effects/twirl",
+                r#"{"passes":[{"shader":"effects/twirl","combos":{"ELLIPTICAL":0,"INNER":1,"NOISE":2,"REPEAT":0,"MASK":0}}]}"#,
+                "combo NOISE=2",
+            ),
+            (
+                "iris",
+                "effects/iris",
+                r#"{"passes":[{"shader":"effects/iris","textures":[null,"textures/mask.png"],"combos":{"BACKGROUND":2,"MASK":1}}]}"#,
+                "combo BACKGROUND=2",
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":225,
+                          "name":"{family}InvalidCombo",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[{{"file":"effects/{family}/effect.json","visible":true}}]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                material_json.as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+            write(&extracted.join("textures/mask.png"), b"png");
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            let issue = report
+                .issues
+                .iter()
+                .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+                .expect("unsupported effect issue");
+            assert!(issue.resource_present_but_unsupported);
+            assert!(issue
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains(expected_fragment));
+        }
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_e_missing_combo_texture_slot() {
+        for (family, shader_ref, material_json, expected_fragment) in [
+            (
+                "swing",
+                "effects/swing",
+                r#"{"passes":[{"shader":"effects/swing","combos":{"DOUBLESIDED":0,"MASK":0,"NOISE":1}}]}"#,
+                "requires g_Texture2",
+            ),
+            (
+                "twirl",
+                "effects/twirl",
+                r#"{"passes":[{"shader":"effects/twirl","combos":{"ELLIPTICAL":1,"INNER":0,"MASK":1,"NOISE":0,"REPEAT":1}}]}"#,
+                "requires g_Texture1",
+            ),
+            (
+                "iris",
+                "effects/iris",
+                r#"{"passes":[{"shader":"effects/iris","combos":{"BACKGROUND":0,"MASK":1}}]}"#,
+                "requires g_Texture1",
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":226,
+                          "name":"{family}MissingTexture",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[{{"file":"effects/{family}/effect.json","visible":true}}]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                material_json.as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            let issue = report
+                .issues
+                .iter()
+                .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+                .expect("unsupported effect issue");
+            assert!(issue.resource_present_but_unsupported);
+            assert!(issue
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains(expected_fragment));
         }
     }
 
