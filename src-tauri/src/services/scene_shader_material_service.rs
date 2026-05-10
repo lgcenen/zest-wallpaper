@@ -1946,8 +1946,29 @@ pub fn phase10b_effect_contract_for_kind(
 
 pub fn phase10b_blocked_effect_reason(shader_ref: &str) -> Option<&'static str> {
     match normalized_shader_stem(shader_ref).as_str() {
-        "blur" => Some(
+        "blur" | "blurprecise" | "blurradial" => Some(
             "blur requires phase-10d named render targets, multi-pass order, previous-texture chaining, and copy-background lifecycle support.",
+        ),
+        "cursorripple" => Some(
+            "cursorripple requires phase-10d named render targets, multi-pass order, and previous-texture chaining support.",
+        ),
+        "fluidsimulation" => Some(
+            "fluidsimulation requires phase-10d history-frame feedback and multi-pass order support.",
+        ),
+        "glitter" => Some(
+            "glitter requires phase-10d named render targets and multi-pass prepare/combine order support.",
+        ),
+        "godrays" => Some(
+            "godrays requires phase-10d multi-pass order support for its light scattering chain.",
+        ),
+        "localcontrast" => Some(
+            "localcontrast requires phase-10d multi-pass local-neighborhood blur chain support.",
+        ),
+        "motionblur" => Some(
+            "motionblur requires phase-10d previous-texture chaining and multi-pass accumulation support.",
+        ),
+        "refraction" => Some(
+            "refraction requires phase-10d copy-background lifecycle and compose-background pass support.",
         ),
         "shine" => Some(
             "shine requires phase-10d named render targets, multi-pass order, previous-texture chaining, and copy-background lifecycle support.",
@@ -3331,16 +3352,27 @@ mod tests {
     }
 
     #[test]
-    fn phase10b_blur_and_shine_report_phase10d_blockers() {
-        let blur_reason =
-            super::phase10b_blocked_effect_reason("effects/blur").expect("blur blocker");
-        let shine_reason =
-            super::phase10b_blocked_effect_reason("effects/shine").expect("shine blocker");
+    fn phase10b_batch4_families_report_phase10d_blockers_and_remain_unsupported() {
+        for (shader_ref, expected_phrase) in [
+            ("effects/blur", "named render targets"),
+            ("effects/blurprecise", "multi-pass order"),
+            ("effects/blurradial", "copy-background lifecycle"),
+            ("effects/cursorripple", "previous-texture chaining"),
+            ("effects/fluidsimulation", "history-frame feedback"),
+            ("effects/glitter", "prepare/combine order"),
+            ("effects/godrays", "light scattering chain"),
+            ("effects/localcontrast", "local-neighborhood blur chain"),
+            ("effects/motionblur", "previous-texture chaining"),
+            ("effects/refraction", "compose-background pass"),
+            ("effects/shine", "copy-background lifecycle"),
+        ] {
+            let reason = super::phase10b_blocked_effect_reason(shader_ref)
+                .unwrap_or_else(|| panic!("{shader_ref} should report a phase-10d blocker"));
 
-        assert!(blur_reason.contains("phase-10d"));
-        assert!(blur_reason.contains("named render targets"));
-        assert!(shine_reason.contains("phase-10d"));
-        assert!(shine_reason.contains("copy-background lifecycle"));
+            assert!(reason.contains("phase-10d"), "{shader_ref}: {reason}");
+            assert!(reason.contains(expected_phrase), "{shader_ref}: {reason}");
+            assert!(super::phase10b_supported_effect_contract_for_shader_ref(shader_ref).is_none());
+        }
     }
 
     #[test]
