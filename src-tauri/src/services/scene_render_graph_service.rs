@@ -2791,9 +2791,11 @@ mod tests {
                                   "passes":[{{
                                     "combos":{{"MASK":0,"REPEAT":1}},
                                     "constantshadervalues":{{
+                                      "amount":0.35,
                                       "center":"0.5 0.5",
                                       "size":0.18,
-                                      "feather":0.01
+                                      "feather":0.01,
+                                      "speed":2.4
                                     }}
                                   }}]
                                 }}
@@ -5406,7 +5408,7 @@ mod tests {
         );
         write(
             &extracted.join("effects/spin/materials/effects/spin.json"),
-            br#"{"passes":[{"shader":"effects/spin","combos":{"MASK":1,"REPEAT":1}}]}"#,
+            br#"{"passes":[{"shader":"effects/spin","combos":{"MASK":1,"REPEAT":1},"constantshadervalues":{"amount":0.3,"center":"0.5 0.5","size":0.2,"feather":0.01,"speed":1.75}}]}"#,
         );
         write(
             &extracted.join("effects/spin/shaders/effects/spin.vert"),

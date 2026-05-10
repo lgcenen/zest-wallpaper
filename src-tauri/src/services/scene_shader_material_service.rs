@@ -733,7 +733,7 @@ const SPIN_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     required_texture_slots: &[0],
     supported_texture_slots: &[0, 1],
     supported_combo_defaults: &[("MASK", 0), ("REPEAT", 1)],
-    supported_uniforms: &["center", "feather", "size", "spincenter"],
+    supported_uniforms: &["amount", "angle", "center", "feather", "size", "speed", "spincenter"],
     runtime_binding_layout: SPIN_TEXTURE_SLOTS,
 };
 
@@ -3183,7 +3183,10 @@ mod tests {
             .expect("spin contract");
         assert!(spin.supported_combo_defaults.contains(&("MASK", 0)));
         assert!(spin.supported_combo_defaults.contains(&("REPEAT", 1)));
+        assert!(spin.supported_uniforms.contains(&"amount"));
+        assert!(spin.supported_uniforms.contains(&"angle"));
         assert!(spin.supported_uniforms.contains(&"center"));
+        assert!(spin.supported_uniforms.contains(&"speed"));
         assert!(spin.supported_uniforms.contains(&"spincenter"));
 
         let swing = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Swing)

@@ -3722,12 +3722,8 @@ impl NativeSceneMetalRenderer {
                     phase10_perspective_corner_uniforms(&uniform_values);
             }
             Some(SceneCompatEffectKind::Spin) => {
-                uniforms.user0 =
-                    phase10_uniform_vec4(&uniform_values, &["center", "spincenter"], [0.5, 0.5, 0.1, 0.002]);
-                uniforms.user0[2] =
-                    phase10_uniform_float(&uniform_values, &["size"], uniforms.user0[2]);
-                uniforms.user0[3] =
-                    phase10_uniform_float(&uniform_values, &["feather"], uniforms.user0[3]);
+                (uniforms.angle, uniforms.speed, uniforms.user0) =
+                    phase10_spin_controls(&uniform_values);
             }
             Some(SceneCompatEffectKind::Swing) => {
                 uniforms.intensity =
@@ -5420,6 +5416,19 @@ fn phase10_perspective_corner_uniforms(
         [point0[0], point0[1], point1[0], point1[1]],
         [point2[0], point2[1], point3[0], point3[1]],
     )
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_spin_controls(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+) -> (f32, f32, [f32; 4]) {
+    let angle = phase10_uniform_float(values, &["amount", "angle"], 0.0);
+    let speed = phase10_uniform_float(values, &["speed"], 1.0);
+    let mut center_and_mask =
+        phase10_uniform_vec4(values, &["center", "spincenter"], [0.5, 0.5, 0.1, 0.002]);
+    center_and_mask[2] = phase10_uniform_float(values, &["size"], center_and_mask[2]);
+    center_and_mask[3] = phase10_uniform_float(values, &["feather"], center_and_mask[3]);
+    (angle, speed, center_and_mask)
 }
 
 #[cfg(target_os = "macos")]
@@ -9550,6 +9559,37 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn phase10_spin_uniforms_pack_amount_speed_and_center_controls() {
+        let (angle, speed, user0) = super::phase10_spin_controls(&BTreeMap::from([
+            (
+                "amount".to_string(),
+                SceneMaterialUniformValue::Float(0.35f32.to_bits()),
+            ),
+            (
+                "speed".to_string(),
+                SceneMaterialUniformValue::Float(2.4f32.to_bits()),
+            ),
+            (
+                "center".to_string(),
+                SceneMaterialUniformValue::Float2([0.3f32.to_bits(), 0.7f32.to_bits()]),
+            ),
+            (
+                "size".to_string(),
+                SceneMaterialUniformValue::Float(0.18f32.to_bits()),
+            ),
+            (
+                "feather".to_string(),
+                SceneMaterialUniformValue::Float(0.04f32.to_bits()),
+            ),
+        ]));
+
+        assert_eq!(angle, 0.35);
+        assert_eq!(speed, 2.4);
+        assert_eq!(user0, [0.3, 0.7, 0.18, 0.04]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn phase10_pulse_shader_consumes_noise_and_mask_in_slot_local_uv_space() {
         let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
@@ -9725,6 +9765,63 @@ mod tests {
         assert!(!shader.contains(
             "#elif PHASE10_EFFECT_PERSPECTIVE\n    float mask = step(0.0, stage_vertex.position.w);\n    float2 perspective_uv = primary_uv;"
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_spin_shader_rotates_uv_with_amount_and_time() {
+        let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
+        let shader = fs::read_to_string(shader_path).expect("effect compat shader");
+
+        assert!(shader.contains("float anim = uniforms.angle * sin(uniforms.time * max(uniforms.speed, 0.001));"));
+        assert!(shader.contains("tex_coord -= center;"));
+        assert!(shader.contains("tex_coord = rotate2d(tex_coord, anim);"));
+        assert!(shader.contains("tex_coord += center;"));
+        assert!(shader.contains("float4 rotated = sample_input(input_texture, texture_sampler, tex_coord);"));
+        assert!(!shader.contains("float4 rotated = sample_input(input_texture, texture_sampler, primary_uv);"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_spin_shader_compiles_to_pipeline_state() {
+        use crate::services::scene_shader_material_service::{
+            SceneShaderProgram, SceneShaderProgramKind,
+        };
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let program = SceneShaderProgram {
+            key: "test:spin".to_string(),
+            kind: SceneShaderProgramKind::EffectCompat(SceneCompatEffectKind::Spin),
+            metal_source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal"),
+            vertex_entry: "phase10_effect_vertex",
+            fragment_entry: "phase10_effect_fragment",
+            variant_defines: BTreeMap::from([("PHASE10_EFFECT_SPIN".to_string(), 1)]),
+        };
+
+        let repeat0 = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::from([
+                ("PHASE10_EFFECT_SPIN".to_string(), 1),
+                ("MASK".to_string(), 0),
+                ("REPEAT".to_string(), 0),
+            ]),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("spin repeat=0 compile");
+        let repeat1_mask1 = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::from([
+                ("PHASE10_EFFECT_SPIN".to_string(), 1),
+                ("MASK".to_string(), 1),
+                ("REPEAT".to_string(), 1),
+            ]),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("spin repeat=1 mask=1 compile");
+        let _ = (repeat0, repeat1_mask1);
     }
 
     #[cfg(target_os = "macos")]

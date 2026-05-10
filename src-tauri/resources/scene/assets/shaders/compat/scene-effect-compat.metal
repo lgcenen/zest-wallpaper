@@ -545,6 +545,10 @@ fragment float4 phase10_effect_fragment(
         mask *= aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
     }
 #endif
+    float anim = uniforms.angle * sin(uniforms.time * max(uniforms.speed, 0.001));
+    tex_coord -= center;
+    tex_coord = rotate2d(tex_coord, anim);
+    tex_coord += center;
     float4 rotated = sample_input(input_texture, texture_sampler, tex_coord);
     float4 original = sample_input(input_texture, texture_sampler, primary_uv);
     sampled = mix(original, rotated, mask);
