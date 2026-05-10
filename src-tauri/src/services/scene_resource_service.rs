@@ -491,6 +491,19 @@ impl SceneResourceResolver {
             }
         }
         for raw_candidate in &raw_candidates {
+            let extension = raw_candidate
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_ascii_lowercase());
+            if matches!(extension.as_deref(), Some("json"))
+                || raw_candidate
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(|name| name.to_ascii_lowercase().ends_with(".tex-json"))
+                    .unwrap_or(false)
+            {
+                continue;
+            }
             push(raw_candidate.clone());
         }
 

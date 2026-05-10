@@ -4588,6 +4588,155 @@ mod tests {
     }
 
     #[test]
+    fn phase_10a_acceptance_entries_consume_direct_bmp_tga_and_scene_level_spritesheet_assets() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let extracted_root = managed_root.join("extracted");
+        let decoded_root = managed_root.join("decoded");
+        fs::create_dir_all(extracted_root.join("images")).expect("images dir");
+        fs::create_dir_all(extracted_root.join("gifs")).expect("gifs dir");
+        fs::create_dir_all(decoded_root.join("gifs")).expect("decoded gifs dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+
+        let bmp_path = extracted_root.join("images/sample.bmp");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 2, Rgba([12, 34, 56, 255])))
+            .save_with_format(&bmp_path, image::ImageFormat::Bmp)
+            .expect("write bmp");
+        let tga_path = extracted_root.join("images/sample.tga");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 2, Rgba([90, 80, 70, 255])))
+            .save_with_format(&tga_path, image::ImageFormat::Tga)
+            .expect("write tga");
+
+        let gifsheet_path = decoded_root.join("gifs/gifscene.png");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 4, Rgba([255, 255, 255, 255])))
+            .save(&gifsheet_path)
+            .expect("write decoded gifscene");
+        fs::write(
+            extracted_root.join("gifs").join("gifscene.tex-json"),
+            r#"{"spritesheetsequences":[{"frames":8,"width":2,"height":2}]}"#,
+        )
+        .expect("gifscene metadata");
+
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        for (entry_id, asset_path, expected_uv_rect) in [
+            (
+                "phase-10a/direct-bmp",
+                bmp_path.display().to_string(),
+                [0.0, 0.0, 1.0, 1.0],
+            ),
+            (
+                "phase-10a/direct-tga",
+                tga_path.display().to_string(),
+                [0.0, 0.0, 1.0, 1.0],
+            ),
+            (
+                "gifs/gifscene.json",
+                gifsheet_path.display().to_string(),
+                [0.0, 0.0, 0.25, 0.5],
+            ),
+        ] {
+            let scene = runtime_scene_with_objects(
+                vec![(
+                    7,
+                    visual_object(
+                        7,
+                        entry_id,
+                        SceneAssetKind::Image,
+                        Some(asset_path),
+                        Some([0.0, 0.0, 640.0, 320.0]),
+                        [1.0, 1.0, 1.0],
+                        None,
+                        None,
+                    ),
+                )],
+                vec![7],
+            );
+
+            let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+            assert!(!report.is_blocked(), "{entry_id} should remain renderable");
+            assert!(report.issues.is_empty(), "{entry_id} should not report planner issues");
+            assert_eq!(report.plan.visuals.len(), 1, "{entry_id} should produce one visual");
+            assert_eq!(
+                report.plan.visuals[0].uv_rect, expected_uv_rect,
+                "{entry_id} should consume the expected visual UV contract"
+            );
+        }
+    }
+
+    #[test]
+    fn phase_10a_texture_candidate_lookup_stays_consistent_across_sidecar_spellings() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let source_root = managed_root.join("source");
+        let decoded_root = managed_root.join("decoded");
+        fs::create_dir_all(source_root.join("textures")).expect("source textures dir");
+        fs::create_dir_all(decoded_root.join("textures")).expect("decoded textures dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+
+        let decoded_png = decoded_root.join("textures/hero.png");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 4, Rgba([255, 255, 255, 255])))
+            .save(&decoded_png)
+            .expect("decoded hero");
+        fs::write(
+            source_root.join("textures/hero.tex-json"),
+            r#"{"spritesheetsequences":[{"frames":8,"width":2,"height":2}]}"#,
+        )
+        .expect("hero tex-json");
+        fs::write(
+            source_root.join("textures/alt.tex.json"),
+            r#"{"spritesheetsequences":[{"frames":4,"width":2,"height":1}]}"#,
+        )
+        .expect("alt tex.json");
+        let direct_png = source_root.join("textures/direct.png");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 2, Rgba([1, 2, 3, 255])))
+            .save(&direct_png)
+            .expect("direct png");
+
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+
+        let authored_tex = resolver.inspect_texture_candidates(
+            Some("materials/sample.material"),
+            None,
+            "textures/hero.tex",
+        );
+        let authored_tex_json = resolver.inspect_texture_candidates(
+            Some("materials/sample.material"),
+            None,
+            "textures/hero.tex-json",
+        );
+        let authored_alt = resolver.inspect_texture_candidates(
+            Some("materials/sample.material"),
+            None,
+            "textures/alt.tex.json",
+        );
+        let direct = resolver.inspect_texture_candidates(
+            Some("materials/sample.material"),
+            None,
+            "textures/direct.png",
+        );
+
+        assert_eq!(authored_tex.matched_paths, authored_tex_json.matched_paths);
+        assert!(
+            authored_tex
+                .matched_paths
+                .first()
+                .is_some_and(|path| path.ends_with("decoded/textures/hero.png"))
+        );
+        assert!(
+            authored_alt
+                .matched_paths
+                .is_empty(),
+            "metadata-only sidecar spellings should not be treated as consumable texture assets"
+        );
+        assert_eq!(direct.matched_paths, vec![direct_png]);
+    }
+
+    #[test]
     fn sprite_instanceoverride_fraction_values_scale_authored_particle_contract() {
         let temp = tempdir().expect("temp dir");
         let managed_root = temp.path().join("managed");
