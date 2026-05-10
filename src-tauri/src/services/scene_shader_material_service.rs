@@ -51,11 +51,13 @@ pub enum SceneCompatEffectKind {
     Clouds,
     WaterFlow,
     Nitro,
+    Blend,
     Reflection,
     Shimmer,
     FilmGrain,
     Vhs,
     BlendGradient,
+    WaterCaustics,
     XRay,
 }
 
@@ -434,6 +436,66 @@ const XRAY_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
     },
 ];
 
+const BLEND_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::GradientTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 7,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+];
+
+const WATERCAUSTICS_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::GradientTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 3,
+        semantic: ScenePhase10bBindingSemantic::NoiseTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 4,
+        semantic: ScenePhase10bBindingSemantic::FlowMap,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 5,
+        semantic: ScenePhase10bBindingSemantic::GradientTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: false,
+    },
+];
+
 const PULSE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Pulse,
     family: "pulse",
@@ -799,6 +861,23 @@ const NITRO_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract 
     runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
 };
 
+const BLEND_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Blend,
+    family: "blend",
+    required_texture_slots: &[0, 1],
+    supported_texture_slots: &[0, 1, 7],
+    supported_combo_defaults: &[
+        ("BLENDMODE", 2),
+        ("NUMBLENDTEXTURES", 1),
+        ("OPACITYMASK", 0),
+        ("TRANSFORMREPEAT", 0),
+        ("TRANSFORMUV", 0),
+        ("WRITEALPHA", 0),
+    ],
+    supported_uniforms: &["alpha", "multiply"],
+    runtime_binding_layout: BLEND_TEXTURE_SLOTS,
+};
+
 const REFLECTION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Reflection,
     family: "reflection",
@@ -884,6 +963,27 @@ const BLENDGRADIENT_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectC
     ],
     supported_uniforms: &["alpha", "edgebrightness", "edgecolor", "gradientscale", "multiply"],
     runtime_binding_layout: FOUR_SLOT_BLEND_TEXTURE_SLOTS,
+};
+
+const WATERCAUSTICS_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::WaterCaustics,
+    family: "watercaustics",
+    required_texture_slots: &[0, 2],
+    supported_texture_slots: &[0, 1, 2, 3, 4, 5],
+    supported_combo_defaults: &[("BLENDMODE", 32), ("MASK", 0), ("MODE", 0), ("PERSPECTIVE", 0)],
+    supported_uniforms: &[
+        "uieditorpropertiesbrightness",
+        "uieditorpropertiesblur",
+        "uieditorpropertieschromaticaberration",
+        "uieditorpropertiescolorend",
+        "uieditorpropertiescolorstart",
+        "uieditorpropertiesdistortion",
+        "uieditorpropertiesglow",
+        "uieditorpropertiesgranularity",
+        "uieditorpropertiesspeed",
+        "uieditorpropertiestimeoffset",
+    ],
+    runtime_binding_layout: WATERCAUSTICS_TEXTURE_SLOTS,
 };
 
 const XRAY_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
@@ -1701,11 +1801,14 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "clouds" => Some(&CLOUDS_CONTRACT),
         "waterflow" => Some(&WATERFLOW_CONTRACT),
         "nitro" => Some(&NITRO_CONTRACT),
+        "blend" => Some(&BLEND_CONTRACT),
         "reflection" => Some(&REFLECTION_CONTRACT),
         "shimmer" => Some(&SHIMMER_CONTRACT),
         "filmgrain" => Some(&FILMGRAIN_CONTRACT),
         "vhs" => Some(&VHS_CONTRACT),
         "blendgradient" => Some(&BLENDGRADIENT_CONTRACT),
+        "caustics" => Some(&WATERCAUSTICS_CONTRACT),
+        "watercaustics" => Some(&WATERCAUSTICS_CONTRACT),
         "xray" => Some(&XRAY_CONTRACT),
         _ => None,
     }
@@ -1740,11 +1843,13 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::Clouds => Some(&CLOUDS_CONTRACT),
         SceneCompatEffectKind::WaterFlow => Some(&WATERFLOW_CONTRACT),
         SceneCompatEffectKind::Nitro => Some(&NITRO_CONTRACT),
+        SceneCompatEffectKind::Blend => Some(&BLEND_CONTRACT),
         SceneCompatEffectKind::Reflection => Some(&REFLECTION_CONTRACT),
         SceneCompatEffectKind::Shimmer => Some(&SHIMMER_CONTRACT),
         SceneCompatEffectKind::FilmGrain => Some(&FILMGRAIN_CONTRACT),
         SceneCompatEffectKind::Vhs => Some(&VHS_CONTRACT),
         SceneCompatEffectKind::BlendGradient => Some(&BLENDGRADIENT_CONTRACT),
+        SceneCompatEffectKind::WaterCaustics => Some(&WATERCAUSTICS_CONTRACT),
         SceneCompatEffectKind::XRay => Some(&XRAY_CONTRACT),
     }
 }
@@ -1886,6 +1991,9 @@ fn compat_effect_shader_defines(
         SceneCompatEffectKind::Nitro => {
             defines.insert("PHASE10_EFFECT_NITRO".to_string(), 1);
         }
+        SceneCompatEffectKind::Blend => {
+            defines.insert("PHASE10_EFFECT_BLEND".to_string(), 1);
+        }
         SceneCompatEffectKind::Reflection => {
             defines.insert("PHASE10_EFFECT_REFLECTION".to_string(), 1);
         }
@@ -1900,6 +2008,9 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::BlendGradient => {
             defines.insert("PHASE10_EFFECT_BLENDGRADIENT".to_string(), 1);
+        }
+        SceneCompatEffectKind::WaterCaustics => {
+            defines.insert("PHASE10_EFFECT_WATERCAUSTICS".to_string(), 1);
         }
         SceneCompatEffectKind::XRay => {
             defines.insert("PHASE10_EFFECT_XRAY".to_string(), 1);
@@ -2845,11 +2956,13 @@ mod tests {
             (SceneCompatEffectKind::Clouds, vec![0, 1, 2]),
             (SceneCompatEffectKind::WaterFlow, vec![0, 1, 2]),
             (SceneCompatEffectKind::Nitro, vec![0, 1, 2]),
+            (SceneCompatEffectKind::Blend, vec![0, 1, 7]),
             (SceneCompatEffectKind::Reflection, vec![0, 1]),
             (SceneCompatEffectKind::Shimmer, vec![0, 1, 2, 3]),
             (SceneCompatEffectKind::FilmGrain, vec![0, 1, 2]),
             (SceneCompatEffectKind::Vhs, vec![0, 1, 2]),
             (SceneCompatEffectKind::BlendGradient, vec![0, 1, 2, 3]),
+            (SceneCompatEffectKind::WaterCaustics, vec![0, 1, 2, 3, 4, 5]),
             (SceneCompatEffectKind::XRay, vec![0, 1, 2, 3]),
         ];
 
@@ -3022,6 +3135,20 @@ mod tests {
             .expect("nitro contract");
         assert!(nitro.supported_combo_defaults.contains(&("BLENDMODE", 22)));
         assert!(nitro.supported_uniforms.contains(&"multiply"));
+
+        let blend = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Blend)
+            .expect("blend contract");
+        assert!(blend.supported_combo_defaults.contains(&("NUMBLENDTEXTURES", 1)));
+        assert!(blend.supported_combo_defaults.contains(&("OPACITYMASK", 0)));
+        assert!(blend.supported_uniforms.contains(&"multiply"));
+
+        let watercaustics =
+            super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::WaterCaustics)
+                .expect("watercaustics contract");
+        assert!(watercaustics.supported_combo_defaults.contains(&("MODE", 0)));
+        assert!(watercaustics
+            .supported_uniforms
+            .contains(&"uieditorpropertiesbrightness"));
 
         let reflection = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Reflection)
             .expect("reflection contract");

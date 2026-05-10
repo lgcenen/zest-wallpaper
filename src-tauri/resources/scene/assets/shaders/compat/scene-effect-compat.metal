@@ -14,6 +14,10 @@ struct Phase10EffectVertexOut {
     float2 slot1_uv;
     float2 slot2_uv;
     float2 slot3_uv;
+    float2 slot4_uv;
+    float2 slot5_uv;
+    float2 slot6_uv;
+    float2 slot7_uv;
     float4 color;
 };
 
@@ -25,10 +29,18 @@ struct Phase10EffectUniforms {
     float4 slot1_resolution;
     float4 slot2_resolution;
     float4 slot3_resolution;
+    float4 slot4_resolution;
+    float4 slot5_resolution;
+    float4 slot6_resolution;
+    float4 slot7_resolution;
     float2 texel_size;
     float2 aux_texel_size;
     float2 aux2_texel_size;
     float2 aux3_texel_size;
+    float2 aux4_texel_size;
+    float2 aux5_texel_size;
+    float2 aux6_texel_size;
+    float2 aux7_texel_size;
     float2 screen_size;
     float time;
     float intensity;
@@ -66,10 +78,34 @@ vertex Phase10EffectVertexOut phase10_effect_vertex(
         float2(0.0),
         float2(1.0)
     );
+    float2 slot4_scale = clamp(
+        uniforms.slot4_resolution.zw / max(uniforms.slot4_resolution.xy, float2(1.0)),
+        float2(0.0),
+        float2(1.0)
+    );
+    float2 slot5_scale = clamp(
+        uniforms.slot5_resolution.zw / max(uniforms.slot5_resolution.xy, float2(1.0)),
+        float2(0.0),
+        float2(1.0)
+    );
+    float2 slot6_scale = clamp(
+        uniforms.slot6_resolution.zw / max(uniforms.slot6_resolution.xy, float2(1.0)),
+        float2(0.0),
+        float2(1.0)
+    );
+    float2 slot7_scale = clamp(
+        uniforms.slot7_resolution.zw / max(uniforms.slot7_resolution.xy, float2(1.0)),
+        float2(0.0),
+        float2(1.0)
+    );
     out_vertex.primary_uv = base_uv * primary_scale;
     out_vertex.slot1_uv = base_uv * slot1_scale;
     out_vertex.slot2_uv = base_uv * slot2_scale;
     out_vertex.slot3_uv = base_uv * slot3_scale;
+    out_vertex.slot4_uv = base_uv * slot4_scale;
+    out_vertex.slot5_uv = base_uv * slot5_scale;
+    out_vertex.slot6_uv = base_uv * slot6_scale;
+    out_vertex.slot7_uv = base_uv * slot7_scale;
     out_vertex.color = float4(input_vertex.color) * input_vertex.opacity;
     return out_vertex;
 }
@@ -199,6 +235,10 @@ fragment float4 phase10_effect_fragment(
     texture2d<float> aux_texture [[texture(1)]],
     texture2d<float> aux2_texture [[texture(2)]],
     texture2d<float> aux3_texture [[texture(3)]],
+    texture2d<float> aux4_texture [[texture(4)]],
+    texture2d<float> aux5_texture [[texture(5)]],
+    texture2d<float> aux6_texture [[texture(6)]],
+    texture2d<float> aux7_texture [[texture(7)]],
     constant Phase10EffectUniforms& uniforms [[buffer(0)]]
 ) {
     constexpr sampler texture_sampler(address::clamp_to_edge, mag_filter::linear, min_filter::linear);
@@ -753,6 +793,32 @@ fragment float4 phase10_effect_fragment(
 #if WRITEALPHA
     sampled.a = max(sampled.a, nitro * mask);
 #endif
+#elif PHASE10_EFFECT_BLEND
+    float2 blend_uv = stage_vertex.slot1_uv;
+#if TRANSFORMUV == 1 && TRANSFORMREPEAT == 1
+    blend_uv = fract(blend_uv);
+#endif
+    float blend = 1.0;
+#if OPACITYMASK == 1
+    if (has_aux_texture(uniforms.aux7_texel_size)) {
+        blend *= aux7_texture.sample(texture_sampler, clamp(stage_vertex.slot7_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+#if TRANSFORMUV == 1 && TRANSFORMREPEAT == 0
+    blend *= step(0.99, dot(step(float2(0.0), blend_uv) * step(blend_uv, float2(1.0)), float2(0.5)));
+#endif
+    float4 blend_colors = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, clamp(blend_uv, float2(0.0), float2(1.0)))
+        : float4(1.0);
+#if WRITEALPHA
+    float blend_alpha = blend * uniforms.intensity;
+    float new_alpha = sampled.a * (1.0 - blend_alpha) + blend_colors.a * blend_alpha;
+    sampled.rgb = sampled.rgb * sampled.a * (1.0 - blend_alpha) + blend_colors.rgb * blend_colors.a * blend_alpha;
+    sampled.a = new_alpha * uniforms.radius;
+#else
+    sampled.rgb = apply_tint_blend(sampled.rgb, blend_colors.rgb, blend * uniforms.intensity * blend_colors.a);
+    sampled.a *= uniforms.radius;
+#endif
 #elif PHASE10_EFFECT_REFLECTION
     float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
     float2 reflected_uv = float2(primary_uv.x, 1.0 - primary_uv.y);
@@ -870,6 +936,58 @@ fragment float4 phase10_effect_fragment(
         step(uniforms.intensity, 0.999);
     sampled.rgb = max(float3(0.0), mix(sampled.rgb, uniforms.color.rgb, burn_amount * uniforms.angle));
 #endif
+#elif PHASE10_EFFECT_WATERCAUSTICS
+    float mask = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        mask *= aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float2 caustics_coords = stage_vertex.slot2_uv;
+    float ratio = uniforms.primary_resolution.x / max(uniforms.primary_resolution.y, 1.0);
+    caustics_coords.x *= ratio;
+    caustics_coords *= max(uniforms.radius, 0.1);
+    float time = uniforms.time * uniforms.speed + uniforms.user0.w;
+    float2 noise_coords = caustics_coords * 0.02 + float2(time * 0.005, time * 0.004111);
+    float2 blend_coords = caustics_coords * 0.01333 + float2(time * 0.003777);
+    float2 shift_coords = caustics_coords * 0.05 + float2(time * 0.01);
+    float4 shift_color = has_aux_texture(uniforms.aux4_texel_size)
+        ? aux4_texture.sample(texture_sampler, fract(stage_vertex.slot4_uv + shift_coords)) * 2.0 - 1.0
+        : float4(0.0);
+    float4 noise_color = has_aux_texture(uniforms.aux3_texel_size)
+        ? aux3_texture.sample(texture_sampler, fract(stage_vertex.slot3_uv + noise_coords)) * 2.0 - 1.0
+        : float4(0.0);
+    float4 noise_color2 = has_aux_texture(uniforms.aux3_texel_size)
+        ? aux3_texture.sample(texture_sampler, fract(stage_vertex.slot3_uv + noise_coords * 1.666)) * 2.0 - 1.0
+        : float4(0.0);
+    caustics_coords += noise_color.xy * 0.025 * uniforms.user0.x;
+    caustics_coords += noise_color2.xy * 0.025 * uniforms.user0.x;
+    caustics_coords += shift_color.rg * uniforms.user0.x;
+    float2 left_coords = caustics_coords;
+    float2 right_coords = caustics_coords;
+    left_coords.x -= 0.01 * uniforms.user0.y;
+    right_coords.x += 0.01 * uniforms.user0.y;
+    float3 caustics = float3(
+        has_aux_texture(uniforms.aux2_texel_size) ? aux2_texture.sample(texture_sampler, fract(left_coords)).r : 0.0,
+        has_aux_texture(uniforms.aux2_texel_size) ? aux2_texture.sample(texture_sampler, fract(caustics_coords)).r : 0.0,
+        has_aux_texture(uniforms.aux2_texel_size) ? aux2_texture.sample(texture_sampler, fract(right_coords)).r : 0.0
+    );
+    float glow_sample = has_aux_texture(uniforms.aux5_texel_size)
+        ? aux5_texture.sample(texture_sampler, fract(stage_vertex.slot5_uv + caustics_coords)).r
+        : caustics.g;
+    float blend_color = has_aux_texture(uniforms.aux3_texel_size)
+        ? aux3_texture.sample(texture_sampler, fract(stage_vertex.slot3_uv + blend_coords)).r
+        : 0.5;
+    caustics = mix(caustics, float3(glow_sample), uniforms.user0.z);
+#if MODE == 1
+    float caustics_sample = saturate(caustics.g + glow_sample * uniforms.angle);
+    float3 caustics_color = uniforms.intensity * mix(uniforms.color.rgb, uniforms.user1.rgb, smoothstep(0.0, 0.5, blend_color));
+#else
+    float caustics_sample = smoothstep(blend_color * 0.8, 1.0 - blend_color * 0.2, dot(caustics, float3(0.33333)) + glow_sample * uniforms.angle);
+    float3 caustics_color = uniforms.intensity * mix(uniforms.color.rgb, uniforms.user1.rgb, blend_color);
+    caustics_color *= caustics;
+#endif
+    sampled.rgb = apply_tint_blend(sampled.rgb, caustics_color, mask * caustics_sample);
 #elif PHASE10_EFFECT_XRAY
     float4 mask = has_aux_texture(uniforms.aux_texel_size)
         ? aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0)))

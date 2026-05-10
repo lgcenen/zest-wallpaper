@@ -3526,6 +3526,18 @@ impl NativeSceneMetalRenderer {
             slot3_resolution: phase10_optional_texture_resolution(
                 pass_textures.slots.get(3).and_then(|slot| slot.as_ref()),
             ),
+            slot4_resolution: phase10_optional_texture_resolution(
+                pass_textures.slots.get(4).and_then(|slot| slot.as_ref()),
+            ),
+            slot5_resolution: phase10_optional_texture_resolution(
+                pass_textures.slots.get(5).and_then(|slot| slot.as_ref()),
+            ),
+            slot6_resolution: phase10_optional_texture_resolution(
+                pass_textures.slots.get(6).and_then(|slot| slot.as_ref()),
+            ),
+            slot7_resolution: phase10_optional_texture_resolution(
+                pass_textures.slots.get(7).and_then(|slot| slot.as_ref()),
+            ),
             texel_size: phase10_texel_size(
                 pass_textures.slots.first().and_then(|slot| slot.as_ref()),
             ),
@@ -3537,6 +3549,18 @@ impl NativeSceneMetalRenderer {
             ),
             aux3_texel_size: phase10_optional_texel_size(
                 pass_textures.slots.get(3).and_then(|slot| slot.as_ref()),
+            ),
+            aux4_texel_size: phase10_optional_texel_size(
+                pass_textures.slots.get(4).and_then(|slot| slot.as_ref()),
+            ),
+            aux5_texel_size: phase10_optional_texel_size(
+                pass_textures.slots.get(5).and_then(|slot| slot.as_ref()),
+            ),
+            aux6_texel_size: phase10_optional_texel_size(
+                pass_textures.slots.get(6).and_then(|slot| slot.as_ref()),
+            ),
+            aux7_texel_size: phase10_optional_texel_size(
+                pass_textures.slots.get(7).and_then(|slot| slot.as_ref()),
             ),
             screen_size: [width.max(1) as f32, height.max(1) as f32],
             time: elapsed_seconds as f32,
@@ -3954,6 +3978,12 @@ impl NativeSceneMetalRenderer {
                 uniforms.user0[3] = color1[1];
                 uniforms.user1[0] = color1[2];
             }
+            Some(SceneCompatEffectKind::Blend) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["multiply"], 1.0);
+                uniforms.radius =
+                    phase10_uniform_float(&uniform_values, &["alpha", "alphamultiply"], 1.0);
+            }
             Some(SceneCompatEffectKind::Reflection) => {
                 uniforms.intensity =
                     phase10_uniform_float(&uniform_values, &["alpha", "reflectionalpha"], 1.0);
@@ -4069,6 +4099,61 @@ impl NativeSceneMetalRenderer {
                     &["edgecolor"],
                     [1.0, 0.75, 0.0, 1.0],
                 );
+            }
+            Some(SceneCompatEffectKind::WaterCaustics) => {
+                uniforms.intensity = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesbrightness"],
+                    1.0,
+                );
+                uniforms.speed = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesspeed"],
+                    1.0,
+                );
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesgranularity"],
+                    2.0,
+                );
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesglow"],
+                    0.5,
+                );
+                uniforms.user0[0] = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesdistortion"],
+                    1.0,
+                );
+                uniforms.user0[1] = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertieschromaticaberration"],
+                    1.0,
+                );
+                uniforms.user0[2] = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesblur"],
+                    0.0,
+                );
+                uniforms.user0[3] = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiestimeoffset"],
+                    0.0,
+                );
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["uieditorpropertiescolorstart"],
+                    [0.7, 0.9, 1.0, 1.0],
+                );
+                let color2 = phase10_uniform_color(
+                    &uniform_values,
+                    &["uieditorpropertiescolorend"],
+                    [0.4, 0.6, 1.0, 1.0],
+                );
+                uniforms.user1[0] = color2[0];
+                uniforms.user1[1] = color2[1];
+                uniforms.user1[2] = color2[2];
             }
             Some(SceneCompatEffectKind::XRay) => {
                 uniforms.intensity =
@@ -5290,10 +5375,18 @@ struct Phase10EffectUniforms {
     slot1_resolution: [f32; 4],
     slot2_resolution: [f32; 4],
     slot3_resolution: [f32; 4],
+    slot4_resolution: [f32; 4],
+    slot5_resolution: [f32; 4],
+    slot6_resolution: [f32; 4],
+    slot7_resolution: [f32; 4],
     texel_size: [f32; 2],
     aux_texel_size: [f32; 2],
     aux2_texel_size: [f32; 2],
     aux3_texel_size: [f32; 2],
+    aux4_texel_size: [f32; 2],
+    aux5_texel_size: [f32; 2],
+    aux6_texel_size: [f32; 2],
+    aux7_texel_size: [f32; 2],
     screen_size: [f32; 2],
     time: f32,
     intensity: f32,
@@ -9390,8 +9483,10 @@ mod tests {
 
         assert!(shader.contains("texture2d<float> aux2_texture [[texture(2)]]"));
         assert!(shader.contains("texture2d<float> aux3_texture [[texture(3)]]"));
+        assert!(shader.contains("texture2d<float> aux7_texture [[texture(7)]]"));
         assert!(shader.contains("float2 slot1_uv;"));
         assert!(shader.contains("float4 slot3_resolution;"));
+        assert!(shader.contains("float4 slot7_resolution;"));
         assert_eq!(
             shader
                 .matches("constexpr float phase_scale = 6.28318530718;")
