@@ -5705,11 +5705,11 @@ fn load_phase10_texture_source(path: &Path) -> Result<Phase10DecodedTexture, Str
     let loader_path = resolved_path.as_path();
     let image = crate::services::scene_resource_service::load_scene_texture_image(loader_path)
         .map_err(|error| {
-        format!(
-            "unable to decode phase-10 texture {}: {error}",
-            loader_path.display()
-        )
-    })?;
+            format!(
+                "unable to decode phase-10 texture {}: {error}",
+                loader_path.display()
+            )
+        })?;
     let metrics =
         phase10_texture_metrics_from_size(image.width() as usize, image.height() as usize);
     Ok(Phase10DecodedTexture { image, metrics })

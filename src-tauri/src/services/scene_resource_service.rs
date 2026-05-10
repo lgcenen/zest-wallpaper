@@ -984,13 +984,47 @@ pub fn texture_metadata_path(texture_path: &Path) -> PathBuf {
     texture_path.with_extension("tex-json")
 }
 
+pub fn scene_texture_image_candidates(texture_path: &Path) -> Vec<PathBuf> {
+    let Some(file_name) = texture_path.file_name().and_then(|value| value.to_str()) else {
+        return vec![texture_path.to_path_buf()];
+    };
+    let Some(parent) = texture_path.parent() else {
+        return vec![texture_path.to_path_buf()];
+    };
+    let lower_name = file_name.to_ascii_lowercase();
+    let mut candidates = Vec::new();
+
+    let mut push_candidate = |candidate: PathBuf| {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    };
+
+    if lower_name.ends_with(".tex-json") {
+        let stem = &file_name[..file_name.len() - ".tex-json".len()];
+        push_candidate(parent.join(format!("{stem}.png")));
+        push_candidate(parent.join(format!("{stem}.tex")));
+    } else if lower_name.ends_with(".tex.json") {
+        let stem = &file_name[..file_name.len() - ".tex.json".len()];
+        push_candidate(parent.join(format!("{stem}.png")));
+        push_candidate(parent.join(format!("{stem}.tex")));
+    }
+
+    push_candidate(texture_path.to_path_buf());
+    candidates
+}
+
 pub fn scene_texture_dimensions(texture_path: &Path) -> Option<(f64, f64)> {
+    let texture_path = scene_texture_image_candidates(texture_path)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .unwrap_or_else(|| texture_path.to_path_buf());
     let extension = texture_path
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase());
     if extension.as_deref() == Some("tex") {
-        return crate::tex::inspect_tex_resolution(texture_path)
+        return crate::tex::inspect_tex_resolution(&texture_path)
             .ok()
             .map(|resolution| {
                 (
@@ -1005,7 +1039,11 @@ pub fn scene_texture_dimensions(texture_path: &Path) -> Option<(f64, f64)> {
 }
 
 pub fn load_scene_texture_image(texture_path: &Path) -> Result<image::DynamicImage, String> {
-    crate::tex::load_texture_image(texture_path).map_err(|error| {
+    let texture_path = scene_texture_image_candidates(texture_path)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .unwrap_or_else(|| texture_path.to_path_buf());
+    crate::tex::load_texture_image(&texture_path).map_err(|error| {
         format!(
             "unable to decode scene texture {}: {error}",
             texture_path.display()
@@ -1762,6 +1800,62 @@ mod tests {
         assert_eq!(metadata.frames.len(), 4);
         assert_eq!(metadata.frames[0].uv_rect, [0.0, 0.0, 0.5, 0.5]);
         assert_eq!(metadata.frames[2].uv_rect, [0.0, 0.5, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn shared_scene_texture_loader_resolves_tex_json_to_png_or_tex_candidates() {
+        let temp = tempdir().expect("temp dir");
+
+        let png_metadata = temp.path().join("hero.tex-json");
+        let png_path = temp.path().join("hero.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([9, 8, 7, 255]),
+        ))
+        .save(&png_path)
+        .expect("hero png");
+        fs::write(&png_metadata, br#"{"format":"rgba8888"}"#).expect("hero metadata");
+
+        let png_image =
+            super::load_scene_texture_image(&png_metadata).expect("png-backed tex-json");
+        assert_eq!(png_image.to_rgba8().get_pixel(0, 0).0, [9, 8, 7, 255]);
+
+        let tex_metadata = temp.path().join("mask.tex.json");
+        let tex_path = temp.path().join("mask.tex");
+        fs::write(
+            &tex_path,
+            {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(b"TEXV0005\0");
+                bytes.extend_from_slice(b"TEXI0001\0");
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(b"TEXB0004\0");
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(&0_i32.to_le_bytes());
+                bytes.extend_from_slice(&4_i32.to_le_bytes());
+                bytes.extend_from_slice(&[1, 2, 3, 255]);
+                bytes
+            },
+        )
+        .expect("mask tex");
+        fs::write(&tex_metadata, br#"{"format":"rgba8888"}"#).expect("mask metadata");
+
+        let tex_image =
+            super::load_scene_texture_image(&tex_metadata).expect("tex-backed tex-json");
+        assert_eq!(tex_image.to_rgba8().get_pixel(0, 0).0, [1, 2, 3, 255]);
     }
 
     #[test]
