@@ -342,6 +342,93 @@ fragment float4 phase10_effect_fragment(
         texture_sampler,
         fract((primary_uv + signed_scroll) * repeat)
     );
+#elif PHASE10_EFFECT_LIGHTSHAFTS
+    float2 fx_coord = primary_uv;
+    float mask = 1.0;
+    float2 feather = max(abs(uniforms.user0.zw), float2(0.0001));
+    float ray_radius = clamp(uniforms.radius, 0.0, 1.0);
+    float ray_mode = 0.0;
+#if RAYMODE == 1
+    ray_mode = 1.0;
+#elif RAYMODE == 2
+    ray_mode = 2.0;
+#endif
+    if (ray_mode == 1.0) {
+        float2 delta = fx_coord - float2(0.5);
+        fx_coord.x = atan2(delta.y, delta.x) / 6.28318530718 + 0.5;
+        fx_coord.y = length(delta) * 2.0;
+        fx_coord.y = smoothstep(ray_radius, 1.0, fx_coord.y);
+        fx_coord.y = (fx_coord.y - 0.0001) * 1.00021;
+    } else if (ray_mode == 2.0) {
+        float2 delta = fx_coord;
+        fx_coord.x = atan2(delta.y, delta.x) / 6.28318530718 * 4.0;
+        fx_coord.y = max(delta.x, delta.y);
+        float noise_bias = 0.0;
+        if (has_aux_texture(uniforms.aux_texel_size)) {
+            noise_bias = aux_texture.sample(
+                texture_sampler,
+                float2(fx_coord.x * 0.054111 * max(uniforms.user1.z, 0.0001), 0.0)
+            ).r * uniforms.user1.y - (uniforms.user1.y * 0.5);
+        }
+        fx_coord.y += noise_bias;
+        fx_coord.y = smoothstep(ray_radius, 1.0, fx_coord.y);
+    }
+    mask *= smoothstep(0.50001, 0.5 - feather.x, abs(fx_coord.x - 0.5));
+    mask *= smoothstep(0.50001, 0.5 - feather.y, abs(fx_coord.y - 0.5));
+    float grad = 1.0 - fx_coord.y;
+    mask *= grad;
+    float2 shape_scale = max(abs(uniforms.user0.xy), float2(0.01));
+    float2 fx_coord2 = fx_coord;
+    fx_coord.xy *= float2(0.054111 * shape_scale.x, 0.003111 * shape_scale.y);
+    fx_coord2.xy *= float2(0.07333 * shape_scale.x, 0.005967111 * shape_scale.y);
+    fx_coord.xy += uniforms.time * uniforms.speed * float2(0.003, 0.000375111);
+    fx_coord2.xy -= uniforms.time * uniforms.speed * float2(0.0047111, 0.0007399);
+    float fx0 = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fx_coord).r
+        : 1.0;
+    float fx1 = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fx_coord2).r
+        : 1.0;
+    float fx = pow(max(fx0 * fx1, 0.0), max(uniforms.user1.w, 0.0001));
+    float smoothness = clamp(uniforms.user1.x, 0.1, 1.0);
+    fx = smoothstep((1.0 - smoothness) * 0.29999, 0.3 + smoothness * 0.7, fx);
+    float3 fx_color = uniforms.color.rgb * uniforms.intensity;
+#if RENDERING == 1
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        fx_color = aux2_texture.sample(texture_sampler, float2(clamp(fx_coord.y, 0.0, 1.0), 0.0)).rgb
+            * uniforms.intensity;
+    }
+#endif
+    fx *= mask;
+    sampled.rgb = apply_tint_blend(sampled.rgb, fx_color, fx);
+    sampled.a = max(sampled.a, fx);
+#if WRITEALPHA
+    sampled.a = fx;
+#endif
+#elif PHASE10_EFFECT_FOLIAGESWAY
+    float mask = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        mask *= aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float2 offset = float2(0.0);
+    if (mask > 0.0) {
+        float noise = has_aux_texture(uniforms.aux2_texel_size)
+            ? aux2_texture.sample(texture_sampler, stage_vertex.slot2_uv).g
+            : primary_uv.y;
+        float phase = uniforms.user0.x;
+        float wave = sin((noise * 6.28318530718 + primary_uv.x * 10.0 + primary_uv.y * 5.0) * max(phase, 0.01)
+            + uniforms.speed * uniforms.time);
+        float signed_wave = sign(wave) * pow(abs(wave), max(uniforms.user0.y, 0.01));
+        float amplitude = clamp(uniforms.intensity, 0.0, 2.0) * 0.05 * mask;
+        offset.x = signed_wave * amplitude * (primary_uv.y - 0.5);
+        offset.y = signed_wave * amplitude * 0.25 * (0.5 - abs(primary_uv.x - 0.5));
+    }
+    sampled = sample_displaced_input(input_texture, texture_sampler, primary_uv, offset);
+#elif PHASE10_EFFECT_CIRCLE
+    float2 center_delta = primary_uv - float2(0.5, 0.5);
+    sampled.a *= smoothstep(0.5, 0.49, length(center_delta));
 #endif
 
     sampled *= stage_vertex.color;

@@ -32,6 +32,9 @@ pub enum SceneCompatEffectKind {
     WaterWaves,
     Tint,
     Scroll,
+    LightShafts,
+    FoliageSway,
+    Circle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +45,7 @@ pub enum ScenePhase10bBindingSemantic {
     TimeOffset,
     OpacityMask,
     NormalMap,
+    GradientTexture,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +187,55 @@ const SCROLL_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] =
         required: true,
     }];
 
+const LIGHTSHAFTS_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::NoiseTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::GradientTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: false,
+    },
+];
+
+const FOLIAGESWAY_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::NoiseTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: false,
+    },
+];
+
+const CIRCLE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[ScenePhase10bTextureSlotContract {
+    slot: 0,
+    semantic: ScenePhase10bBindingSemantic::PreviousInput,
+    uv_space: ScenePhase10bUvSpace::PrimaryInput,
+    required: true,
+}];
+
 const PULSE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Pulse,
     family: "pulse",
@@ -275,6 +328,58 @@ const SCROLL_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract
     supported_combo_defaults: &[],
     supported_uniforms: &["repeat", "speedx", "speedy"],
     runtime_binding_layout: SCROLL_TEXTURE_SLOTS,
+};
+
+const LIGHTSHAFTS_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::LightShafts,
+    family: "lightshafts",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[
+        ("BLENDMODE", 31),
+        ("DIRECTDRAW", 0),
+        ("RAYMODE", 0),
+        ("RENDERING", 0),
+        ("WRITEALPHA", 0),
+    ],
+    supported_uniforms: &[
+        "colorastart",
+        "colorend",
+        "colorwexponent",
+        "colorwintensity",
+        "noiseamount",
+        "noisescale",
+        "point0",
+        "point1",
+        "point2",
+        "point3",
+        "rayfeather",
+        "rayradius",
+        "rayscale",
+        "raysmoothness",
+        "rayspeed",
+    ],
+    runtime_binding_layout: LIGHTSHAFTS_TEXTURE_SLOTS,
+};
+
+const FOLIAGESWAY_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::FoliageSway,
+    family: "foliagesway",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[("MASK", 0), ("MODE", 0)],
+    supported_uniforms: &["phase", "power", "speed", "strength"],
+    runtime_binding_layout: FOLIAGESWAY_TEXTURE_SLOTS,
+};
+
+const CIRCLE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Circle,
+    family: "circle",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0],
+    supported_combo_defaults: &[],
+    supported_uniforms: &[],
+    runtime_binding_layout: CIRCLE_TEXTURE_SLOTS,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1059,6 +1164,9 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "waterwaves" => Some(&WATERWAVES_CONTRACT),
         "tint" => Some(&TINT_CONTRACT),
         "scroll" => Some(&SCROLL_CONTRACT),
+        "lightshafts" => Some(&LIGHTSHAFTS_CONTRACT),
+        "foliagesway" => Some(&FOLIAGESWAY_CONTRACT),
+        "circle" => Some(&CIRCLE_CONTRACT),
         _ => None,
     }
 }
@@ -1073,6 +1181,9 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::WaterWaves => Some(&WATERWAVES_CONTRACT),
         SceneCompatEffectKind::Tint => Some(&TINT_CONTRACT),
         SceneCompatEffectKind::Scroll => Some(&SCROLL_CONTRACT),
+        SceneCompatEffectKind::LightShafts => Some(&LIGHTSHAFTS_CONTRACT),
+        SceneCompatEffectKind::FoliageSway => Some(&FOLIAGESWAY_CONTRACT),
+        SceneCompatEffectKind::Circle => Some(&CIRCLE_CONTRACT),
     }
 }
 
@@ -1155,6 +1266,15 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::Scroll => {
             defines.insert("PHASE10_EFFECT_SCROLL".to_string(), 1);
+        }
+        SceneCompatEffectKind::LightShafts => {
+            defines.insert("PHASE10_EFFECT_LIGHTSHAFTS".to_string(), 1);
+        }
+        SceneCompatEffectKind::FoliageSway => {
+            defines.insert("PHASE10_EFFECT_FOLIAGESWAY".to_string(), 1);
+        }
+        SceneCompatEffectKind::Circle => {
+            defines.insert("PHASE10_EFFECT_CIRCLE".to_string(), 1);
         }
     }
     if let Some(contract) = phase10b_effect_contract_for_kind(kind) {
@@ -1830,6 +1950,54 @@ mod tests {
     }
 
     #[test]
+    fn batch1_authored_effect_shader_pairs_map_to_phase_10b_compat_program() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let builtin = temp.path().join("builtin");
+        let external = temp.path().join("external-assets");
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            "fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        let resolver = SceneResourceResolver::for_managed_root_with_asset_roots(
+            &managed,
+            &builtin,
+            Some(external.clone()),
+        );
+
+        for (family, expected) in [
+            ("lightshafts", SceneCompatEffectKind::LightShafts),
+            ("foliagesway", SceneCompatEffectKind::FoliageSway),
+            ("circle", SceneCompatEffectKind::Circle),
+        ] {
+            write(
+                &external.join(format!("effects/{family}/materials/effects/{family}.json")),
+                format!(r#"{{"passes":[{{"shader":"effects/{family}"}}]}}"#).as_str(),
+            );
+            write(
+                &external.join(format!("effects/{family}/shaders/effects/{family}.vert")),
+                "void main() {}",
+            );
+            write(
+                &external.join(format!("effects/{family}/shaders/effects/{family}.frag")),
+                "void main() {}",
+            );
+
+            let plan = load_scene_material_plan_with_effect_package_root(
+                &resolver,
+                &format!("materials/effects/{family}.json"),
+                &external.join(format!("effects/{family}")),
+            )
+            .expect("batch1 compat effect material");
+
+            assert_eq!(
+                plan.passes[0].program.kind,
+                SceneShaderProgramKind::EffectCompat(expected)
+            );
+        }
+    }
+
+    #[test]
     fn material_plan_preserves_sparse_authored_texture_slot_ordinals() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -1872,6 +2040,9 @@ mod tests {
             (SceneCompatEffectKind::WaterWaves, vec![0, 1, 2]),
             (SceneCompatEffectKind::Tint, vec![0, 1]),
             (SceneCompatEffectKind::Scroll, vec![0]),
+            (SceneCompatEffectKind::LightShafts, vec![0, 1, 2]),
+            (SceneCompatEffectKind::FoliageSway, vec![0, 1, 2]),
+            (SceneCompatEffectKind::Circle, vec![0]),
         ];
 
         for (kind, supported_slots) in families {
@@ -1926,6 +2097,24 @@ mod tests {
                 super::ScenePhase10bUvSpace::MaskTexture,
             ]
         );
+
+        let lightshafts =
+            super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::LightShafts)
+                .expect("lightshafts contract");
+        assert!(lightshafts.supported_uniforms.contains(&"point0"));
+        assert!(lightshafts.supported_uniforms.contains(&"rayspeed"));
+        assert!(lightshafts.supported_combo_defaults.contains(&("RAYMODE", 0)));
+
+        let foliage =
+            super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::FoliageSway)
+                .expect("foliage contract");
+        assert!(foliage.supported_uniforms.contains(&"strength"));
+        assert!(foliage.supported_combo_defaults.contains(&("MODE", 0)));
+
+        let circle = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Circle)
+            .expect("circle contract");
+        assert_eq!(circle.supported_texture_slots, &[0]);
+        assert!(circle.supported_uniforms.is_empty());
     }
 
     #[test]

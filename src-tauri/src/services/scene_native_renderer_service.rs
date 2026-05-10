@@ -3629,6 +3629,64 @@ impl NativeSceneMetalRenderer {
                 uniforms.user0[2] = repeat[0];
                 uniforms.user0[3] = repeat[1];
             }
+            Some(SceneCompatEffectKind::LightShafts) => {
+                uniforms.intensity = phase10_uniform_float(
+                    &uniform_values,
+                    &["colorwintensity", "intensity"],
+                    1.0,
+                );
+                uniforms.speed =
+                    phase10_uniform_float(&uniform_values, &["rayspeed", "speed"], 0.2);
+                uniforms.radius =
+                    phase10_uniform_float(&uniform_values, &["rayradius", "radius"], 0.5);
+                uniforms.user0 =
+                    phase10_uniform_vec4(&uniform_values, &["rayscale", "scale"], [0.5, 0.1, 0.0, 0.0]);
+                let feather =
+                    phase10_uniform_vec2(&uniform_values, &["rayfeather", "feather"], [0.05, 0.2]);
+                uniforms.user0[2] = feather[0];
+                uniforms.user0[3] = feather[1];
+                uniforms.user1[0] = phase10_uniform_float(
+                    &uniform_values,
+                    &["raysmoothness", "smoothness"],
+                    0.75,
+                );
+                uniforms.user1[1] = phase10_uniform_float(
+                    &uniform_values,
+                    &["noiseamount", "noise"],
+                    0.33,
+                );
+                uniforms.user1[2] = phase10_uniform_float(
+                    &uniform_values,
+                    &["noisescale"],
+                    1.0,
+                );
+                uniforms.user1[3] = phase10_uniform_float(
+                    &uniform_values,
+                    &["colorwexponent", "exponent"],
+                    0.5,
+                );
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["colorastart", "colorstart"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+            }
+            Some(SceneCompatEffectKind::FoliageSway) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["strength"], 33.34) / 100.0;
+                uniforms.speed =
+                    phase10_uniform_float(&uniform_values, &["speed"], 3.0);
+                uniforms.user0[0] =
+                    phase10_uniform_float(&uniform_values, &["phase"], 0.0);
+                uniforms.user0[1] =
+                    phase10_uniform_float(&uniform_values, &["power"], 1.0);
+                uniforms.user0[2] = phase10_uniform_float(
+                    &uniform_values,
+                    &["mode"],
+                    0.0,
+                );
+            }
+            Some(SceneCompatEffectKind::Circle) => {}
             _ => {}
         }
 
@@ -4766,6 +4824,32 @@ fn phase10_uniform_color(
         }
         if let Some(color) = value.as_float3() {
             return [color[0], color[1], color[2], 1.0];
+        }
+    }
+    default
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_uniform_vec4(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+    aliases: &[&str],
+    default: [f32; 4],
+) -> [f32; 4] {
+    for alias in aliases {
+        let Some(value) = values.get(*alias) else {
+            continue;
+        };
+        if let Some(vector) = value.as_float4() {
+            return vector;
+        }
+        if let Some(vector) = value.as_float3() {
+            return [vector[0], vector[1], vector[2], default[3]];
+        }
+        if let Some(vector) = value.as_float2() {
+            return [vector[0], vector[1], default[2], default[3]];
+        }
+        if let Some(number) = value.as_float() {
+            return [number, number, default[2], default[3]];
         }
     }
     default

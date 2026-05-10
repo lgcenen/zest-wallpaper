@@ -1405,6 +1405,19 @@ fn phase10b_combo_value_supported(
             _ => false,
         },
         "scroll" => false,
+        "lightshafts" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
+            "directdraw" => matches!(combo_value, 0 | 1),
+            "raymode" => matches!(combo_value, 0 | 1 | 2),
+            "rendering" => matches!(combo_value, 0 | 1),
+            "writealpha" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "foliagesway" => match normalized.as_str() {
+            "mask" | "mode" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "circle" => false,
         _ => false,
     }
 }
@@ -1422,6 +1435,8 @@ fn phase10b_combo_required_texture_slot(
         "waterwaves" if normalized == "mask" => Some(1),
         "waterwaves" if normalized == "timeoffset" => Some(2),
         "tint" if normalized == "mask" => Some(1),
+        "lightshafts" if normalized == "rendering" => Some(2),
+        "foliagesway" if normalized == "mask" => Some(1),
         _ => None,
     }
 }
@@ -1448,6 +1463,9 @@ fn binding_name_matches_semantic(
                 || normalized.contains("base")
         }
         ScenePhase10bBindingSemantic::NoiseTexture => normalized.contains("noise"),
+        ScenePhase10bBindingSemantic::GradientTexture => {
+            normalized.contains("gradient") || normalized.contains("color") || normalized.contains("map")
+        }
         ScenePhase10bBindingSemantic::FlowMap => {
             normalized.contains("flow") || normalized.contains("direction")
         }
@@ -2425,6 +2443,134 @@ mod tests {
         assert_eq!(report.graph.visuals.len(), 1);
         assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
         assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+    }
+
+    #[test]
+    fn phase10_graph_supports_batch1_authored_effect_shader_families() {
+        for family in ["lightshafts", "foliagesway", "circle"] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &extracted.join("scene.json"),
+                (if family == "lightshafts" {
+                    format!(
+                        r#"{{
+                          "objects":[
+                            {{
+                              "id":191,
+                              "name":"{family}",
+                              "image":"models/util/solidlayer.json",
+                              "origin":"960 540 0",
+                              "size":"256 256",
+                              "effects":[
+                                {{
+                                  "file":"effects/{family}/effect.json",
+                                  "visible":true,
+                                  "passes":[
+                                    {{
+                                      "combos":{{"DIRECTDRAW":1,"RAYMODE":1,"RENDERING":1}},
+                                      "constantshadervalues":{{
+                                        "rayspeed":0.39,
+                                        "rayscale":"0.66 1.01",
+                                        "rayfeather":"0.01 0.07",
+                                        "rayradius":0.14,
+                                        "raysmoothness":0.6,
+                                        "noiseamount":0.33,
+                                        "noisescale":1.17,
+                                        "colorwintensity":2.0,
+                                        "colorwexponent":1.12,
+                                        "colorastart":"1 1 1",
+                                        "colorend":"0.43529411764705883 0.8862745098039215 1",
+                                        "point0":"0.75 0.25",
+                                        "point1":"0.75 0.75",
+                                        "point2":"0.25 0.75",
+                                        "point3":"0.25 0.25"
+                                      }}
+                                    }}
+                                  ]
+                                }}
+                              ]
+                            }}
+                          ]
+                        }}"#
+                    )
+                } else {
+                    format!(
+                        r#"{{
+                          "objects":[
+                            {{
+                              "id":191,
+                              "name":"{family}",
+                              "image":"models/util/solidlayer.json",
+                              "origin":"960 540 0",
+                              "size":"256 256",
+                              "effects":[{{"file":"effects/{family}/effect.json","visible":true}}]
+                            }}
+                          ]
+                        }}"#
+                    )
+                })
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                format!(r#"{{"passes":[{{"shader":"effects/{family}"}}]}}"#).as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{family}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{family}.frag")),
+                b"void main() {}",
+            );
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            assert!(!report.is_blocked(), "{family} should remain drawable");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .all(|issue| issue.diagnostic_code != Some("effect-unsupported")),
+                "{family} should not fall back to unsupported compat"
+            );
+            assert_eq!(report.graph.visuals.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+        }
     }
 
     #[test]
