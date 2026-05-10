@@ -3717,7 +3717,10 @@ impl NativeSceneMetalRenderer {
             }
             Some(SceneCompatEffectKind::Transform) => {}
             Some(SceneCompatEffectKind::Skew) => {}
-            Some(SceneCompatEffectKind::Perspective) => {}
+            Some(SceneCompatEffectKind::Perspective) => {
+                (uniforms.user0, uniforms.user1) =
+                    phase10_perspective_corner_uniforms(&uniform_values);
+            }
             Some(SceneCompatEffectKind::Spin) => {
                 uniforms.user0 =
                     phase10_uniform_vec4(&uniform_values, &["center", "spincenter"], [0.5, 0.5, 0.1, 0.002]);
@@ -5403,6 +5406,20 @@ fn phase10_uniform_vec4(
         }
     }
     default
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_perspective_corner_uniforms(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+) -> ([f32; 4], [f32; 4]) {
+    let point0 = phase10_uniform_vec2(values, &["point0"], [0.0, 0.0]);
+    let point1 = phase10_uniform_vec2(values, &["point1"], [1.0, 0.0]);
+    let point2 = phase10_uniform_vec2(values, &["point2"], [1.0, 1.0]);
+    let point3 = phase10_uniform_vec2(values, &["point3"], [0.0, 1.0]);
+    (
+        [point0[0], point0[1], point1[0], point1[1]],
+        [point2[0], point2[1], point3[0], point3[1]],
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -7371,7 +7388,8 @@ mod tests {
     use crate::services::scene_render_planner_service::SceneTextVerticalAlign;
     use crate::services::scene_shader_material_service::{
         SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
-        SceneResolvedMaterialPlan, SceneShaderProgram, SceneShaderProgramKind,
+        SceneMaterialUniformValue, SceneResolvedMaterialPlan, SceneShaderProgram,
+        SceneShaderProgramKind,
     };
     use crate::services::scene_video_texture_service::{
         self, SceneVideoTextureLifecycleAction, SceneVideoTextureSourceSpec,
@@ -9488,6 +9506,50 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn phase10_perspective_shader_defines_forward_repeat_combo_to_variant() {
+        let default_pass =
+            compat_effect_pass(SceneCompatEffectKind::Perspective, vec![], BTreeMap::new());
+        let runtime = super::ScenePhase10EffectPassNode {
+            index: 0,
+            bindings: vec![],
+            target_name: None,
+            copy_background: false,
+            input_bindings: vec![ScenePhase10InputBinding {
+                slot: 0,
+                source: super::ScenePhase10InputSource::LocalCurrentVisual,
+            }],
+            constants: BTreeMap::new(),
+            texture_overrides: vec![],
+            material_passes: vec![],
+        };
+        let default_resolved = super::Phase10ResolvedPass {
+            pass: &default_pass,
+            context: super::Phase10PassContext::Effect(&runtime),
+        };
+
+        assert_eq!(
+            super::phase10_pass_shader_defines(&default_resolved).get("REPEAT"),
+            Some(&0)
+        );
+
+        let repeat_pass = compat_effect_pass(
+            SceneCompatEffectKind::Perspective,
+            vec![],
+            BTreeMap::from([("REPEAT".to_string(), 1)]),
+        );
+        let repeat_resolved = super::Phase10ResolvedPass {
+            pass: &repeat_pass,
+            context: super::Phase10PassContext::Effect(&runtime),
+        };
+
+        assert_eq!(
+            super::phase10_pass_shader_defines(&repeat_resolved).get("REPEAT"),
+            Some(&1)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn phase10_pulse_shader_consumes_noise_and_mask_in_slot_local_uv_space() {
         let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
@@ -9609,6 +9671,100 @@ mod tests {
         assert!(shader.contains("fract((primary_uv + signed_scroll) * repeat)"));
         assert!(shader
             .contains("sign(scroll_speed) * pow(abs(scroll_speed), float2(2.0)) * uniforms.time"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_perspective_uniforms_pack_corner_controls_into_effect_uniforms() {
+        let (user0, user1) = super::phase10_perspective_corner_uniforms(&BTreeMap::from([
+            (
+                "point0".to_string(),
+                SceneMaterialUniformValue::Float2([0.1f32.to_bits(), 0.2f32.to_bits()]),
+            ),
+            (
+                "point1".to_string(),
+                SceneMaterialUniformValue::Float2([0.9f32.to_bits(), 0.15f32.to_bits()]),
+            ),
+            (
+                "point2".to_string(),
+                SceneMaterialUniformValue::Float2([0.85f32.to_bits(), 0.95f32.to_bits()]),
+            ),
+            (
+                "point3".to_string(),
+                SceneMaterialUniformValue::Float2([0.05f32.to_bits(), 0.9f32.to_bits()]),
+            ),
+        ]));
+
+        assert_eq!(user0, [0.1, 0.2, 0.9, 0.15]);
+        assert_eq!(user1, [0.85, 0.95, 0.05, 0.9]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_perspective_uniforms_default_to_unit_quad_when_corners_missing() {
+        let (user0, user1) = super::phase10_perspective_corner_uniforms(&BTreeMap::new());
+
+        assert_eq!(user0, [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(user1, [1.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_perspective_shader_uses_corner_mapping_instead_of_raw_primary_uv() {
+        let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
+        let shader = fs::read_to_string(shader_path).expect("effect compat shader");
+
+        assert!(shader.contains("static float2 inverse_bilinear_uv("));
+        assert!(shader.contains("float2 p0 = uniforms.user0.xy;"));
+        assert!(shader.contains("float2 p3 = uniforms.user1.zw;"));
+        assert!(shader.contains(
+            "float2 perspective_uv = inverse_bilinear_uv(primary_uv, p0, p1, p2, p3);"
+        ));
+        assert!(shader.contains("if (!uv_inside_unit(perspective_uv))"));
+        assert!(!shader.contains(
+            "#elif PHASE10_EFFECT_PERSPECTIVE\n    float mask = step(0.0, stage_vertex.position.w);\n    float2 perspective_uv = primary_uv;"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_perspective_shader_compiles_to_pipeline_state() {
+        use crate::services::scene_shader_material_service::{
+            SceneShaderProgram, SceneShaderProgramKind,
+        };
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let program = SceneShaderProgram {
+            key: "test:perspective".to_string(),
+            kind: SceneShaderProgramKind::EffectCompat(SceneCompatEffectKind::Perspective),
+            metal_source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal"),
+            vertex_entry: "phase10_effect_vertex",
+            fragment_entry: "phase10_effect_fragment",
+            variant_defines: BTreeMap::from([("PHASE10_EFFECT_PERSPECTIVE".to_string(), 1)]),
+        };
+
+        let repeat0 = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::from([
+                ("PHASE10_EFFECT_PERSPECTIVE".to_string(), 1),
+                ("REPEAT".to_string(), 0),
+            ]),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("perspective repeat=0 compile");
+        let repeat1 = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::from([
+                ("PHASE10_EFFECT_PERSPECTIVE".to_string(), 1),
+                ("REPEAT".to_string(), 1),
+            ]),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("perspective repeat=1 compile");
+        let _ = (repeat0, repeat1);
     }
 
     #[cfg(target_os = "macos")]

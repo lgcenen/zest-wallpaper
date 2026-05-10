@@ -139,6 +139,40 @@ static float4 sample_input(
     return input_texture.sample(texture_sampler, clamp(uv, float2(0.0), float2(1.0)));
 }
 
+static float2 inverse_bilinear_uv(
+    float2 point,
+    float2 p0,
+    float2 p1,
+    float2 p2,
+    float2 p3
+) {
+    float2 uv = point;
+    for (int iteration = 0; iteration < 8; iteration++) {
+        float2 a = mix(p0, p1, uv.x);
+        float2 b = mix(p3, p2, uv.x);
+        float2 mapped = mix(a, b, uv.y);
+        float2 error = mapped - point;
+        if (length_squared(error) < 1e-10) {
+            break;
+        }
+
+        float2 d_du = mix(p1 - p0, p2 - p3, uv.y);
+        float2 d_dv = mix(p3 - p0, p2 - p1, uv.x);
+        float determinant = d_du.x * d_dv.y - d_du.y * d_dv.x;
+        if (fabs(determinant) < 1e-8) {
+            return point;
+        }
+
+        float2 delta = float2(
+            (error.x * d_dv.y - error.y * d_dv.x) / determinant,
+            (-error.x * d_du.y + error.y * d_du.x) / determinant
+        );
+        uv -= delta;
+        uv = clamp(uv, float2(-2.0), float2(3.0));
+    }
+    return uv;
+}
+
 static bool uv_inside_unit(float2 uv) {
     return all(uv >= float2(0.0)) && all(uv <= float2(1.0));
 }
@@ -482,12 +516,17 @@ fragment float4 phase10_effect_fragment(
     sampled = sample_input(input_texture, texture_sampler, skew_uv);
 #elif PHASE10_EFFECT_PERSPECTIVE
     float mask = step(0.0, stage_vertex.position.w);
-    float2 perspective_uv = primary_uv;
+    float2 p0 = uniforms.user0.xy;
+    float2 p1 = uniforms.user0.zw;
+    float2 p2 = uniforms.user1.xy;
+    float2 p3 = uniforms.user1.zw;
+    float2 perspective_uv = inverse_bilinear_uv(primary_uv, p0, p1, p2, p3);
 #if REPEAT
     perspective_uv = fract(perspective_uv);
 #else
-    mask *= step(abs(perspective_uv.x - 0.5), 0.5);
-    mask *= step(abs(perspective_uv.y - 0.5), 0.5);
+    if (!uv_inside_unit(perspective_uv)) {
+        mask = 0.0;
+    }
 #endif
     sampled = sample_input(input_texture, texture_sampler, perspective_uv);
     sampled.a *= mask;
