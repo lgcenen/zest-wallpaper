@@ -2323,6 +2323,7 @@ impl NativeSceneMetalRenderer {
                         &encoder,
                         white_texture.as_ref(),
                         &projection,
+                        plan.canvas_height,
                         item,
                         now_ms_f64,
                     );
@@ -4276,6 +4277,7 @@ impl NativeSceneMetalRenderer {
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
         white_texture: &ProtocolObject<dyn MTLTexture>,
         projection: &SceneProjection,
+        canvas_height: f64,
         item: &SceneRenderRopeParticleItem,
         now_ms: f64,
     ) {
@@ -4296,7 +4298,7 @@ impl NativeSceneMetalRenderer {
                     .unwrap_or(white_texture),
                 item.blend_mode,
                 projection,
-                quad_primitive_from_rope_particle(segment),
+                quad_primitive_from_rope_particle(segment, canvas_height),
             );
         }
     }
@@ -6387,7 +6389,10 @@ fn quad_primitive_from_particle(primitive: SceneParticlePrimitive) -> SceneQuadP
 }
 
 #[cfg(target_os = "macos")]
-fn quad_primitive_from_rope_particle(primitive: SceneRopeParticlePrimitive) -> SceneQuadPrimitive {
+fn quad_primitive_from_rope_particle(
+    primitive: SceneRopeParticlePrimitive,
+    canvas_height: f64,
+) -> SceneQuadPrimitive {
     let dx = primitive.end[0] - primitive.start[0];
     let dy = primitive.end[1] - primitive.start[1];
     let length = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -6401,7 +6406,7 @@ fn quad_primitive_from_rope_particle(primitive: SceneRopeParticlePrimitive) -> S
     ];
     SceneQuadPrimitive {
         left: center_x - length / 2.0,
-        top: center_y - primitive.width / 2.0,
+        top: canvas_height - center_y - primitive.width / 2.0,
         width: length,
         height: primitive.width.max(1.0),
         rotation: -dy.atan2(dx),
@@ -7761,7 +7766,7 @@ mod tests {
             },
             uv_offset: [0.25, -0.1],
         };
-        let quad = quad_primitive_from_rope_particle(primitive);
+        let quad = quad_primitive_from_rope_particle(primitive, 100.0);
 
         assert!(
             quad.width > 60.0,
@@ -7770,6 +7775,7 @@ mod tests {
         assert!((quad.height - 6.0).abs() < 0.001);
         assert!((quad.transform_origin_x - 40.0).abs() < 0.001);
         assert!((quad.transform_origin_y - 35.0).abs() < 0.001);
+        assert!((quad.top - 62.0).abs() < 0.001);
         assert!(
             quad.rotation.abs() > 0.1,
             "rope quad should rotate with segment direction"
