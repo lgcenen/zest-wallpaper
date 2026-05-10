@@ -48,6 +48,12 @@ pub enum SceneCompatEffectKind {
     Clouds,
     WaterFlow,
     Nitro,
+    Reflection,
+    Shimmer,
+    FilmGrain,
+    Vhs,
+    BlendGradient,
+    XRay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +65,7 @@ pub enum ScenePhase10bBindingSemantic {
     OpacityMask,
     NormalMap,
     GradientTexture,
+    SpriteTexture,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,6 +347,87 @@ const WATERFLOW_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
         semantic: ScenePhase10bBindingSemantic::TimeOffset,
         uv_space: ScenePhase10bUvSpace::AuxTexture,
         required: true,
+    },
+];
+
+const FOUR_SLOT_BLEND_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::GradientTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::TimeOffset,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 3,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+];
+
+const SHIMMER_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::TimeOffset,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: false,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 3,
+        semantic: ScenePhase10bBindingSemantic::GradientTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+];
+
+const XRAY_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::GradientTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::SpriteTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 3,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
     },
 ];
 
@@ -650,6 +738,107 @@ const NITRO_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract 
     supported_combo_defaults: &[("BLENDMODE", 22), ("MASK", 0), ("WRITEALPHA", 0)],
     supported_uniforms: &["bounds", "colorend", "colorstart", "multiply", "smoothness"],
     runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
+};
+
+const REFLECTION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Reflection,
+    family: "reflection",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1],
+    supported_combo_defaults: &[("BLENDMODE", 9), ("MASK", 0), ("PERSPECTIVE", 0)],
+    supported_uniforms: &["alpha"],
+    runtime_binding_layout: OPACITY_TEXTURE_SLOTS,
+};
+
+const SHIMMER_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Shimmer,
+    family: "shimmer",
+    required_texture_slots: &[0, 3],
+    supported_texture_slots: &[0, 1, 2, 3],
+    supported_combo_defaults: &[("BLENDMODE", 32), ("MASK", 0), ("MODE", 0), ("OFFSET", 0)],
+    supported_uniforms: &[
+        "uieditorpropertiesamount",
+        "uieditorpropertiesbrightness",
+        "uieditorpropertiescolor",
+        "uieditorpropertiesdelay",
+        "uieditorpropertiesdirection",
+        "uieditorpropertiesgranularity",
+        "uieditorpropertiesoffset",
+        "uieditorpropertiesspeed",
+        "uieditorpropertiestimescale",
+        "uieditorpropertieswidth",
+    ],
+    runtime_binding_layout: SHIMMER_TEXTURE_SLOTS,
+};
+
+const FILMGRAIN_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::FilmGrain,
+    family: "filmgrain",
+    required_texture_slots: &[0, 1],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[("BLENDMODE", 12), ("GREYSCALE", 1), ("MASK", 0)],
+    supported_uniforms: &[
+        "exponent",
+        "strength",
+        "uieditorpropertiespower",
+        "uieditorpropertiesstrength",
+    ],
+    runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
+};
+
+const VHS_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Vhs,
+    family: "vhs",
+    required_texture_slots: &[0, 1],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[
+        ("BLENDMODE", 12),
+        ("GREYSCALE", 0),
+        ("INVERTARTIFACTS", 1),
+        ("MASK", 0),
+    ],
+    supported_uniforms: &[
+        "artifacts",
+        "chromatic",
+        "distortionspeed",
+        "distortionstrength",
+        "distortionwidth",
+        "scale",
+        "strength",
+        "tracking",
+    ],
+    runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
+};
+
+const BLENDGRADIENT_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::BlendGradient,
+    family: "blendgradient",
+    required_texture_slots: &[0, 1, 2],
+    supported_texture_slots: &[0, 1, 2, 3],
+    supported_combo_defaults: &[
+        ("BLENDMODE", 0),
+        ("EDGEGLOW", 0),
+        ("OPACITYMASK", 0),
+        ("TRANSFORMREPEAT", 0),
+        ("TRANSFORMUV", 0),
+        ("WRITEALPHA", 0),
+    ],
+    supported_uniforms: &["alpha", "edgebrightness", "edgecolor", "gradientscale", "multiply"],
+    runtime_binding_layout: FOUR_SLOT_BLEND_TEXTURE_SLOTS,
+};
+
+const XRAY_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::XRay,
+    family: "xray",
+    required_texture_slots: &[0, 1, 2],
+    supported_texture_slots: &[0, 1, 2, 3],
+    supported_combo_defaults: &[("BLENDMODE", 0), ("OPACITYMASK", 0)],
+    supported_uniforms: &[
+        "multiply",
+        "uieditorpropertiesmultiply",
+        "uieditorparticleelementexponent",
+    ],
+    runtime_binding_layout: XRAY_TEXTURE_SLOTS,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1450,6 +1639,12 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "clouds" => Some(&CLOUDS_CONTRACT),
         "waterflow" => Some(&WATERFLOW_CONTRACT),
         "nitro" => Some(&NITRO_CONTRACT),
+        "reflection" => Some(&REFLECTION_CONTRACT),
+        "shimmer" => Some(&SHIMMER_CONTRACT),
+        "filmgrain" => Some(&FILMGRAIN_CONTRACT),
+        "vhs" => Some(&VHS_CONTRACT),
+        "blendgradient" => Some(&BLENDGRADIENT_CONTRACT),
+        "xray" => Some(&XRAY_CONTRACT),
         _ => None,
     }
 }
@@ -1480,6 +1675,12 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::Clouds => Some(&CLOUDS_CONTRACT),
         SceneCompatEffectKind::WaterFlow => Some(&WATERFLOW_CONTRACT),
         SceneCompatEffectKind::Nitro => Some(&NITRO_CONTRACT),
+        SceneCompatEffectKind::Reflection => Some(&REFLECTION_CONTRACT),
+        SceneCompatEffectKind::Shimmer => Some(&SHIMMER_CONTRACT),
+        SceneCompatEffectKind::FilmGrain => Some(&FILMGRAIN_CONTRACT),
+        SceneCompatEffectKind::Vhs => Some(&VHS_CONTRACT),
+        SceneCompatEffectKind::BlendGradient => Some(&BLENDGRADIENT_CONTRACT),
+        SceneCompatEffectKind::XRay => Some(&XRAY_CONTRACT),
     }
 }
 
@@ -1610,6 +1811,24 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::Nitro => {
             defines.insert("PHASE10_EFFECT_NITRO".to_string(), 1);
+        }
+        SceneCompatEffectKind::Reflection => {
+            defines.insert("PHASE10_EFFECT_REFLECTION".to_string(), 1);
+        }
+        SceneCompatEffectKind::Shimmer => {
+            defines.insert("PHASE10_EFFECT_SHIMMER".to_string(), 1);
+        }
+        SceneCompatEffectKind::FilmGrain => {
+            defines.insert("PHASE10_EFFECT_FILMGRAIN".to_string(), 1);
+        }
+        SceneCompatEffectKind::Vhs => {
+            defines.insert("PHASE10_EFFECT_VHS".to_string(), 1);
+        }
+        SceneCompatEffectKind::BlendGradient => {
+            defines.insert("PHASE10_EFFECT_BLENDGRADIENT".to_string(), 1);
+        }
+        SceneCompatEffectKind::XRay => {
+            defines.insert("PHASE10_EFFECT_XRAY".to_string(), 1);
         }
     }
     if let Some(contract) = phase10b_effect_contract_for_kind(kind) {
@@ -2549,6 +2768,12 @@ mod tests {
             (SceneCompatEffectKind::Clouds, vec![0, 1, 2]),
             (SceneCompatEffectKind::WaterFlow, vec![0, 1, 2]),
             (SceneCompatEffectKind::Nitro, vec![0, 1, 2]),
+            (SceneCompatEffectKind::Reflection, vec![0, 1]),
+            (SceneCompatEffectKind::Shimmer, vec![0, 1, 2, 3]),
+            (SceneCompatEffectKind::FilmGrain, vec![0, 1, 2]),
+            (SceneCompatEffectKind::Vhs, vec![0, 1, 2]),
+            (SceneCompatEffectKind::BlendGradient, vec![0, 1, 2, 3]),
+            (SceneCompatEffectKind::XRay, vec![0, 1, 2, 3]),
         ];
 
         for (kind, supported_slots) in families {
@@ -2701,6 +2926,74 @@ mod tests {
             .expect("nitro contract");
         assert!(nitro.supported_combo_defaults.contains(&("BLENDMODE", 22)));
         assert!(nitro.supported_uniforms.contains(&"multiply"));
+
+        let reflection = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Reflection)
+            .expect("reflection contract");
+        assert!(reflection.supported_combo_defaults.contains(&("PERSPECTIVE", 0)));
+        assert!(reflection.supported_uniforms.contains(&"alpha"));
+
+        let shimmer = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Shimmer)
+            .expect("shimmer contract");
+        assert!(shimmer.supported_combo_defaults.contains(&("MODE", 0)));
+        assert!(shimmer.supported_combo_defaults.contains(&("OFFSET", 0)));
+        assert!(shimmer
+            .supported_uniforms
+            .contains(&"uieditorpropertiesbrightness"));
+        assert_eq!(
+            shimmer
+                .runtime_binding_layout
+                .iter()
+                .map(|slot| slot.uv_space)
+                .collect::<Vec<_>>(),
+            vec![
+                super::ScenePhase10bUvSpace::PrimaryInput,
+                super::ScenePhase10bUvSpace::MaskTexture,
+                super::ScenePhase10bUvSpace::AuxTexture,
+                super::ScenePhase10bUvSpace::AuxTexture,
+            ]
+        );
+
+        let filmgrain = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::FilmGrain)
+            .expect("filmgrain contract");
+        assert!(filmgrain.supported_combo_defaults.contains(&("GREYSCALE", 1)));
+        assert!(filmgrain
+            .supported_uniforms
+            .contains(&"uieditorpropertiesstrength"));
+
+        let vhs = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Vhs)
+            .expect("vhs contract");
+        assert!(vhs
+            .supported_combo_defaults
+            .contains(&("INVERTARTIFACTS", 1)));
+        assert!(vhs.supported_uniforms.contains(&"tracking"));
+
+        let blendgradient =
+            super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::BlendGradient)
+                .expect("blendgradient contract");
+        assert!(blendgradient
+            .supported_combo_defaults
+            .contains(&("TRANSFORMUV", 0)));
+        assert!(blendgradient.supported_uniforms.contains(&"gradientscale"));
+
+        let xray = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::XRay)
+            .expect("xray contract");
+        assert!(xray.supported_combo_defaults.contains(&("OPACITYMASK", 0)));
+        assert!(xray
+            .supported_uniforms
+            .contains(&"uieditorpropertiesmultiply"));
+        assert_eq!(
+            xray
+                .runtime_binding_layout
+                .iter()
+                .map(|slot| slot.semantic)
+                .collect::<Vec<_>>(),
+            vec![
+                super::ScenePhase10bBindingSemantic::PreviousInput,
+                super::ScenePhase10bBindingSemantic::GradientTexture,
+                super::ScenePhase10bBindingSemantic::SpriteTexture,
+                super::ScenePhase10bBindingSemantic::OpacityMask,
+            ]
+        );
     }
 
     #[test]

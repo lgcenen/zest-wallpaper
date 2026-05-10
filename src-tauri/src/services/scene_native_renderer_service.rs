@@ -3897,6 +3897,138 @@ impl NativeSceneMetalRenderer {
                 uniforms.user0[3] = color1[1];
                 uniforms.user1[0] = color1[2];
             }
+            Some(SceneCompatEffectKind::Reflection) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["alpha", "reflectionalpha"], 1.0);
+            }
+            Some(SceneCompatEffectKind::Shimmer) => {
+                uniforms.intensity = phase10_uniform_float(
+                    &uniform_values,
+                    &[
+                        "uieditorpropertiesamount",
+                        "uieditorpropertiesbrightness",
+                        "ui_editor_properties_brightness",
+                    ],
+                    1.0,
+                );
+                uniforms.speed = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesspeed", "ui_editor_properties_speed"],
+                    1.0,
+                );
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesdelay", "ui_editor_properties_delay"],
+                    2.0,
+                );
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesdirection", "ui_editor_properties_direction"],
+                    1.5707964,
+                );
+                uniforms.user0 = phase10_uniform_vec4(
+                    &uniform_values,
+                    &[
+                        "uieditorpropertiesgranularity",
+                        "ui_editor_properties_granularity",
+                    ],
+                    [1.0, 1.0, 0.0, 0.05],
+                );
+                uniforms.user0[1] = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertieswidth", "ui_editor_properties_width"],
+                    uniforms.user0[1],
+                );
+                uniforms.user0[2] = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiesoffset", "ui_editor_properties_offset"],
+                    uniforms.user0[2],
+                );
+                uniforms.user0[3] = phase10_uniform_float(
+                    &uniform_values,
+                    &["uieditorpropertiestimescale", "ui_editor_properties_timescale"],
+                    uniforms.user0[3],
+                );
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["uieditorpropertiescolor", "ui_editor_properties_color"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+            }
+            Some(SceneCompatEffectKind::FilmGrain) => {
+                uniforms.intensity =
+                    phase10_uniform_float(
+                        &uniform_values,
+                        &["strength", "uieditorpropertiesstrength", "noisealpha"],
+                        1.0,
+                    );
+                uniforms.radius =
+                    phase10_uniform_float(
+                        &uniform_values,
+                        &["exponent", "uieditorpropertiespower", "noisepower"],
+                        0.5,
+                    );
+            }
+            Some(SceneCompatEffectKind::Vhs) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["strength", "noisealpha"], 1.0);
+                uniforms.speed = phase10_uniform_float(
+                    &uniform_values,
+                    &["distortionspeed"],
+                    1.0,
+                );
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &["distortionstrength"],
+                    1.0,
+                );
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &["distortionwidth"],
+                    1.0,
+                );
+                uniforms.user0[0] = phase10_uniform_float(&uniform_values, &["scale"], 0.3);
+                uniforms.user0[1] = phase10_uniform_float(&uniform_values, &["artifacts"], 1.0);
+                uniforms.user0[2] = phase10_uniform_float(&uniform_values, &["chromatic"], 0.3);
+                uniforms.user0[3] = phase10_uniform_float(&uniform_values, &["tracking"], 0.5);
+            }
+            Some(SceneCompatEffectKind::BlendGradient) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["multiply"], 1.0);
+                uniforms.speed = phase10_uniform_float(
+                    &uniform_values,
+                    &["gradientscale"],
+                    0.05,
+                );
+                uniforms.radius =
+                    phase10_uniform_float(&uniform_values, &["alpha", "alphamultiply"], 1.0);
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &["edgebrightness"],
+                    1.0,
+                );
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["edgecolor"],
+                    [1.0, 0.75, 0.0, 1.0],
+                );
+            }
+            Some(SceneCompatEffectKind::XRay) => {
+                uniforms.intensity =
+                    phase10_uniform_float(
+                        &uniform_values,
+                        &["multiply", "uieditorpropertiesmultiply"],
+                        1.0,
+                    );
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &[
+                        "uieditorparticleelementexponent",
+                        "ui_editor_particle_element_exponent",
+                    ],
+                    1.0,
+                );
+            }
             _ => {}
         }
 

@@ -585,7 +585,7 @@ fragment float4 phase10_effect_fragment(
     float3 noise = has_aux_texture(uniforms.aux2_texel_size)
         ? aux2_texture.sample(texture_sampler, stage_vertex.slot2_uv).rgb
         : float3(0.5, 0.5, 0.5);
-    float2 offset = vec2((noise.x * 2.0 - 1.0) * uniforms.intensity * mask, 0.0);
+    float2 offset = float2((noise.x * 2.0 - 1.0) * uniforms.intensity * mask, 0.0);
     offset = rotate2d(offset, uniforms.angle + 1.57079632679);
     float2 motion_uv = primary_uv + offset;
 #if MASK
@@ -657,6 +657,139 @@ fragment float4 phase10_effect_fragment(
 #if WRITEALPHA
     sampled.a = max(sampled.a, nitro * mask);
 #endif
+#elif PHASE10_EFFECT_REFLECTION
+    float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
+    float2 reflected_uv = float2(primary_uv.x, 1.0 - primary_uv.y);
+    float4 reflected = sample_input(input_texture, texture_sampler, reflected_uv);
+    sampled.rgb = apply_tint_blend(sampled.rgb, reflected.rgb, mask * uniforms.intensity);
+    sampled.a = min(1.0, sampled.a + reflected.a * mask * uniforms.intensity);
+#elif PHASE10_EFFECT_SHIMMER
+    float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
+    float offset = 0.0;
+#if OFFSET
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        offset += aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r * uniforms.user0.w;
+    }
+#endif
+    float2 shimmer_coord = rotate2d(primary_uv, -uniforms.angle + 1.57079632679) * uniforms.user0.x;
+#if MODE == 1
+    shimmer_coord.x += uniforms.user0.z + uniforms.user0.y * sin(uniforms.speed * uniforms.time + offset);
+#else
+    shimmer_coord.x += uniforms.user0.z + uniforms.speed * (uniforms.time + offset);
+#endif
+    shimmer_coord.x = clamp(fract(shimmer_coord.x / max(uniforms.user0.x * uniforms.radius, 0.0001)) * uniforms.user0.x * uniforms.radius, 0.0, 1.0);
+    float3 shimmer_color = has_aux_texture(uniforms.aux3_texel_size)
+        ? aux3_texture.sample(texture_sampler, fract(shimmer_coord)).rgb
+        : float3(1.0, 1.0, 1.0);
+    float3 effect_albedo = shimmer_color * uniforms.color.rgb;
+    effect_albedo = apply_tint_blend(sampled.rgb, effect_albedo, 1.0);
+    sampled.rgb = mix(sampled.rgb, effect_albedo, mask * max(max(shimmer_color.r, shimmer_color.g), shimmer_color.b) * uniforms.intensity);
+#elif PHASE10_EFFECT_FILMGRAIN
+    float4 noise_sample = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fract(primary_uv + float2(uniforms.time * 0.011, uniforms.time * 0.017)))
+        : float4(1.0);
+    float4 noise_sample2 = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fract(primary_uv * 1.333 + float2(uniforms.time * 0.023, uniforms.time * -0.019)))
+        : float4(1.0);
+    float3 noise = noise_sample.rgb;
+    float3 noise2 = noise_sample2.gbr;
+#if GREYSCALE
+    float grey0 = dot(noise, float3(0.299, 0.587, 0.114));
+    float grey1 = dot(noise2, float3(0.299, 0.587, 0.114));
+    noise = float3(grey0);
+    noise2 = float3(grey1);
+#endif
+    noise = saturate(noise * noise2);
+    noise = pow(noise, float3(max(uniforms.radius, 0.0001)));
+    float blend = uniforms.intensity;
+#if MASK
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        blend *= aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    sampled.rgb = apply_tint_blend(sampled.rgb, noise, blend);
+#elif PHASE10_EFFECT_VHS
+    float dblend = sin(uniforms.time);
+    dblend = sign(dblend) * pow(abs(max(0.00001, dblend)), 4.0);
+    float2 distortion = float2(
+        dblend * uniforms.radius * 0.02 *
+            smoothstep(0.01 * uniforms.angle, 0.0, abs(fract(uniforms.time * uniforms.speed) - primary_uv.y)),
+        0.0
+    ) * uniforms.intensity;
+    float vhs_blend = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        vhs_blend *= aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float noise0 = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fract(primary_uv * max(uniforms.user0.x, 0.01) + float2(uniforms.time * 0.031, 0.0))).r
+        : 0.0;
+    float noise1 = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fract(primary_uv * 1.777 + float2(0.0, uniforms.time * 0.027))).g
+        : 0.0;
+    float artifact_alpha = step(0.9, noise0 * pow(max(uniforms.user0.y, 0.0001), 0.2)) * noise1;
+    float x_offset = uniforms.intensity * artifact_alpha * uniforms.user0.z * 0.1;
+    float4 orig = sample_input(input_texture, texture_sampler, primary_uv + distortion + float2(x_offset * vhs_blend, 0.0));
+    float4 shifted = sample_input(input_texture, texture_sampler, primary_uv + distortion - float2(x_offset, 0.0));
+    float3 noise = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fract(primary_uv * 2.5 + float2(uniforms.time * 0.013, uniforms.time * 0.021))).rgb
+        : float3(0.5);
+#if GREYSCALE
+    float grey = dot(noise, float3(0.299, 0.587, 0.114));
+    noise = float3(grey);
+#endif
+    float3 blended = apply_tint_blend(orig.rgb, noise, 0.1);
+    blended = mix(blended, 1.0 - blended, artifact_alpha * vhs_blend);
+    sampled = mix(orig, float4(mix(blended, shifted.rgb, clamp(uniforms.user0.w * 0.1, 0.0, 1.0)), orig.a), uniforms.intensity * vhs_blend);
+#elif PHASE10_EFFECT_BLENDGRADIENT
+    float2 blend_uv = stage_vertex.slot1_uv;
+#if TRANSFORMUV == 1 && TRANSFORMREPEAT == 1
+    blend_uv = fract(blend_uv);
+#endif
+    float4 blend_colors = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, clamp(blend_uv, float2(0.0), float2(1.0)))
+        : float4(1.0);
+    float gradient = has_aux_texture(uniforms.aux2_texel_size)
+        ? aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r
+        : 0.0;
+    float blend = smoothstep(saturate(gradient - uniforms.speed), saturate(gradient + uniforms.speed), uniforms.intensity);
+#if OPACITYMASK == 1
+    if (has_aux_texture(uniforms.aux3_texel_size)) {
+        blend *= aux3_texture.sample(texture_sampler, clamp(stage_vertex.slot3_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+#if WRITEALPHA
+    float new_alpha = sampled.a * (1.0 - blend) + blend_colors.a * blend * uniforms.radius;
+    sampled.rgb = sampled.rgb * sampled.a * (1.0 - blend) + blend_colors.rgb * blend_colors.a * blend;
+    sampled.a = new_alpha;
+#else
+    sampled.rgb = apply_tint_blend(sampled.rgb, blend_colors.rgb, blend * uniforms.radius);
+#endif
+#if EDGEGLOW
+    float burn_width = uniforms.speed * 0.5;
+    float burn_amount = step(gradient - burn_width, uniforms.intensity) *
+        step(uniforms.intensity, gradient + burn_width) *
+        step(0.01, uniforms.intensity) *
+        step(uniforms.intensity, 0.999);
+    sampled.rgb = max(float3(0.0), mix(sampled.rgb, uniforms.color.rgb, burn_amount * uniforms.angle));
+#endif
+#elif PHASE10_EFFECT_XRAY
+    float4 mask = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0)))
+        : float4(1.0);
+    float blend = mask.a * uniforms.intensity;
+#if OPACITYMASK == 1
+    if (has_aux_texture(uniforms.aux3_texel_size)) {
+        blend *= aux3_texture.sample(texture_sampler, clamp(stage_vertex.slot3_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float2 sprite_uv = (primary_uv - float2(0.5)) * uniforms.radius + float2(0.5);
+    float2 sprite_sample = has_aux_texture(uniforms.aux2_texel_size)
+        ? aux2_texture.sample(texture_sampler, clamp(sprite_uv, float2(0.0), float2(1.0))).ra
+        : float2(1.0, 1.0);
+    blend *= sprite_sample.x * sprite_sample.y;
+    sampled.rgb = apply_tint_blend(sampled.rgb, mask.rgb, blend);
 #endif
 
     sampled *= stage_vertex.color;

@@ -1454,6 +1454,40 @@ fn phase10b_combo_value_supported(
             "mask" | "writealpha" => matches!(combo_value, 0 | 1),
             _ => false,
         },
+        "reflection" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
+            "mask" | "perspective" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "shimmer" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
+            "mask" | "offset" => matches!(combo_value, 0 | 1),
+            "mode" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "filmgrain" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 12 | 30 | 31 | 32),
+            "greyscale" | "mask" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "vhs" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 12 | 30 | 31 | 32),
+            "greyscale" | "invertartifacts" | "mask" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "blendgradient" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
+            "edgeglow" | "opacitymask" | "transformuv" | "writealpha" => {
+                matches!(combo_value, 0 | 1)
+            }
+            "transformrepeat" => matches!(combo_value, 0 | 1 | 2),
+            _ => false,
+        },
+        "xray" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
+            "opacitymask" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -1479,6 +1513,13 @@ fn phase10b_combo_required_texture_slot(
         "cloudmotion" if normalized == "mask" => Some(1),
         "clouds" if normalized == "mask" => Some(2),
         "nitro" if normalized == "mask" => Some(2),
+        "reflection" if normalized == "mask" => Some(1),
+        "shimmer" if normalized == "mask" => Some(1),
+        "shimmer" if normalized == "offset" => Some(2),
+        "filmgrain" if normalized == "mask" => Some(2),
+        "vhs" if normalized == "mask" => Some(2),
+        "blendgradient" if normalized == "opacitymask" => Some(3),
+        "xray" if normalized == "opacitymask" => Some(3),
         _ => None,
     }
 }
@@ -1507,6 +1548,9 @@ fn binding_name_matches_semantic(
         ScenePhase10bBindingSemantic::NoiseTexture => normalized.contains("noise"),
         ScenePhase10bBindingSemantic::GradientTexture => {
             normalized.contains("gradient") || normalized.contains("color") || normalized.contains("map")
+        }
+        ScenePhase10bBindingSemantic::SpriteTexture => {
+            normalized.contains("sprite") || normalized.contains("halo") || normalized.contains("particle")
         }
         ScenePhase10bBindingSemantic::FlowMap => {
             normalized.contains("flow") || normalized.contains("direction")
@@ -3026,6 +3070,414 @@ mod tests {
             assert_eq!(report.graph.visuals.len(), 1);
             assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
             assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+        }
+    }
+
+    #[test]
+    fn phase10_graph_supports_batch2_group_d_authored_effect_shader_families() {
+        for (family, shader_ref, pass_json, material_json, texture_files) in [
+            (
+                "reflection",
+                "effects/reflection",
+                r#"{"combos":{"MASK":1,"PERSPECTIVE":0},"constantshadervalues":{"alpha":0.7}}"#,
+                r#"{"passes":[{"shader":"effects/reflection","textures":[null,"textures/mask.png"]}]}"#,
+                vec!["textures/mask.png"],
+            ),
+            (
+                "shimmer",
+                "effects/shimmer",
+                r#"{"combos":{"MASK":1,"MODE":1,"OFFSET":1},"constantshadervalues":{"ui_editor_properties_amount":3.79,"ui_editor_properties_color":"1 1 1","ui_editor_properties_delay":1.63,"ui_editor_properties_direction":-1.9300838,"ui_editor_properties_granularity":1.0,"ui_editor_properties_speed":1.0,"ui_editor_properties_timescale":-0.1}}"#,
+                r#"{"passes":[{"shader":"effects/shimmer","textures":[null,"textures/mask.png","textures/offset.png","textures/gradient.png"]}]}"#,
+                vec!["textures/mask.png", "textures/offset.png", "textures/gradient.png"],
+            ),
+            (
+                "filmgrain",
+                "effects/filmgrain",
+                r#"{"combos":{"GREYSCALE":1,"MASK":1},"constantshadervalues":{"ui_editor_properties_power":0.5,"ui_editor_properties_strength":5.0}}"#,
+                r#"{"passes":[{"shader":"effects/filmgrain","textures":[null,"textures/noise.png","textures/mask.png"]}]}"#,
+                vec!["textures/noise.png", "textures/mask.png"],
+            ),
+            (
+                "vhs",
+                "effects/vhs",
+                r#"{"combos":{"GREYSCALE":0,"INVERTARTIFACTS":1,"MASK":1},"constantshadervalues":{"artifacts":5.0,"chromatic":0.43,"distortionspeed":1.43,"distortionstrength":1.35,"distortionwidth":1.21,"scale":0.11,"strength":1.29,"tracking":0.5}}"#,
+                r#"{"passes":[{"shader":"effects/vhs","textures":[null,"textures/noise.png","textures/mask.png"]}]}"#,
+                vec!["textures/noise.png", "textures/mask.png"],
+            ),
+            (
+                "blendgradient",
+                "effects/blendgradient",
+                r#"{"combos":{"EDGEGLOW":1,"OPACITYMASK":1,"TRANSFORMUV":1,"TRANSFORMREPEAT":1,"WRITEALPHA":0},"constantshadervalues":{"alpha":1.0,"edgebrightness":1.0,"edgecolor":"0 0 0","gradientscale":0.05,"multiply":1.0}}"#,
+                r#"{"passes":[{"shader":"effects/blendgradient","textures":[null,"textures/blend.png","textures/gradient.png","textures/mask.png"]}]}"#,
+                vec!["textures/blend.png", "textures/gradient.png", "textures/mask.png"],
+            ),
+            (
+                "xray",
+                "effects/xray",
+                r#"{"combos":{"OPACITYMASK":1},"constantshadervalues":{"ui_editor_particle_element_exponent":1.0,"ui_editor_properties_multiply":1.0}}"#,
+                r#"{"passes":[{"shader":"effects/xray","textures":[null,"textures/blend.png","textures/sprite.png","textures/mask.png"]}]}"#,
+                vec!["textures/blend.png", "textures/sprite.png", "textures/mask.png"],
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":221,
+                          "name":"{family}",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[
+                            {{
+                              "file":"effects/{family}/effect.json",
+                              "visible":true,
+                              "passes":[{pass_json}]
+                            }}
+                          ]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                material_json.as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+            for texture_file in texture_files {
+                write(&extracted.join(texture_file), b"png");
+            }
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            assert!(!report.is_blocked(), "{family} should be supported: {:?}", report.issues);
+            assert!(report
+                .issues
+                .iter()
+                .all(|issue| issue.diagnostic_code != Some("effect-unsupported")));
+            assert_eq!(report.graph.visuals.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+        }
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_d_combo_value_outside_contract() {
+        for (family, shader_ref, combo_name, combo_value, material_json, expected_fragment) in [
+            (
+                "reflection",
+                "effects/reflection",
+                "PERSPECTIVE",
+                2,
+                r#"{"passes":[{"shader":"effects/reflection","textures":[null,"textures/mask.png"],"combos":{"PERSPECTIVE":2,"MASK":1}}]}"#,
+                "combo PERSPECTIVE=2",
+            ),
+            (
+                "shimmer",
+                "effects/shimmer",
+                "MODE",
+                2,
+                r#"{"passes":[{"shader":"effects/shimmer","textures":[null,null,null,"textures/gradient.png"],"combos":{"MODE":2,"OFFSET":0,"MASK":0}}]}"#,
+                "combo MODE=2",
+            ),
+            (
+                "filmgrain",
+                "effects/filmgrain",
+                "GREYSCALE",
+                2,
+                r#"{"passes":[{"shader":"effects/filmgrain","textures":[null,"textures/noise.png"],"combos":{"GREYSCALE":2,"MASK":0}}]}"#,
+                "combo GREYSCALE=2",
+            ),
+            (
+                "vhs",
+                "effects/vhs",
+                "INVERTARTIFACTS",
+                2,
+                r#"{"passes":[{"shader":"effects/vhs","textures":[null,"textures/noise.png"],"combos":{"GREYSCALE":0,"INVERTARTIFACTS":2,"MASK":0}}]}"#,
+                "combo INVERTARTIFACTS=2",
+            ),
+            (
+                "blendgradient",
+                "effects/blendgradient",
+                "TRANSFORMREPEAT",
+                3,
+                r#"{"passes":[{"shader":"effects/blendgradient","textures":[null,"textures/blend.png","textures/gradient.png"],"combos":{"TRANSFORMUV":1,"TRANSFORMREPEAT":3,"WRITEALPHA":0,"EDGEGLOW":0,"OPACITYMASK":0}}]}"#,
+                "combo TRANSFORMREPEAT=3",
+            ),
+            (
+                "xray",
+                "effects/xray",
+                "OPACITYMASK",
+                2,
+                r#"{"passes":[{"shader":"effects/xray","textures":[null,"textures/blend.png","textures/sprite.png"],"combos":{"OPACITYMASK":2}}]}"#,
+                "combo OPACITYMASK=2",
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":222,
+                          "name":"{family}InvalidCombo",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[{{"file":"effects/{family}/effect.json","visible":true}}]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                material_json.as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+            for texture_file in [
+                "textures/mask.png",
+                "textures/noise.png",
+                "textures/gradient.png",
+                "textures/blend.png",
+                "textures/sprite.png",
+            ] {
+                write(&extracted.join(texture_file), b"png");
+            }
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            let issue = report
+                .issues
+                .iter()
+                .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+                .expect("unsupported effect issue");
+            assert!(issue.resource_present_but_unsupported);
+            assert!(issue
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains(expected_fragment));
+            assert_eq!(combo_name.is_empty(), false);
+            assert_ne!(combo_value, 0);
+        }
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_d_missing_combo_texture_slot() {
+        for (family, shader_ref, material_json, expected_fragment) in [
+            (
+                "reflection",
+                "effects/reflection",
+                r#"{"passes":[{"shader":"effects/reflection","combos":{"MASK":1,"PERSPECTIVE":0}}]}"#,
+                "requires g_Texture1",
+            ),
+            (
+                "shimmer",
+                "effects/shimmer",
+                r#"{"passes":[{"shader":"effects/shimmer","textures":[null,null,null,"textures/gradient.png"],"combos":{"MASK":0,"MODE":0,"OFFSET":1}}]}"#,
+                "requires g_Texture2",
+            ),
+            (
+                "filmgrain",
+                "effects/filmgrain",
+                r#"{"passes":[{"shader":"effects/filmgrain","textures":[null,"textures/noise.png"],"combos":{"GREYSCALE":1,"MASK":1}}]}"#,
+                "requires g_Texture2",
+            ),
+            (
+                "vhs",
+                "effects/vhs",
+                r#"{"passes":[{"shader":"effects/vhs","textures":[null,"textures/noise.png"],"combos":{"GREYSCALE":0,"INVERTARTIFACTS":1,"MASK":1}}]}"#,
+                "requires g_Texture2",
+            ),
+            (
+                "blendgradient",
+                "effects/blendgradient",
+                r#"{"passes":[{"shader":"effects/blendgradient","textures":[null,"textures/blend.png","textures/gradient.png"],"combos":{"EDGEGLOW":0,"OPACITYMASK":1,"TRANSFORMUV":0,"TRANSFORMREPEAT":0,"WRITEALPHA":0}}]}"#,
+                "requires g_Texture3",
+            ),
+            (
+                "xray",
+                "effects/xray",
+                r#"{"passes":[{"shader":"effects/xray","textures":[null,"textures/blend.png","textures/sprite.png"],"combos":{"OPACITYMASK":1}}]}"#,
+                "requires g_Texture3",
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":223,
+                          "name":"{family}MissingTexture",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[{{"file":"effects/{family}/effect.json","visible":true}}]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                material_json.as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+            for texture_file in [
+                "textures/noise.png",
+                "textures/gradient.png",
+                "textures/blend.png",
+                "textures/sprite.png",
+            ] {
+                write(&extracted.join(texture_file), b"png");
+            }
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            let issue = report
+                .issues
+                .iter()
+                .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+                .expect("unsupported effect issue");
+            assert!(issue.resource_present_but_unsupported);
+            assert!(issue
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains(expected_fragment));
         }
     }
 
