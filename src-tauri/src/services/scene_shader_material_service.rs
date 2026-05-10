@@ -703,7 +703,26 @@ const TRANSFORM_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContr
     required_texture_slots: &[0],
     supported_texture_slots: &[0],
     supported_combo_defaults: &[("CLAMP", 1)],
-    supported_uniforms: &[],
+    supported_uniforms: &[
+        "anchor",
+        "angle",
+        "center",
+        "offset",
+        "pivot",
+        "rotation",
+        "scale",
+        "translate",
+        "translation",
+        "uieditorpropertiesanchor",
+        "uieditorpropertiesangle",
+        "uieditorpropertiescenter",
+        "uieditorpropertiesoffset",
+        "uieditorpropertiespivot",
+        "uieditorpropertiesrotation",
+        "uieditorpropertiesscale",
+        "uieditorpropertiestranslate",
+        "uieditorpropertiestranslation",
+    ],
     runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
 };
 
@@ -3183,7 +3202,10 @@ mod tests {
             super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Transform)
                 .expect("transform contract");
         assert!(transform.supported_combo_defaults.contains(&("CLAMP", 1)));
-        assert!(transform.supported_uniforms.is_empty());
+        assert!(transform.supported_uniforms.contains(&"offset"));
+        assert!(transform.supported_uniforms.contains(&"scale"));
+        assert!(transform.supported_uniforms.contains(&"rotation"));
+        assert!(transform.supported_uniforms.contains(&"anchor"));
 
         let skew = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Skew)
             .expect("skew contract");

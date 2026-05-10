@@ -2844,7 +2844,15 @@ mod tests {
                                 {{
                                   "file":"effects/{family}/effect.json",
                                   "visible":true,
-                                  "passes":[{{"combos":{{"CLAMP":1}}}}]
+                                  "passes":[{{
+                                    "combos":{{"CLAMP":1}},
+                                    "constantshadervalues":{{
+                                      "offset":"0.08 -0.06",
+                                      "scale":"1.15 0.85",
+                                      "rotation":0.35,
+                                      "anchor":"0.4 0.55"
+                                    }}
+                                  }}]
                                 }}
                               ]
                             }}

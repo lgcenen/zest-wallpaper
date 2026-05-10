@@ -507,7 +507,20 @@ fragment float4 phase10_effect_fragment(
     float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
     sampled.a *= clamp(uniforms.intensity, 0.0, 1.0) * mask;
 #elif PHASE10_EFFECT_TRANSFORM
-    sampled = sample_input(input_texture, texture_sampler, fract(primary_uv));
+    float2 offset = uniforms.user0.xy;
+    float2 scale = uniforms.user0.zw;
+    float2 anchor = uniforms.user1.xy;
+    float2 local = primary_uv - anchor - offset;
+    local = rotate2d(local, -uniforms.angle);
+    float scale_x = fabs(scale.x) < 1e-6 ? (scale.x < 0.0 ? -0.0001 : 0.0001) : scale.x;
+    float scale_y = fabs(scale.y) < 1e-6 ? (scale.y < 0.0 ? -0.0001 : 0.0001) : scale.y;
+    float2 transform_uv = float2(local.x / scale_x, local.y / scale_y) + anchor;
+#if CLAMP
+    transform_uv = clamp(transform_uv, float2(0.0), float2(1.0));
+#else
+    transform_uv = fract(transform_uv);
+#endif
+    sampled = sample_input(input_texture, texture_sampler, transform_uv);
 #elif PHASE10_EFFECT_SKEW
     float skew_x = uniforms.user0.x;
     float skew_y = uniforms.user0.y;

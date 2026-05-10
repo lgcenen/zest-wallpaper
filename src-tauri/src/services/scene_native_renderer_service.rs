@@ -3715,7 +3715,10 @@ impl NativeSceneMetalRenderer {
                 uniforms.intensity =
                     phase10_uniform_float(&uniform_values, &["alpha", "useralpha"], 1.0);
             }
-            Some(SceneCompatEffectKind::Transform) => {}
+            Some(SceneCompatEffectKind::Transform) => {
+                (uniforms.user0, uniforms.user1, uniforms.angle) =
+                    phase10_transform_controls(&uniform_values);
+            }
             Some(SceneCompatEffectKind::Skew) => {
                 uniforms.user0 = phase10_skew_controls(&uniform_values);
             }
@@ -5514,6 +5517,49 @@ fn phase10_spin_controls(
     center_and_mask[2] = phase10_uniform_float(values, &["size"], center_and_mask[2]);
     center_and_mask[3] = phase10_uniform_float(values, &["feather"], center_and_mask[3]);
     (angle, speed, center_and_mask)
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_transform_controls(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+) -> ([f32; 4], [f32; 4], f32) {
+    let offset = phase10_optional_uniform_vec2(
+        values,
+        &[
+            "offset",
+            "translate",
+            "translation",
+            "uieditorpropertiesoffset",
+            "uieditorpropertiestranslate",
+            "uieditorpropertiestranslation",
+        ],
+    )
+    .unwrap_or([0.0, 0.0]);
+    let scale = phase10_optional_uniform_vec2(values, &["scale", "uieditorpropertiesscale"])
+        .unwrap_or([1.0, 1.0]);
+    let anchor = phase10_optional_uniform_vec2(
+        values,
+        &[
+            "anchor",
+            "pivot",
+            "center",
+            "uieditorpropertiesanchor",
+            "uieditorpropertiespivot",
+            "uieditorpropertiescenter",
+        ],
+    )
+    .unwrap_or([0.5, 0.5]);
+    let angle = phase10_uniform_float(
+        values,
+        &[
+            "rotation",
+            "angle",
+            "uieditorpropertiesrotation",
+            "uieditorpropertiesangle",
+        ],
+        0.0,
+    );
+    ([offset[0], offset[1], scale[0], scale[1]], [anchor[0], anchor[1], 0.0, 0.0], angle)
 }
 
 #[cfg(target_os = "macos")]
@@ -9665,6 +9711,56 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn phase10_transform_uniforms_pack_offset_scale_anchor_and_rotation() {
+        let (user0, user1, angle) = super::phase10_transform_controls(&BTreeMap::from([
+            (
+                "offset".to_string(),
+                SceneMaterialUniformValue::Float2([0.08f32.to_bits(), (-0.06f32).to_bits()]),
+            ),
+            (
+                "scale".to_string(),
+                SceneMaterialUniformValue::Float2([1.15f32.to_bits(), 0.85f32.to_bits()]),
+            ),
+            (
+                "anchor".to_string(),
+                SceneMaterialUniformValue::Float2([0.4f32.to_bits(), 0.55f32.to_bits()]),
+            ),
+            (
+                "rotation".to_string(),
+                SceneMaterialUniformValue::Float(0.35f32.to_bits()),
+            ),
+        ]));
+
+        assert_eq!(user0, [0.08, -0.06, 1.15, 0.85]);
+        assert_eq!(user1, [0.4, 0.55, 0.0, 0.0]);
+        assert_eq!(angle, 0.35);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_transform_uniforms_accept_aliases_and_defaults() {
+        let (user0, user1, angle) = super::phase10_transform_controls(&BTreeMap::from([
+            (
+                "translate".to_string(),
+                SceneMaterialUniformValue::Float2([0.03f32.to_bits(), 0.04f32.to_bits()]),
+            ),
+            (
+                "center".to_string(),
+                SceneMaterialUniformValue::Float2([0.25f32.to_bits(), 0.75f32.to_bits()]),
+            ),
+            (
+                "angle".to_string(),
+                SceneMaterialUniformValue::Float((-0.2f32).to_bits()),
+            ),
+        ]));
+
+        assert_eq!(user0, [0.03, 0.04, 1.0, 1.0]);
+        assert_eq!(user1, [0.25, 0.75, 0.0, 0.0]);
+        assert_eq!(angle, -0.2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn phase10_skew_uniforms_derive_axes_from_edge_offsets() {
         let user0 = super::phase10_skew_controls(&BTreeMap::from([
             (
@@ -9899,6 +9995,63 @@ mod tests {
         assert!(!shader.contains(
             "#elif PHASE10_EFFECT_PERSPECTIVE\n    float mask = step(0.0, stage_vertex.position.w);\n    float2 perspective_uv = primary_uv;"
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_transform_shader_uses_inverse_affine_controls() {
+        let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
+        let shader = fs::read_to_string(shader_path).expect("effect compat shader");
+
+        assert!(shader.contains("float2 offset = uniforms.user0.xy;"));
+        assert!(shader.contains("float2 scale = uniforms.user0.zw;"));
+        assert!(shader.contains("float2 anchor = uniforms.user1.xy;"));
+        assert!(shader.contains("float2 local = primary_uv - anchor - offset;"));
+        assert!(shader.contains("local = rotate2d(local, -uniforms.angle);"));
+        assert!(shader.contains("float2 transform_uv = float2(local.x / scale_x, local.y / scale_y) + anchor;"));
+        assert!(shader.contains("transform_uv = clamp(transform_uv, float2(0.0), float2(1.0));"));
+        assert!(!shader.contains("#elif PHASE10_EFFECT_TRANSFORM\n    sampled = sample_input(input_texture, texture_sampler, fract(primary_uv));"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_transform_shader_compiles_to_pipeline_state() {
+        use crate::services::scene_shader_material_service::{
+            SceneShaderProgram, SceneShaderProgramKind,
+        };
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let program = SceneShaderProgram {
+            key: "test:transform".to_string(),
+            kind: SceneShaderProgramKind::EffectCompat(SceneCompatEffectKind::Transform),
+            metal_source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal"),
+            vertex_entry: "phase10_effect_vertex",
+            fragment_entry: "phase10_effect_fragment",
+            variant_defines: BTreeMap::from([("PHASE10_EFFECT_TRANSFORM".to_string(), 1)]),
+        };
+
+        let clamp1 = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::from([
+                ("PHASE10_EFFECT_TRANSFORM".to_string(), 1),
+                ("CLAMP".to_string(), 1),
+            ]),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("transform clamp=1 compile");
+        let clamp0 = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::from([
+                ("PHASE10_EFFECT_TRANSFORM".to_string(), 1),
+                ("CLAMP".to_string(), 0),
+            ]),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("transform clamp=0 compile");
+        let _ = (clamp1, clamp0);
     }
 
     #[cfg(target_os = "macos")]
