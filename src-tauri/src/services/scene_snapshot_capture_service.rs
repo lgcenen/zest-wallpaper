@@ -220,7 +220,7 @@ fn load_scene_snapshot_image(
     source_kind: SceneRenderSourceKind,
 ) -> Result<RgbaImage, String> {
     match source_kind {
-        SceneRenderSourceKind::Image => image::open(path)
+        SceneRenderSourceKind::Image => crate::services::scene_resource_service::load_scene_texture_image(path)
             .map_err(|error| {
                 format!(
                     "Scene snapshot capture could not decode visual texture {}: {error}",
@@ -679,6 +679,59 @@ mod tests {
                 pixel[0] > 180 && pixel[1] > 180 && pixel[2] > 180
             })
         }));
+    }
+
+    #[test]
+    fn snapshot_capture_decodes_tex_visuals_via_shared_scene_texture_loader() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        fs::create_dir_all(&managed).expect("managed dir");
+        let tex = managed.join("visual.tex");
+        fs::write(
+            &tex,
+            {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(b"TEXV0005\0");
+                bytes.extend_from_slice(b"TEXI0001\0");
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(b"TEXB0004\0");
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&0_u32.to_le_bytes());
+                bytes.extend_from_slice(&0_i32.to_le_bytes());
+                bytes.extend_from_slice(&4_i32.to_le_bytes());
+                bytes.extend_from_slice(&[255, 0, 0, 255]);
+                bytes
+            },
+        )
+        .expect("write tex");
+        let output = managed.join(".snapshot-tex.png.tmp");
+        let scene = runtime_scene(
+            vec![(1, image_object(1, "RedTex", [0.0, 0.0, 200.0, 120.0], &tex))],
+            vec![1],
+        );
+        let resolver = SceneResourceResolver::for_managed_root_with_builtin_root(
+            &managed,
+            default_builtin_scene_assets_root(),
+        );
+
+        capture_scene_runtime_snapshot_with_size(&scene, &resolver, &output, 200, 120)
+            .expect("capture");
+
+        let snapshot = image::load_from_memory(&fs::read(&output).expect("snapshot bytes"))
+            .expect("snapshot")
+            .to_rgba8();
+        assert_eq!(snapshot.get_pixel(100, 60).0, [255, 0, 0, 255]);
     }
 
     #[test]

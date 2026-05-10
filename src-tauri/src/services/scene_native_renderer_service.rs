@@ -3929,12 +3929,13 @@ impl NativeSceneMetalRenderer {
             return Ok(());
         }
 
-        let image = image::open(&item.texture_path).map_err(|error| {
-            format!(
-                "unable to decode texture {}: {error}",
-                item.texture_path.display()
-            )
-        })?;
+        let image = super::scene_resource_service::load_scene_texture_image(&item.texture_path)
+            .map_err(|error| {
+                format!(
+                    "unable to decode texture {}: {error}",
+                    item.texture_path.display()
+                )
+            })?;
         let metrics =
             phase10_texture_metrics_from_size(image.width() as usize, image.height() as usize);
         let texture = load_texture(&self.device, image).map_err(|error| {
@@ -5702,24 +5703,8 @@ struct Phase10DecodedTexture {
 fn load_phase10_texture_source(path: &Path) -> Result<Phase10DecodedTexture, String> {
     let resolved_path = resolve_phase10_texture_source_path(path);
     let loader_path = resolved_path.as_path();
-    let extension = loader_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase());
-
-    if extension.as_deref() == Some("tex") {
-        let image = crate::tex::load_tex_image(loader_path).map_err(|error| {
-            format!(
-                "unable to decode phase-10 texture {}: {error}",
-                loader_path.display()
-            )
-        })?;
-        let metrics =
-            phase10_texture_metrics_from_size(image.width() as usize, image.height() as usize);
-        return Ok(Phase10DecodedTexture { image, metrics });
-    }
-
-    let image = image::open(loader_path).map_err(|error| {
+    let image = crate::services::scene_resource_service::load_scene_texture_image(loader_path)
+        .map_err(|error| {
         format!(
             "unable to decode phase-10 texture {}: {error}",
             loader_path.display()
