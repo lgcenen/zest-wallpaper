@@ -429,6 +429,46 @@ fragment float4 phase10_effect_fragment(
 #elif PHASE10_EFFECT_CIRCLE
     float2 center_delta = primary_uv - float2(0.5, 0.5);
     sampled.a *= smoothstep(0.5, 0.49, length(center_delta));
+#elif PHASE10_EFFECT_OPACITY
+    float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
+    sampled.a *= clamp(uniforms.intensity, 0.0, 1.0) * mask;
+#elif PHASE10_EFFECT_TRANSFORM
+    sampled = sample_input(input_texture, texture_sampler, fract(primary_uv));
+#elif PHASE10_EFFECT_SKEW
+    float2 skew_uv = primary_uv;
+#if REPEAT
+    skew_uv = fract(skew_uv);
+#endif
+    sampled = sample_input(input_texture, texture_sampler, skew_uv);
+#elif PHASE10_EFFECT_PERSPECTIVE
+    float mask = step(0.0, stage_vertex.position.w);
+    float2 perspective_uv = primary_uv;
+#if REPEAT
+    perspective_uv = fract(perspective_uv);
+#else
+    mask *= step(abs(perspective_uv.x - 0.5), 0.5);
+    mask *= step(abs(perspective_uv.y - 0.5), 0.5);
+#endif
+    sampled = sample_input(input_texture, texture_sampler, perspective_uv);
+    sampled.a *= mask;
+#elif PHASE10_EFFECT_SPIN
+    float2 center = uniforms.user0.xy;
+    float size = max(uniforms.user0.z, 0.0001);
+    float feather = max(uniforms.user0.w, 0.0001);
+    float2 tex_coord = primary_uv;
+#if REPEAT
+    tex_coord = fract(tex_coord);
+#endif
+    float2 mask_delta = primary_uv - center;
+    float mask = smoothstep(size + feather + 0.00001, size - feather, length(mask_delta));
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        mask *= aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float4 rotated = sample_input(input_texture, texture_sampler, tex_coord);
+    float4 original = sample_input(input_texture, texture_sampler, primary_uv);
+    sampled = mix(original, rotated, mask);
 #endif
 
     sampled *= stage_vertex.color;

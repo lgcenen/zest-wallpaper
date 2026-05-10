@@ -3687,6 +3687,21 @@ impl NativeSceneMetalRenderer {
                 );
             }
             Some(SceneCompatEffectKind::Circle) => {}
+            Some(SceneCompatEffectKind::Opacity) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["alpha", "useralpha"], 1.0);
+            }
+            Some(SceneCompatEffectKind::Transform) => {}
+            Some(SceneCompatEffectKind::Skew) => {}
+            Some(SceneCompatEffectKind::Perspective) => {}
+            Some(SceneCompatEffectKind::Spin) => {
+                uniforms.user0 =
+                    phase10_uniform_vec4(&uniform_values, &["center", "spincenter"], [0.5, 0.5, 0.1, 0.002]);
+                uniforms.user0[2] =
+                    phase10_uniform_float(&uniform_values, &["size"], uniforms.user0[2]);
+                uniforms.user0[3] =
+                    phase10_uniform_float(&uniform_values, &["feather"], uniforms.user0[3]);
+            }
             _ => {}
         }
 

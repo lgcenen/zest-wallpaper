@@ -35,6 +35,11 @@ pub enum SceneCompatEffectKind {
     LightShafts,
     FoliageSway,
     Circle,
+    Opacity,
+    Transform,
+    Skew,
+    Perspective,
+    Spin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +241,43 @@ const CIRCLE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[ScenePhase10
     required: true,
 }];
 
+const OPACITY_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+];
+
+const TRANSFORM_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[ScenePhase10bTextureSlotContract {
+    slot: 0,
+    semantic: ScenePhase10bBindingSemantic::PreviousInput,
+    uv_space: ScenePhase10bUvSpace::PrimaryInput,
+    required: true,
+}];
+
+const SPIN_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+];
+
 const PULSE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Pulse,
     family: "pulse",
@@ -380,6 +422,56 @@ const CIRCLE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract
     supported_combo_defaults: &[],
     supported_uniforms: &[],
     runtime_binding_layout: CIRCLE_TEXTURE_SLOTS,
+};
+
+const OPACITY_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Opacity,
+    family: "opacity",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1],
+    supported_combo_defaults: &[("MASK", 0)],
+    supported_uniforms: &["alpha", "useralpha"],
+    runtime_binding_layout: OPACITY_TEXTURE_SLOTS,
+};
+
+const TRANSFORM_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Transform,
+    family: "transform",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0],
+    supported_combo_defaults: &[("CLAMP", 1)],
+    supported_uniforms: &[],
+    runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
+};
+
+const SKEW_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Skew,
+    family: "skew",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0],
+    supported_combo_defaults: &[("REPEAT", 1)],
+    supported_uniforms: &[],
+    runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
+};
+
+const PERSPECTIVE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Perspective,
+    family: "perspective",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0],
+    supported_combo_defaults: &[("REPEAT", 0)],
+    supported_uniforms: &["point0", "point1", "point2", "point3"],
+    runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
+};
+
+const SPIN_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Spin,
+    family: "spin",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1],
+    supported_combo_defaults: &[("MASK", 0), ("REPEAT", 1)],
+    supported_uniforms: &["center", "feather", "size", "spincenter"],
+    runtime_binding_layout: SPIN_TEXTURE_SLOTS,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1167,6 +1259,11 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "lightshafts" => Some(&LIGHTSHAFTS_CONTRACT),
         "foliagesway" => Some(&FOLIAGESWAY_CONTRACT),
         "circle" => Some(&CIRCLE_CONTRACT),
+        "opacity" => Some(&OPACITY_CONTRACT),
+        "transform" => Some(&TRANSFORM_CONTRACT),
+        "skew" => Some(&SKEW_CONTRACT),
+        "perspective" => Some(&PERSPECTIVE_CONTRACT),
+        "spin" => Some(&SPIN_CONTRACT),
         _ => None,
     }
 }
@@ -1184,6 +1281,11 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::LightShafts => Some(&LIGHTSHAFTS_CONTRACT),
         SceneCompatEffectKind::FoliageSway => Some(&FOLIAGESWAY_CONTRACT),
         SceneCompatEffectKind::Circle => Some(&CIRCLE_CONTRACT),
+        SceneCompatEffectKind::Opacity => Some(&OPACITY_CONTRACT),
+        SceneCompatEffectKind::Transform => Some(&TRANSFORM_CONTRACT),
+        SceneCompatEffectKind::Skew => Some(&SKEW_CONTRACT),
+        SceneCompatEffectKind::Perspective => Some(&PERSPECTIVE_CONTRACT),
+        SceneCompatEffectKind::Spin => Some(&SPIN_CONTRACT),
     }
 }
 
@@ -1275,6 +1377,21 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::Circle => {
             defines.insert("PHASE10_EFFECT_CIRCLE".to_string(), 1);
+        }
+        SceneCompatEffectKind::Opacity => {
+            defines.insert("PHASE10_EFFECT_OPACITY".to_string(), 1);
+        }
+        SceneCompatEffectKind::Transform => {
+            defines.insert("PHASE10_EFFECT_TRANSFORM".to_string(), 1);
+        }
+        SceneCompatEffectKind::Skew => {
+            defines.insert("PHASE10_EFFECT_SKEW".to_string(), 1);
+        }
+        SceneCompatEffectKind::Perspective => {
+            defines.insert("PHASE10_EFFECT_PERSPECTIVE".to_string(), 1);
+        }
+        SceneCompatEffectKind::Spin => {
+            defines.insert("PHASE10_EFFECT_SPIN".to_string(), 1);
         }
     }
     if let Some(contract) = phase10b_effect_contract_for_kind(kind) {
@@ -1998,6 +2115,56 @@ mod tests {
     }
 
     #[test]
+    fn batch2_group_a_authored_effect_shader_pairs_map_to_phase_10b_compat_program() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let builtin = temp.path().join("builtin");
+        let external = temp.path().join("external-assets");
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            "fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        let resolver = SceneResourceResolver::for_managed_root_with_asset_roots(
+            &managed,
+            &builtin,
+            Some(external.clone()),
+        );
+
+        for (family, expected) in [
+            ("opacity", SceneCompatEffectKind::Opacity),
+            ("transform", SceneCompatEffectKind::Transform),
+            ("skew", SceneCompatEffectKind::Skew),
+            ("perspective", SceneCompatEffectKind::Perspective),
+            ("spin", SceneCompatEffectKind::Spin),
+        ] {
+            write(
+                &external.join(format!("effects/{family}/materials/effects/{family}.json")),
+                format!(r#"{{"passes":[{{"shader":"effects/{family}"}}]}}"#).as_str(),
+            );
+            write(
+                &external.join(format!("effects/{family}/shaders/effects/{family}.vert")),
+                "void main() {}",
+            );
+            write(
+                &external.join(format!("effects/{family}/shaders/effects/{family}.frag")),
+                "void main() {}",
+            );
+
+            let plan = load_scene_material_plan_with_effect_package_root(
+                &resolver,
+                &format!("materials/effects/{family}.json"),
+                &external.join(format!("effects/{family}")),
+            )
+            .expect("batch2 group a compat effect material");
+
+            assert_eq!(
+                plan.passes[0].program.kind,
+                SceneShaderProgramKind::EffectCompat(expected)
+            );
+        }
+    }
+
+    #[test]
     fn material_plan_preserves_sparse_authored_texture_slot_ordinals() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -2043,6 +2210,11 @@ mod tests {
             (SceneCompatEffectKind::LightShafts, vec![0, 1, 2]),
             (SceneCompatEffectKind::FoliageSway, vec![0, 1, 2]),
             (SceneCompatEffectKind::Circle, vec![0]),
+            (SceneCompatEffectKind::Opacity, vec![0, 1]),
+            (SceneCompatEffectKind::Transform, vec![0]),
+            (SceneCompatEffectKind::Skew, vec![0]),
+            (SceneCompatEffectKind::Perspective, vec![0]),
+            (SceneCompatEffectKind::Spin, vec![0, 1]),
         ];
 
         for (kind, supported_slots) in families {
@@ -2115,6 +2287,36 @@ mod tests {
             .expect("circle contract");
         assert_eq!(circle.supported_texture_slots, &[0]);
         assert!(circle.supported_uniforms.is_empty());
+
+        let opacity = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Opacity)
+            .expect("opacity contract");
+        assert!(opacity.supported_combo_defaults.contains(&("MASK", 0)));
+        assert!(opacity.supported_uniforms.contains(&"alpha"));
+        assert!(opacity.supported_uniforms.contains(&"useralpha"));
+
+        let transform =
+            super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Transform)
+                .expect("transform contract");
+        assert!(transform.supported_combo_defaults.contains(&("CLAMP", 1)));
+        assert!(transform.supported_uniforms.is_empty());
+
+        let skew = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Skew)
+            .expect("skew contract");
+        assert!(skew.supported_combo_defaults.contains(&("REPEAT", 1)));
+
+        let perspective =
+            super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Perspective)
+                .expect("perspective contract");
+        assert!(perspective.supported_combo_defaults.contains(&("REPEAT", 0)));
+        assert!(perspective.supported_uniforms.contains(&"point0"));
+        assert!(perspective.supported_uniforms.contains(&"point3"));
+
+        let spin = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Spin)
+            .expect("spin contract");
+        assert!(spin.supported_combo_defaults.contains(&("MASK", 0)));
+        assert!(spin.supported_combo_defaults.contains(&("REPEAT", 1)));
+        assert!(spin.supported_uniforms.contains(&"center"));
+        assert!(spin.supported_uniforms.contains(&"spincenter"));
     }
 
     #[test]

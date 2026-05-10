@@ -1418,6 +1418,14 @@ fn phase10b_combo_value_supported(
             _ => false,
         },
         "circle" => false,
+        "opacity" => matches!(normalized.as_str(), "mask") && matches!(combo_value, 0 | 1),
+        "transform" => matches!(normalized.as_str(), "clamp") && matches!(combo_value, 0 | 1),
+        "skew" => matches!(normalized.as_str(), "repeat") && matches!(combo_value, 0 | 1),
+        "perspective" => matches!(normalized.as_str(), "repeat") && matches!(combo_value, 0 | 1),
+        "spin" => match normalized.as_str() {
+            "mask" | "repeat" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -1437,6 +1445,8 @@ fn phase10b_combo_required_texture_slot(
         "tint" if normalized == "mask" => Some(1),
         "lightshafts" if normalized == "rendering" => Some(2),
         "foliagesway" if normalized == "mask" => Some(1),
+        "opacity" if normalized == "mask" => Some(1),
+        "spin" if normalized == "mask" => Some(1),
         _ => None,
     }
 }
@@ -2574,6 +2584,194 @@ mod tests {
     }
 
     #[test]
+    fn phase10_graph_supports_batch2_group_a_authored_effect_shader_families() {
+        for family in ["opacity", "transform", "skew", "perspective", "spin"] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                (match family {
+                    "opacity" => format!(
+                        r#"{{
+                          "objects":[
+                            {{
+                              "id":211,
+                              "name":"{family}",
+                              "image":"models/util/solidlayer.json",
+                              "origin":"960 540 0",
+                              "size":"256 256",
+                              "effects":[
+                                {{
+                                  "file":"effects/{family}/effect.json",
+                                  "visible":true,
+                                  "passes":[{{"combos":{{"MASK":0}},"constantshadervalues":{{"alpha":0.65}}}}]
+                                }}
+                              ]
+                            }}
+                          ]
+                        }}"#
+                    ),
+                    "perspective" => format!(
+                        r#"{{
+                          "objects":[
+                            {{
+                              "id":211,
+                              "name":"{family}",
+                              "image":"models/util/solidlayer.json",
+                              "origin":"960 540 0",
+                              "size":"256 256",
+                              "effects":[
+                                {{
+                                  "file":"effects/{family}/effect.json",
+                                  "visible":true,
+                                  "passes":[{{
+                                    "combos":{{"REPEAT":0}},
+                                    "constantshadervalues":{{
+                                      "point0":"0 0",
+                                      "point1":"1 0",
+                                      "point2":"1 1",
+                                      "point3":"0 1"
+                                    }}
+                                  }}]
+                                }}
+                              ]
+                            }}
+                          ]
+                        }}"#
+                    ),
+                    "spin" => format!(
+                        r#"{{
+                          "objects":[
+                            {{
+                              "id":211,
+                              "name":"{family}",
+                              "image":"models/util/solidlayer.json",
+                              "origin":"960 540 0",
+                              "size":"256 256",
+                              "effects":[
+                                {{
+                                  "file":"effects/{family}/effect.json",
+                                  "visible":true,
+                                  "passes":[{{
+                                    "combos":{{"MASK":0,"REPEAT":1}},
+                                    "constantshadervalues":{{
+                                      "center":"0.5 0.5",
+                                      "size":0.18,
+                                      "feather":0.01
+                                    }}
+                                  }}]
+                                }}
+                              ]
+                            }}
+                          ]
+                        }}"#
+                    ),
+                    "transform" => format!(
+                        r#"{{
+                          "objects":[
+                            {{
+                              "id":211,
+                              "name":"{family}",
+                              "image":"models/util/solidlayer.json",
+                              "origin":"960 540 0",
+                              "size":"256 256",
+                              "effects":[
+                                {{
+                                  "file":"effects/{family}/effect.json",
+                                  "visible":true,
+                                  "passes":[{{"combos":{{"CLAMP":1}}}}]
+                                }}
+                              ]
+                            }}
+                          ]
+                        }}"#
+                    ),
+                    _ => format!(
+                        r#"{{
+                          "objects":[
+                            {{
+                              "id":211,
+                              "name":"{family}",
+                              "image":"models/util/solidlayer.json",
+                              "origin":"960 540 0",
+                              "size":"256 256",
+                              "effects":[
+                                {{
+                                  "file":"effects/{family}/effect.json",
+                                  "visible":true,
+                                  "passes":[{{"combos":{{"REPEAT":1}}}}]
+                                }}
+                              ]
+                            }}
+                          ]
+                        }}"#
+                    ),
+                })
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                b"{\"passes\":[{\"shader\":\"effects/placeholder\"}]}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{family}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{family}.frag")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                format!(r#"{{"passes":[{{"shader":"effects/{family}"}}]}}"#).as_bytes(),
+            );
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            assert!(!report.is_blocked(), "{family} should be supported: {:?}", report.issues);
+            assert!(report
+                .issues
+                .iter()
+                .all(|issue| issue.diagnostic_code != Some("effect-unsupported")));
+            assert_eq!(report.graph.visuals.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+        }
+    }
+
+    #[test]
     fn phase10d_graph_distinguishes_input_sources_named_targets_and_pass_chain() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -3233,6 +3431,162 @@ mod tests {
         );
         write(
             &extracted.join("effects/tint/shaders/effects/tint.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+            .expect("unsupported effect issue");
+        assert!(issue.resource_present_but_unsupported);
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("requires g_Texture1"));
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_a_combo_value_outside_contract() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":212,
+                  "name":"TransformInvalidCombo",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/transform/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/transform/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/transform.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/transform/materials/effects/transform.json"),
+            br#"{"passes":[{"shader":"effects/transform","combos":{"CLAMP":2}}]}"#,
+        );
+        write(
+            &extracted.join("effects/transform/shaders/effects/transform.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/transform/shaders/effects/transform.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+            .expect("unsupported effect issue");
+        assert!(issue.resource_present_but_unsupported);
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("combo CLAMP=2"));
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_a_mask_combo_without_authored_slot() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":213,
+                  "name":"SpinMissingMask",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/spin/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/spin/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/spin.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/spin/materials/effects/spin.json"),
+            br#"{"passes":[{"shader":"effects/spin","combos":{"MASK":1,"REPEAT":1}}]}"#,
+        );
+        write(
+            &extracted.join("effects/spin/shaders/effects/spin.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/spin/shaders/effects/spin.frag"),
             b"void main() {}",
         );
 
