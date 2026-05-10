@@ -4048,6 +4048,101 @@ mod tests {
     }
 
     #[test]
+    fn phase_09f_acceptance_entries_produce_first_class_rope_draw_items() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_rope_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+
+        for (entry_id, family, schedule_mode) in [
+            (
+                "presets/interactive/previewtrails0",
+                SceneParticleRendererFamily::Rope,
+                SceneParticleScheduleMode::InputDriven,
+            ),
+            (
+                "presets/interactive/previewtrails1",
+                SceneParticleRendererFamily::Rope,
+                SceneParticleScheduleMode::InputDriven,
+            ),
+            (
+                "presets/interactive/previewtrails2",
+                SceneParticleRendererFamily::RopeTrail,
+                SceneParticleScheduleMode::InputDriven,
+            ),
+            (
+                "scenes/particleelementpreviews/rope",
+                SceneParticleRendererFamily::Rope,
+                SceneParticleScheduleMode::Autonomous,
+            ),
+            (
+                "scenes/particleelementpreviews/ropetrail",
+                SceneParticleRendererFamily::RopeTrail,
+                SceneParticleScheduleMode::InputDriven,
+            ),
+        ] {
+            let mut particle = particle_object(4, entry_id, SceneParticleKind::LineTrail);
+            if let EvaluatedSceneObject::Particle { base, .. } = &mut particle {
+                base.transform.position = [0.0, 0.0, 0.0];
+                base.transform.rotation = 0.0;
+            }
+            let mut scene = runtime_scene_with_objects(vec![(4, particle)], vec![4]);
+            scene.source.particle_runtimes = vec![supported_rope_particle_runtime(
+                4,
+                family,
+                schedule_mode,
+            )];
+
+            let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+            assert!(
+                !report.is_blocked(),
+                "{entry_id} should remain renderable, got issues: {:?}",
+                report.issues
+            );
+            assert!(
+                report.plan.particles.is_empty(),
+                "{entry_id} should not fall back to legacy particle draw items"
+            );
+            assert_eq!(
+                report.plan.rope_particles.len(),
+                1,
+                "{entry_id} should produce one rope render item"
+            );
+            assert_eq!(
+                report.plan.draw_order,
+                vec![SceneRenderDrawItem {
+                    object_id: 4,
+                    kind: SceneRenderDrawKind::RopeParticle,
+                }],
+                "{entry_id} should submit a rope draw item"
+            );
+
+            let rope_item = &report.plan.rope_particles[0];
+            assert_eq!(rope_item.renderer_family, family, "{entry_id} family mismatch");
+            assert_eq!(
+                rope_item.schedule_mode, schedule_mode,
+                "{entry_id} schedule mode mismatch"
+            );
+            assert!(
+                rope_item.control_points.len() >= 2,
+                "{entry_id} should expose drawable rope topology"
+            );
+            assert!(
+                rope_item.segment_count > 0 && rope_item.width > 0.0,
+                "{entry_id} should expose drawable rope geometry"
+            );
+            assert!(
+                rope_item.texture_path.is_some(),
+                "{entry_id} should bridge the minimal rope material"
+            );
+        }
+    }
+
+    #[test]
     fn render_plan_keeps_pointer_control_point_trails_input_driven() {
         let mut scene = runtime_scene_with_objects(
             vec![(4, particle_object(4, "Trail", SceneParticleKind::LineTrail))],
