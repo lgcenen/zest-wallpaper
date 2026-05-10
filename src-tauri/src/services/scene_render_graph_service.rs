@@ -1729,13 +1729,18 @@ fn effect_material_plan_failure_issue(
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| effect_material_path.to_string());
+                let phase_scope = if error.contains("requires phase-10d") {
+                    "phase-10d graph input scope"
+                } else {
+                    "phase-10b"
+                };
                 return SceneGraphIssue {
                     severity,
                     code: SceneGraphIssueCode::InvalidEffect,
                     diagnostic_code: Some("effect-unsupported"),
                     message: format!(
-                        "\"{}\" resolved effect material {}, but phase-10b does not support authored shader source pair {} yet.",
-                        object_name, effect_material_path, shader_ref
+                        "\"{}\" resolved effect material {}, but {} does not support authored shader source pair {} yet.",
+                        object_name, effect_material_path, phase_scope, shader_ref
                     ),
                     object_id: Some(object_id),
                     object_name: Some(object_name.to_string()),
@@ -1791,9 +1796,14 @@ fn effect_material_plan_failure_issue(
         Some("effect-invalid")
     };
     let message = if diagnostic_code == Some("effect-unsupported") {
+        let phase_scope = if error.contains("requires phase-10d") {
+            "phase-10d graph input scope"
+        } else {
+            "phase-10b"
+        };
         format!(
-            "\"{}\" resolved effect material {}, but phase-10b does not support that authored effect shader contract.",
-            object_name, effect_material_path
+            "\"{}\" resolved effect material {}, but {} does not support that authored effect shader contract.",
+            object_name, effect_material_path, phase_scope
         )
     } else {
         format!(
@@ -4981,8 +4991,20 @@ mod tests {
     }
 
     #[test]
-    fn phase10_graph_marks_blur_and_shine_as_phase10d_blockers() {
-        for family in ["blur", "shine"] {
+    fn phase10_graph_marks_phase10d_authored_effect_families_as_blockers() {
+        for family in [
+            "blur",
+            "blurprecise",
+            "blurradial",
+            "cursorripple",
+            "glitter",
+            "godrays",
+            "localcontrast",
+            "motionblur",
+            "refraction",
+            "shine",
+            "fluidsimulation",
+        ] {
             let temp = tempdir().expect("temp dir");
             let managed = temp.path().join("managed");
             let extracted = managed.join("extracted");
@@ -5055,7 +5077,7 @@ mod tests {
             let issue = report
                 .issues
                 .iter()
-                .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+                .find(|issue| issue.resource_present_but_unsupported)
                 .expect("unsupported effect issue");
             assert!(issue.resource_present_but_unsupported);
             assert!(
@@ -5064,7 +5086,7 @@ mod tests {
                     .as_deref()
                     .unwrap_or_default()
                     .contains("phase-10d"),
-                "detail should point at phase-10d capability boundary: {:?}",
+                "detail should point at phase-10d capability boundary for {family}: {:?}",
                 issue.detail
             );
         }
