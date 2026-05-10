@@ -819,6 +819,26 @@ fragment float4 phase10_effect_fragment(
     sampled.rgb = apply_tint_blend(sampled.rgb, blend_colors.rgb, blend * uniforms.intensity * blend_colors.a);
     sampled.a *= uniforms.radius;
 #endif
+#elif PHASE10_EFFECT_DEPTHPARALLAX
+    float depth = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r
+        : 0.0;
+    float mask = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        mask *= aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float layers = 1.0;
+#if QUALITY == 1
+    layers = 24.0;
+#elif QUALITY == 2
+    layers = 64.0;
+#endif
+    float layer_factor = mix(1.0, 0.35, min(layers / 64.0, 1.0));
+    float2 pointer = (primary_uv - float2(0.5)) * 2.0;
+    float2 offset = (depth - uniforms.user0.z) * pointer * uniforms.user0.xy * uniforms.user0.w * 0.04 * layer_factor * mask;
+    sampled = sample_input(input_texture, texture_sampler, primary_uv + offset);
 #elif PHASE10_EFFECT_REFLECTION
     float mask = aux_red_mask(aux_texture, texture_sampler, stage_vertex.slot1_uv, uniforms.aux_texel_size);
     float2 reflected_uv = float2(primary_uv.x, 1.0 - primary_uv.y);
@@ -988,6 +1008,42 @@ fragment float4 phase10_effect_fragment(
     caustics_color *= caustics;
 #endif
     sampled.rgb = apply_tint_blend(sampled.rgb, caustics_color, mask * caustics_sample);
+#elif PHASE10_EFFECT_FIRE
+    float2 flow_colors = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).rg
+        : float2(0.498, 0.498);
+    float2 flow_mask = (flow_colors - float2(0.498, 0.498)) * 2.0;
+    float scaled_time = uniforms.time * uniforms.speed;
+    float cycle0 = fract(scaled_time);
+    float cycle1 = fract(scaled_time + 0.5);
+    float blend = 2.0 * abs(cycle0 - 0.5);
+    float cloud_scale = max(uniforms.user0.x, 0.01);
+    float2 flow_uv_offset0 = cloud_scale * flow_mask * 0.15 * (cycle0 - 0.5);
+    float2 flow_uv_offset1 = cloud_scale * flow_mask * 0.15 * (cycle1 - 0.5);
+    float cloud_background = has_aux_texture(uniforms.aux2_texel_size)
+        ? aux2_texture.sample(texture_sampler, fract(primary_uv * cloud_scale + scaled_time * 0.1)).r
+        : 1.0;
+    float cloud0 = has_aux_texture(uniforms.aux2_texel_size)
+        ? aux2_texture.sample(texture_sampler, fract(primary_uv * cloud_scale + flow_uv_offset0)).r
+        : 0.0;
+    float cloud1 = has_aux_texture(uniforms.aux2_texel_size)
+        ? aux2_texture.sample(texture_sampler, fract(primary_uv * cloud_scale + flow_uv_offset1)).r
+        : 0.0;
+    float stream_noise = mix(cloud0, cloud1, blend);
+    float2 base_uv = primary_uv;
+#if REFRACT
+    float flow_mask_length = pow(length(flow_mask), 2.0);
+    base_uv += mix(flow_mask, -flow_mask, stream_noise) * cloud_background * 0.5 * stream_noise * flow_mask_length * uniforms.angle;
+#endif
+    sampled = sample_input(input_texture, texture_sampler, base_uv);
+    stream_noise = fract(stream_noise + scaled_time * 0.2);
+    float color_noise = smoothstep(0.0, 0.5, stream_noise) * smoothstep(1.0, 0.5, stream_noise);
+    float flow_mask_length = pow(length(flow_mask), 2.0);
+    float3 fire_color = mix(uniforms.user1.rgb, uniforms.color.rgb, color_noise);
+    float blend_noise = mix(color_noise * flow_mask_length, 1.0, pow(flow_mask_length, 4.0));
+    blend_noise = smoothstep(uniforms.user0.y, uniforms.user0.y + uniforms.user0.z, blend_noise);
+    float stream_blend = uniforms.intensity * blend_noise;
+    sampled.rgb = apply_tint_blend(sampled.rgb, fire_color, stream_blend);
 #elif PHASE10_EFFECT_XRAY
     float4 mask = has_aux_texture(uniforms.aux_texel_size)
         ? aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0)))

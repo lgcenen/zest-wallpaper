@@ -52,12 +52,14 @@ pub enum SceneCompatEffectKind {
     WaterFlow,
     Nitro,
     Blend,
+    DepthParallax,
     Reflection,
     Shimmer,
     FilmGrain,
     Vhs,
     BlendGradient,
     WaterCaustics,
+    Fire,
     XRay,
 }
 
@@ -69,6 +71,7 @@ pub enum ScenePhase10bBindingSemantic {
     TimeOffset,
     OpacityMask,
     NormalMap,
+    DepthTexture,
     GradientTexture,
     SpriteTexture,
 }
@@ -496,6 +499,48 @@ const WATERCAUSTICS_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
     },
 ];
 
+const DEPTHPARALLAX_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::DepthTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+];
+
+const FIRE_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::FlowMap,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::NoiseTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+];
+
 const PULSE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Pulse,
     family: "pulse",
@@ -878,6 +923,16 @@ const BLEND_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract 
     runtime_binding_layout: BLEND_TEXTURE_SLOTS,
 };
 
+const DEPTHPARALLAX_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::DepthParallax,
+    family: "depthparallax",
+    required_texture_slots: &[0, 1],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[("MASK", 0), ("QUALITY", 1)],
+    supported_uniforms: &["center", "scale", "sens"],
+    runtime_binding_layout: DEPTHPARALLAX_TEXTURE_SLOTS,
+};
+
 const REFLECTION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Reflection,
     family: "reflection",
@@ -984,6 +1039,37 @@ const WATERCAUSTICS_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectC
         "uieditorpropertiestimeoffset",
     ],
     runtime_binding_layout: WATERCAUSTICS_TEXTURE_SLOTS,
+};
+
+const FIRE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Fire,
+    family: "fire",
+    required_texture_slots: &[0, 1, 2],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[("BLENDMODE", 0), ("REFRACT", 1)],
+    supported_uniforms: &[
+        "alpha",
+        "colorend",
+        "colorstart",
+        "distortion",
+        "feather",
+        "phasescale",
+        "scale",
+        "smoothness",
+        "speed",
+        "threshold",
+        "uieditorpropertiesalpha",
+        "uieditorpropertiescolorend",
+        "uieditorpropertiescolorstart",
+        "uieditorpropertiesdistortion",
+        "uieditorpropertiesfeather",
+        "uieditorpropertiesphasescale",
+        "uieditorpropertiesscale",
+        "uieditorpropertiessmoothness",
+        "uieditorpropertiesspeed",
+        "uieditorpropertiesthreshold",
+    ],
+    runtime_binding_layout: FIRE_TEXTURE_SLOTS,
 };
 
 const XRAY_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
@@ -1802,6 +1888,7 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "waterflow" => Some(&WATERFLOW_CONTRACT),
         "nitro" => Some(&NITRO_CONTRACT),
         "blend" => Some(&BLEND_CONTRACT),
+        "depthparallax" => Some(&DEPTHPARALLAX_CONTRACT),
         "reflection" => Some(&REFLECTION_CONTRACT),
         "shimmer" => Some(&SHIMMER_CONTRACT),
         "filmgrain" => Some(&FILMGRAIN_CONTRACT),
@@ -1809,6 +1896,7 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "blendgradient" => Some(&BLENDGRADIENT_CONTRACT),
         "caustics" => Some(&WATERCAUSTICS_CONTRACT),
         "watercaustics" => Some(&WATERCAUSTICS_CONTRACT),
+        "fire" => Some(&FIRE_CONTRACT),
         "xray" => Some(&XRAY_CONTRACT),
         _ => None,
     }
@@ -1844,12 +1932,14 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::WaterFlow => Some(&WATERFLOW_CONTRACT),
         SceneCompatEffectKind::Nitro => Some(&NITRO_CONTRACT),
         SceneCompatEffectKind::Blend => Some(&BLEND_CONTRACT),
+        SceneCompatEffectKind::DepthParallax => Some(&DEPTHPARALLAX_CONTRACT),
         SceneCompatEffectKind::Reflection => Some(&REFLECTION_CONTRACT),
         SceneCompatEffectKind::Shimmer => Some(&SHIMMER_CONTRACT),
         SceneCompatEffectKind::FilmGrain => Some(&FILMGRAIN_CONTRACT),
         SceneCompatEffectKind::Vhs => Some(&VHS_CONTRACT),
         SceneCompatEffectKind::BlendGradient => Some(&BLENDGRADIENT_CONTRACT),
         SceneCompatEffectKind::WaterCaustics => Some(&WATERCAUSTICS_CONTRACT),
+        SceneCompatEffectKind::Fire => Some(&FIRE_CONTRACT),
         SceneCompatEffectKind::XRay => Some(&XRAY_CONTRACT),
     }
 }
@@ -1994,6 +2084,9 @@ fn compat_effect_shader_defines(
         SceneCompatEffectKind::Blend => {
             defines.insert("PHASE10_EFFECT_BLEND".to_string(), 1);
         }
+        SceneCompatEffectKind::DepthParallax => {
+            defines.insert("PHASE10_EFFECT_DEPTHPARALLAX".to_string(), 1);
+        }
         SceneCompatEffectKind::Reflection => {
             defines.insert("PHASE10_EFFECT_REFLECTION".to_string(), 1);
         }
@@ -2011,6 +2104,9 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::WaterCaustics => {
             defines.insert("PHASE10_EFFECT_WATERCAUSTICS".to_string(), 1);
+        }
+        SceneCompatEffectKind::Fire => {
+            defines.insert("PHASE10_EFFECT_FIRE".to_string(), 1);
         }
         SceneCompatEffectKind::XRay => {
             defines.insert("PHASE10_EFFECT_XRAY".to_string(), 1);
@@ -2957,12 +3053,14 @@ mod tests {
             (SceneCompatEffectKind::WaterFlow, vec![0, 1, 2]),
             (SceneCompatEffectKind::Nitro, vec![0, 1, 2]),
             (SceneCompatEffectKind::Blend, vec![0, 1, 7]),
+            (SceneCompatEffectKind::DepthParallax, vec![0, 1, 2]),
             (SceneCompatEffectKind::Reflection, vec![0, 1]),
             (SceneCompatEffectKind::Shimmer, vec![0, 1, 2, 3]),
             (SceneCompatEffectKind::FilmGrain, vec![0, 1, 2]),
             (SceneCompatEffectKind::Vhs, vec![0, 1, 2]),
             (SceneCompatEffectKind::BlendGradient, vec![0, 1, 2, 3]),
             (SceneCompatEffectKind::WaterCaustics, vec![0, 1, 2, 3, 4, 5]),
+            (SceneCompatEffectKind::Fire, vec![0, 1, 2]),
             (SceneCompatEffectKind::XRay, vec![0, 1, 2, 3]),
         ];
 
@@ -3142,6 +3240,13 @@ mod tests {
         assert!(blend.supported_combo_defaults.contains(&("OPACITYMASK", 0)));
         assert!(blend.supported_uniforms.contains(&"multiply"));
 
+        let depthparallax =
+            super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::DepthParallax)
+                .expect("depthparallax contract");
+        assert!(depthparallax.supported_combo_defaults.contains(&("QUALITY", 1)));
+        assert!(depthparallax.supported_uniforms.contains(&"sens"));
+        assert!(depthparallax.supported_uniforms.contains(&"scale"));
+
         let watercaustics =
             super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::WaterCaustics)
                 .expect("watercaustics contract");
@@ -3149,6 +3254,12 @@ mod tests {
         assert!(watercaustics
             .supported_uniforms
             .contains(&"uieditorpropertiesbrightness"));
+
+        let fire = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Fire)
+            .expect("fire contract");
+        assert!(fire.supported_combo_defaults.contains(&("REFRACT", 1)));
+        assert!(fire.supported_uniforms.contains(&"threshold"));
+        assert!(fire.supported_uniforms.contains(&"colorstart"));
 
         let reflection = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Reflection)
             .expect("reflection contract");

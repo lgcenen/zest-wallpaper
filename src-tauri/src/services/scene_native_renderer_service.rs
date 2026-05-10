@@ -3984,6 +3984,17 @@ impl NativeSceneMetalRenderer {
                 uniforms.radius =
                     phase10_uniform_float(&uniform_values, &["alpha", "alphamultiply"], 1.0);
             }
+            Some(SceneCompatEffectKind::DepthParallax) => {
+                uniforms.user0 = phase10_uniform_vec4(
+                    &uniform_values,
+                    &["scale"],
+                    [1.0, 1.0, 0.3, 0.0],
+                );
+                uniforms.user0[2] =
+                    phase10_uniform_float(&uniform_values, &["center"], uniforms.user0[2]);
+                uniforms.user0[3] =
+                    phase10_uniform_float(&uniform_values, &["sens"], 1.0);
+            }
             Some(SceneCompatEffectKind::Reflection) => {
                 uniforms.intensity =
                     phase10_uniform_float(&uniform_values, &["alpha", "reflectionalpha"], 1.0);
@@ -4150,6 +4161,61 @@ impl NativeSceneMetalRenderer {
                     &uniform_values,
                     &["uieditorpropertiescolorend"],
                     [0.4, 0.6, 1.0, 1.0],
+                );
+                uniforms.user1[0] = color2[0];
+                uniforms.user1[1] = color2[1];
+                uniforms.user1[2] = color2[2];
+            }
+            Some(SceneCompatEffectKind::Fire) => {
+                uniforms.intensity = phase10_uniform_float(
+                    &uniform_values,
+                    &["alpha", "uieditorpropertiesalpha"],
+                    2.0,
+                );
+                uniforms.speed = phase10_uniform_float(
+                    &uniform_values,
+                    &["speed", "uieditorpropertiesspeed"],
+                    1.0,
+                );
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &["phasescale"],
+                    1.0,
+                );
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &["distortion"],
+                    1.0,
+                );
+                uniforms.user0 = phase10_uniform_vec4(
+                    &uniform_values,
+                    &["scale", "uieditorpropertiesscale"],
+                    [2.0, 0.0, 0.0, 0.0],
+                );
+                uniforms.user0[1] = phase10_uniform_float(
+                    &uniform_values,
+                    &["threshold", "uieditorpropertiesthreshold"],
+                    0.0,
+                );
+                uniforms.user0[2] = phase10_uniform_float(
+                    &uniform_values,
+                    &["feather", "uieditorpropertiesfeather"],
+                    0.5,
+                );
+                uniforms.user0[3] = phase10_uniform_float(
+                    &uniform_values,
+                    &["smoothness", "uieditorpropertiessmoothness"],
+                    0.0,
+                );
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["colorstart", "uieditorpropertiescolorstart"],
+                    [1.0, 0.25, 0.0, 1.0],
+                );
+                let color2 = phase10_uniform_color(
+                    &uniform_values,
+                    &["colorend", "uieditorpropertiescolorend"],
+                    [1.0, 0.8, 0.0, 1.0],
                 );
                 uniforms.user1[0] = color2[0];
                 uniforms.user1[1] = color2[1];
