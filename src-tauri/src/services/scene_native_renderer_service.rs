@@ -3716,7 +3716,9 @@ impl NativeSceneMetalRenderer {
                     phase10_uniform_float(&uniform_values, &["alpha", "useralpha"], 1.0);
             }
             Some(SceneCompatEffectKind::Transform) => {}
-            Some(SceneCompatEffectKind::Skew) => {}
+            Some(SceneCompatEffectKind::Skew) => {
+                uniforms.user0 = phase10_skew_controls(&uniform_values);
+            }
             Some(SceneCompatEffectKind::Perspective) => {
                 (uniforms.user0, uniforms.user1) =
                     phase10_perspective_corner_uniforms(&uniform_values);
@@ -5405,6 +5407,36 @@ fn phase10_uniform_vec4(
 }
 
 #[cfg(target_os = "macos")]
+fn phase10_optional_uniform_float(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+    aliases: &[&str],
+) -> Option<f32> {
+    aliases
+        .iter()
+        .find_map(|alias| values.get(*alias))
+        .and_then(SceneMaterialUniformValue::as_float)
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_optional_uniform_vec2(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+    aliases: &[&str],
+) -> Option<[f32; 2]> {
+    for alias in aliases {
+        let Some(value) = values.get(*alias) else {
+            continue;
+        };
+        if let Some(vector) = value.as_float2() {
+            return Some(vector);
+        }
+        if let Some(number) = value.as_float() {
+            return Some([number, number]);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
 fn phase10_perspective_corner_uniforms(
     values: &BTreeMap<String, SceneMaterialUniformValue>,
 ) -> ([f32; 4], [f32; 4]) {
@@ -5416,6 +5448,59 @@ fn phase10_perspective_corner_uniforms(
         [point0[0], point0[1], point1[0], point1[1]],
         [point2[0], point2[1], point3[0], point3[1]],
     )
+}
+
+#[cfg(target_os = "macos")]
+fn phase10_skew_controls(
+    values: &BTreeMap<String, SceneMaterialUniformValue>,
+) -> [f32; 4] {
+    let direct_anchor = phase10_optional_uniform_vec2(
+        values,
+        &["anchor", "uieditorpropertiesanchor"],
+    );
+    let direct_skew =
+        phase10_optional_uniform_vec2(values, &["skew", "uieditorpropertiesskew"]);
+    let direct_skew_x =
+        phase10_optional_uniform_float(values, &["skewx", "uieditorpropertiesskewx"]);
+    let direct_skew_y =
+        phase10_optional_uniform_float(values, &["skewy", "uieditorpropertiesskewy"]);
+    let top = phase10_optional_uniform_float(values, &["top", "uieditorpropertiestop"]);
+    let bottom =
+        phase10_optional_uniform_float(values, &["bottom", "uieditorpropertiesbottom"]);
+    let left = phase10_optional_uniform_float(values, &["left", "uieditorpropertiesleft"]);
+    let right = phase10_optional_uniform_float(values, &["right", "uieditorpropertiesright"]);
+
+    let mut anchor = direct_anchor.unwrap_or([0.5, 0.5]);
+    let mut skew_x = direct_skew.map(|vector| vector[0]).unwrap_or(0.0);
+    let mut skew_y = direct_skew.map(|vector| vector[1]).unwrap_or(0.0);
+
+    if let Some(value) = direct_skew_x {
+        skew_x = value;
+    } else if let (Some(top), Some(bottom)) = (top, bottom) {
+        skew_x = bottom - top;
+        if direct_anchor.is_none() && skew_x.abs() >= 1e-6 {
+            anchor[1] = (-top / skew_x).clamp(0.0, 1.0);
+        }
+    } else if let Some(top) = top {
+        skew_x = -top * 2.0;
+    } else if let Some(bottom) = bottom {
+        skew_x = bottom * 2.0;
+    }
+
+    if let Some(value) = direct_skew_y {
+        skew_y = value;
+    } else if let (Some(left), Some(right)) = (left, right) {
+        skew_y = right - left;
+        if direct_anchor.is_none() && skew_y.abs() >= 1e-6 {
+            anchor[0] = (-left / skew_y).clamp(0.0, 1.0);
+        }
+    } else if let Some(left) = left {
+        skew_y = -left * 2.0;
+    } else if let Some(right) = right {
+        skew_y = right * 2.0;
+    }
+
+    [skew_x, skew_y, anchor[0], anchor[1]]
 }
 
 #[cfg(target_os = "macos")]
@@ -9559,6 +9644,55 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn phase10_skew_uniforms_pack_skew_axes_and_anchor_controls() {
+        let user0 = super::phase10_skew_controls(&BTreeMap::from([
+            (
+                "skewx".to_string(),
+                SceneMaterialUniformValue::Float(0.18f32.to_bits()),
+            ),
+            (
+                "skewy".to_string(),
+                SceneMaterialUniformValue::Float((-0.12f32).to_bits()),
+            ),
+            (
+                "anchor".to_string(),
+                SceneMaterialUniformValue::Float2([0.35f32.to_bits(), 0.6f32.to_bits()]),
+            ),
+        ]));
+
+        assert_eq!(user0, [0.18, -0.12, 0.35, 0.6]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_skew_uniforms_derive_axes_from_edge_offsets() {
+        let user0 = super::phase10_skew_controls(&BTreeMap::from([
+            (
+                "top".to_string(),
+                SceneMaterialUniformValue::Float((-0.09f32).to_bits()),
+            ),
+            (
+                "bottom".to_string(),
+                SceneMaterialUniformValue::Float(0.09f32.to_bits()),
+            ),
+            (
+                "left".to_string(),
+                SceneMaterialUniformValue::Float(0.06f32.to_bits()),
+            ),
+            (
+                "right".to_string(),
+                SceneMaterialUniformValue::Float((-0.14f32).to_bits()),
+            ),
+        ]));
+
+        assert!((user0[0] - 0.18).abs() < 0.0001);
+        assert!((user0[1] + 0.20).abs() < 0.0001);
+        assert!((user0[2] - 0.3).abs() < 0.0001);
+        assert!((user0[3] - 0.5).abs() < 0.0001);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn phase10_spin_uniforms_pack_amount_speed_and_center_controls() {
         let (angle, speed, user0) = super::phase10_spin_controls(&BTreeMap::from([
             (
@@ -9765,6 +9899,63 @@ mod tests {
         assert!(!shader.contains(
             "#elif PHASE10_EFFECT_PERSPECTIVE\n    float mask = step(0.0, stage_vertex.position.w);\n    float2 perspective_uv = primary_uv;"
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_skew_shader_uses_inverse_shear_with_anchor_controls() {
+        let shader_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal");
+        let shader = fs::read_to_string(shader_path).expect("effect compat shader");
+
+        assert!(shader.contains("float skew_x = uniforms.user0.x;"));
+        assert!(shader.contains("float skew_y = uniforms.user0.y;"));
+        assert!(shader.contains("float2 anchor = uniforms.user0.zw;"));
+        assert!(shader.contains("float determinant = 1.0 - skew_x * skew_y;"));
+        assert!(shader.contains("float2 local = primary_uv - anchor;"));
+        assert!(shader.contains("skew_uv = float2("));
+        assert!(shader.contains("skew_uv = clamp(skew_uv, float2(0.0), float2(1.0));"));
+        assert!(!shader.contains("#elif PHASE10_EFFECT_SKEW\n    float2 skew_uv = primary_uv;\n#if REPEAT\n    skew_uv = fract(skew_uv);\n#endif\n    sampled = sample_input(input_texture, texture_sampler, skew_uv);"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase10_skew_shader_compiles_to_pipeline_state() {
+        use crate::services::scene_shader_material_service::{
+            SceneShaderProgram, SceneShaderProgramKind,
+        };
+        let device = MTLCreateSystemDefaultDevice().expect("Metal device");
+        let program = SceneShaderProgram {
+            key: "test:skew".to_string(),
+            kind: SceneShaderProgramKind::EffectCompat(SceneCompatEffectKind::Skew),
+            metal_source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/scene/assets/shaders/compat/scene-effect-compat.metal"),
+            vertex_entry: "phase10_effect_vertex",
+            fragment_entry: "phase10_effect_fragment",
+            variant_defines: BTreeMap::from([("PHASE10_EFFECT_SKEW".to_string(), 1)]),
+        };
+
+        let repeat0 = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::from([
+                ("PHASE10_EFFECT_SKEW".to_string(), 1),
+                ("REPEAT".to_string(), 0),
+            ]),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("skew repeat=0 compile");
+        let repeat1 = super::compile_scene_shader_program_pipeline(
+            &device,
+            &program,
+            &BTreeMap::from([
+                ("PHASE10_EFFECT_SKEW".to_string(), 1),
+                ("REPEAT".to_string(), 1),
+            ]),
+            super::SceneRenderBlendMode::Normal,
+        )
+        .expect("skew repeat=1 compile");
+        let _ = (repeat0, repeat1);
     }
 
     #[cfg(target_os = "macos")]

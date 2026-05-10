@@ -713,7 +713,24 @@ const SKEW_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     required_texture_slots: &[0],
     supported_texture_slots: &[0],
     supported_combo_defaults: &[("REPEAT", 1)],
-    supported_uniforms: &[],
+    supported_uniforms: &[
+        "anchor",
+        "bottom",
+        "left",
+        "right",
+        "skew",
+        "skewx",
+        "skewy",
+        "top",
+        "uieditorpropertiesanchor",
+        "uieditorpropertiesbottom",
+        "uieditorpropertiesleft",
+        "uieditorpropertiesright",
+        "uieditorpropertiesskew",
+        "uieditorpropertiesskewx",
+        "uieditorpropertiesskewy",
+        "uieditorpropertiestop",
+    ],
     runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
 };
 
@@ -3171,6 +3188,11 @@ mod tests {
         let skew = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Skew)
             .expect("skew contract");
         assert!(skew.supported_combo_defaults.contains(&("REPEAT", 1)));
+        assert!(skew.supported_uniforms.contains(&"skewx"));
+        assert!(skew.supported_uniforms.contains(&"skewy"));
+        assert!(skew.supported_uniforms.contains(&"anchor"));
+        assert!(skew.supported_uniforms.contains(&"top"));
+        assert!(skew.supported_uniforms.contains(&"right"));
 
         let perspective =
             super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Perspective)

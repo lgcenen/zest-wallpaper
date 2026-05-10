@@ -2804,6 +2804,33 @@ mod tests {
                           ]
                         }}"#
                     ),
+                    "skew" => format!(
+                        r#"{{
+                          "objects":[
+                            {{
+                              "id":211,
+                              "name":"{family}",
+                              "image":"models/util/solidlayer.json",
+                              "origin":"960 540 0",
+                              "size":"256 256",
+                              "effects":[
+                                {{
+                                  "file":"effects/{family}/effect.json",
+                                  "visible":true,
+                                  "passes":[{{
+                                    "combos":{{"REPEAT":1}},
+                                    "constantshadervalues":{{
+                                      "skewx":0.18,
+                                      "skewy":-0.12,
+                                      "anchor":"0.35 0.6"
+                                    }}
+                                  }}]
+                                }}
+                              ]
+                            }}
+                          ]
+                        }}"#
+                    ),
                     "transform" => format!(
                         r#"{{
                           "objects":[

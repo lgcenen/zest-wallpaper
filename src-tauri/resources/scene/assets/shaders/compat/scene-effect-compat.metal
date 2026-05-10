@@ -509,9 +509,22 @@ fragment float4 phase10_effect_fragment(
 #elif PHASE10_EFFECT_TRANSFORM
     sampled = sample_input(input_texture, texture_sampler, fract(primary_uv));
 #elif PHASE10_EFFECT_SKEW
+    float skew_x = uniforms.user0.x;
+    float skew_y = uniforms.user0.y;
+    float2 anchor = uniforms.user0.zw;
+    float2 local = primary_uv - anchor;
+    float determinant = 1.0 - skew_x * skew_y;
     float2 skew_uv = primary_uv;
+    if (fabs(determinant) >= 1e-6) {
+        skew_uv = float2(
+            (local.x - skew_x * local.y) / determinant,
+            (local.y - skew_y * local.x) / determinant
+        ) + anchor;
+    }
 #if REPEAT
     skew_uv = fract(skew_uv);
+#else
+    skew_uv = clamp(skew_uv, float2(0.0), float2(1.0));
 #endif
     sampled = sample_input(input_texture, texture_sampler, skew_uv);
 #elif PHASE10_EFFECT_PERSPECTIVE
