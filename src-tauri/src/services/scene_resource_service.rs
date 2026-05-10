@@ -6,6 +6,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::services::{
@@ -90,6 +91,18 @@ pub struct SceneTextFontLookup {
 pub struct SceneTextureResourceLookup {
     pub lookup: SceneResourceLookup,
     pub matched_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneTextureFrame {
+    pub uv_rect: [f32; 4],
+    pub aspect_ratio: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneTextureMetadata {
+    pub metadata_path: Option<PathBuf>,
+    pub frames: Vec<SceneTextureFrame>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -508,6 +521,32 @@ impl SceneResourceResolver {
         }
     }
 
+    pub fn inspect_texture_metadata(&self, texture_path: &Path) -> SceneTextureMetadata {
+        let metadata_candidates = self.texture_metadata_candidates(texture_path);
+        let dimensions = scene_texture_dimensions(texture_path);
+        let matched_metadata_path = metadata_candidates
+            .iter()
+            .find(|candidate| candidate.is_file())
+            .cloned();
+        let frames = matched_metadata_path
+            .as_deref()
+            .and_then(|metadata_path| {
+                dimensions.and_then(|(texture_width, texture_height)| {
+                    read_scene_texture_metadata(metadata_path)
+                        .ok()
+                        .and_then(|metadata| {
+                            parse_scene_texture_frames(&metadata, texture_width, texture_height)
+                        })
+                })
+            })
+            .unwrap_or_default();
+
+        SceneTextureMetadata {
+            metadata_path: matched_metadata_path,
+            frames,
+        }
+    }
+
     fn search_candidates(&self, value: &Path) -> Vec<PathBuf> {
         let mut ordered = Vec::new();
         let mut seen = BTreeSet::new();
@@ -757,6 +796,26 @@ impl SceneResourceResolver {
         dirs
     }
 
+    fn texture_metadata_candidates(&self, texture_path: &Path) -> Vec<PathBuf> {
+        let mut candidates = vec![texture_metadata_path(texture_path)];
+        let Ok(relative) = texture_path.strip_prefix(&self.decoded_root) else {
+            return candidates;
+        };
+
+        let stem = relative.with_extension("");
+        for root in self.raw_search_roots() {
+            for extension in ["tex", "png", "jpg", "jpeg", "webp", "gif", "bmp", "tga"] {
+                let raw_candidate = root.join(stem.with_extension(extension));
+                let metadata_candidate = texture_metadata_path(&raw_candidate);
+                if !candidates.contains(&metadata_candidate) {
+                    candidates.push(metadata_candidate);
+                }
+            }
+        }
+
+        candidates
+    }
+
     fn equivalent_local_roots(
         &self,
         local_root_kind: SceneResourceRootKind,
@@ -908,6 +967,110 @@ fn texture_tex_sidecar_path(texture_path: &Path) -> Option<PathBuf> {
             .map(|parent| parent.join(&sidecar_name))
             .unwrap_or_else(|| PathBuf::from(sidecar_name)),
     )
+}
+
+pub fn texture_metadata_path(texture_path: &Path) -> PathBuf {
+    let file_name = texture_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".tex-json") || lower.ends_with(".tex.json") {
+        return texture_path.to_path_buf();
+    }
+    if lower.ends_with(".tex") {
+        return texture_path.with_extension("tex-json");
+    }
+    texture_path.with_extension("tex-json")
+}
+
+pub fn scene_texture_dimensions(texture_path: &Path) -> Option<(f64, f64)> {
+    let extension = texture_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    if extension.as_deref() == Some("tex") {
+        return crate::tex::inspect_tex_resolution(texture_path)
+            .ok()
+            .map(|resolution| {
+                (
+                    resolution.content_width.max(1) as f64,
+                    resolution.content_height.max(1) as f64,
+                )
+            });
+    }
+    image::image_dimensions(texture_path)
+        .ok()
+        .map(|(width, height)| (width.max(1) as f64, height.max(1) as f64))
+}
+
+pub fn load_scene_texture_image(texture_path: &Path) -> Result<image::DynamicImage, String> {
+    crate::tex::load_texture_image(texture_path).map_err(|error| {
+        format!(
+            "unable to decode scene texture {}: {error}",
+            texture_path.display()
+        )
+    })
+}
+
+fn read_scene_texture_metadata(path: &Path) -> Result<Value, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("unable to read {}: {error}", path.display()))?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("unable to parse {}: {error}", path.display()))
+}
+
+fn parse_scene_texture_frames(
+    metadata: &Value,
+    texture_width: f64,
+    texture_height: f64,
+) -> Option<Vec<SceneTextureFrame>> {
+    let sequences = metadata.get("spritesheetsequences")?.as_array()?;
+    let mut frames = Vec::new();
+
+    for sequence in sequences {
+        let frame_count = sequence
+            .get("frames")
+            .and_then(Value::as_f64)
+            .map(|value| value.round().max(0.0) as usize)
+            .unwrap_or(0)
+            .min(4096);
+        let frame_width = sequence.get("width").and_then(Value::as_f64).unwrap_or(0.0);
+        let frame_height = sequence
+            .get("height")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        if frame_count == 0 || frame_width <= 0.0 || frame_height <= 0.0 {
+            continue;
+        }
+
+        let columns = (texture_width / frame_width).round().max(1.0) as usize;
+        for index in 0..frame_count {
+            let column = index % columns;
+            let row = index / columns;
+            let left = column as f64 * frame_width;
+            let top = row as f64 * frame_height;
+            if left >= texture_width || top >= texture_height {
+                continue;
+            }
+            let right = (left + frame_width).min(texture_width);
+            let bottom = (top + frame_height).min(texture_height);
+            if right <= left || bottom <= top {
+                continue;
+            }
+            frames.push(SceneTextureFrame {
+                uv_rect: [
+                    (left / texture_width) as f32,
+                    (top / texture_height) as f32,
+                    (right / texture_width) as f32,
+                    (bottom / texture_height) as f32,
+                ],
+                aspect_ratio: ((right - left) / (bottom - top)).clamp(0.001, 1000.0),
+            });
+        }
+    }
+
+    (!frames.is_empty()).then_some(frames)
 }
 
 fn register_shader_source_candidates_for_root(
@@ -1510,6 +1673,95 @@ mod tests {
                 "{authored} should resolve to the .tex sidecar"
             );
         }
+    }
+
+    #[test]
+    fn texture_metadata_reads_spritesheet_sequences_from_tex_sidecar() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let extracted_root = managed_root.join("extracted");
+        let texture_path = extracted_root.join("textures").join("atlas.png");
+
+        fs::create_dir_all(texture_path.parent().expect("texture dir")).expect("texture dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8,
+            4,
+            image::Rgba([255, 255, 255, 255]),
+        ))
+        .save(&texture_path)
+        .expect("atlas texture");
+        fs::write(
+            extracted_root.join("textures").join("atlas.tex-json"),
+            r#"{"spritesheetsequences":[{"frames":8,"width":2,"height":2}]}"#,
+        )
+        .expect("atlas metadata");
+
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let metadata = resolver.inspect_texture_metadata(&texture_path);
+
+        assert_eq!(
+            metadata.metadata_path,
+            Some(extracted_root.join("textures").join("atlas.tex-json"))
+        );
+        assert_eq!(metadata.frames.len(), 8);
+        assert_eq!(metadata.frames[0].uv_rect, [0.0, 0.0, 0.25, 0.5]);
+        assert_eq!(metadata.frames[1].uv_rect, [0.25, 0.0, 0.5, 0.5]);
+        assert_eq!(metadata.frames[4].uv_rect, [0.0, 0.5, 0.25, 1.0]);
+    }
+
+    #[test]
+    fn tex_texture_metadata_prefers_tex_json_sidecar_and_content_dimensions() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let extracted_root = managed_root.join("extracted");
+        let texture_path = extracted_root.join("textures").join("atlas.tex");
+
+        fs::create_dir_all(texture_path.parent().expect("texture dir")).expect("texture dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        fs::write(&texture_path, {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"TEXV0005\0");
+            bytes.extend_from_slice(b"TEXI0001\0");
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&8_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&2_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(b"TEXB0004\0");
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&8_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_i32.to_le_bytes());
+            bytes.extend_from_slice(&(8_i32 * 4_i32 * 4_i32).to_le_bytes());
+            for _ in 0..(8 * 4) {
+                bytes.extend_from_slice(&[255, 255, 255, 255]);
+            }
+            bytes
+        })
+        .expect("write tex");
+        fs::write(
+            extracted_root.join("textures").join("atlas.tex-json"),
+            r#"{"spritesheetsequences":[{"frames":4,"width":2,"height":1}]}"#,
+        )
+        .expect("atlas metadata");
+
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let metadata = resolver.inspect_texture_metadata(&texture_path);
+
+        assert_eq!(metadata.frames.len(), 4);
+        assert_eq!(metadata.frames[0].uv_rect, [0.0, 0.0, 0.5, 0.5]);
+        assert_eq!(metadata.frames[2].uv_rect, [0.0, 0.5, 0.5, 1.0]);
     }
 
     #[test]

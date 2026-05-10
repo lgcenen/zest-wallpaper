@@ -139,6 +139,7 @@ pub struct SceneRenderVisualItem {
     pub source_kind: SceneRenderSourceKind,
     pub quad: SceneRenderQuad,
     pub blend_mode: SceneRenderBlendMode,
+    pub uv_rect: [f32; 4],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -522,6 +523,7 @@ pub fn build_scene_render_plan_with_resolver(
                     continue;
                 };
 
+                let uv_rect = visual_texture_uv_rect(resolver, &texture_path, source_kind);
                 visuals.push(SceneRenderVisualItem {
                     object_id: base.id,
                     object_name: base.name.clone(),
@@ -529,6 +531,7 @@ pub fn build_scene_render_plan_with_resolver(
                     source_kind,
                     quad: quad_from_bounds(bounds, base.transform.rotation, base.opacity, base),
                     blend_mode: parse_visual_blend_mode(blend_mode.as_deref(), *color_blend_mode),
+                    uv_rect,
                 });
                 draw_order.push(SceneRenderDrawItem {
                     object_id: base.id,
@@ -592,9 +595,13 @@ pub fn build_scene_render_plan_with_resolver(
                 let runtime = source_particle_runtimes.get(&base.id).copied();
 
                 if runtime_prefers_first_class_rope_particles(runtime) {
-                    let Some(rope_item) =
-                        plan_rope_particle_item(base, color.as_deref(), runtime, resolver, &mut issues)
-                    else {
+                    let Some(rope_item) = plan_rope_particle_item(
+                        base,
+                        color.as_deref(),
+                        runtime,
+                        resolver,
+                        &mut issues,
+                    ) else {
                         continue;
                     };
                     rope_particles.push(rope_item);
@@ -1339,11 +1346,11 @@ fn plan_rope_particle_item(
         return None;
     }
 
-    let material = match resolve_rope_particle_material(base.id, &base.name, runtime, resolver, issues)
-    {
-        RopeParticleMaterialResolution::Supported(material) => material,
-        RopeParticleMaterialResolution::Unsupported => return None,
-    };
+    let material =
+        match resolve_rope_particle_material(base.id, &base.name, runtime, resolver, issues) {
+            RopeParticleMaterialResolution::Supported(material) => material,
+            RopeParticleMaterialResolution::Unsupported => return None,
+        };
 
     Some(SceneRenderRopeParticleItem {
         object_id: base.id,
@@ -1367,7 +1374,9 @@ fn plan_rope_particle_item(
             contract.alpha,
         ),
         material_path: contract.material_path.clone(),
-        texture_path: material.as_ref().map(|material| material.texture_path.clone()),
+        texture_path: material
+            .as_ref()
+            .map(|material| material.texture_path.clone()),
         blend_mode: material
             .as_ref()
             .map(|material| material.blend_mode)
@@ -2011,7 +2020,7 @@ fn resolve_sprite_particle_material(
     };
 
     Some(SpriteParticleMaterial {
-        texture_frames: sprite_particle_texture_frames(&texture_path),
+        texture_frames: sprite_particle_texture_frames(resolver, &texture_path),
         texture_path,
         blend_mode: parse_particle_material_blend_mode(
             pass.get("blending")
@@ -2044,7 +2053,9 @@ fn resolve_rope_particle_material(
             SceneRenderIssue::unsupported_particle_runtime(
                 object_id,
                 object_name,
-                Some("Rope particle material resolution requires Scene resource roots.".to_string()),
+                Some(
+                    "Rope particle material resolution requires Scene resource roots.".to_string(),
+                ),
             ),
         );
         return RopeParticleMaterialResolution::Unsupported;
@@ -2131,7 +2142,10 @@ fn resolve_rope_particle_material(
             SceneRenderIssue::unsupported_particle_runtime(
                 object_id,
                 object_name,
-                Some("Rope particle material bridge only supports a single base texture.".to_string()),
+                Some(
+                    "Rope particle material bridge only supports a single base texture."
+                        .to_string(),
+                ),
             ),
         );
         return RopeParticleMaterialResolution::Unsupported;
@@ -2160,62 +2174,19 @@ fn resolve_rope_particle_material(
     }))
 }
 
-fn sprite_particle_texture_frames(texture_path: &Path) -> Vec<SceneSpriteParticleFrame> {
-    let Some((texture_width, texture_height)) = sprite_particle_texture_dimensions(texture_path)
-    else {
-        return vec![full_sprite_particle_frame()];
-    };
-    let metadata_path = sprite_particle_texture_metadata_path(texture_path);
-    let Ok(metadata) = read_json_value(&metadata_path) else {
-        return vec![full_sprite_particle_frame()];
-    };
-    let Some(sequences) = metadata
-        .get("spritesheetsequences")
-        .and_then(Value::as_array)
-    else {
-        return vec![full_sprite_particle_frame()];
-    };
-
-    let mut frames = Vec::new();
-    for sequence in sequences {
-        let frame_count = sequence
-            .get("frames")
-            .and_then(value_as_f64)
-            .map(|value| value.round().max(0.0) as usize)
-            .unwrap_or(0)
-            .min(4096);
-        let frame_width = sequence.get("width").and_then(value_as_f64).unwrap_or(0.0);
-        let frame_height = sequence.get("height").and_then(value_as_f64).unwrap_or(0.0);
-        if frame_count == 0 || frame_width <= 0.0 || frame_height <= 0.0 {
-            continue;
-        }
-
-        let columns = (texture_width / frame_width).round().max(1.0) as usize;
-        for index in 0..frame_count {
-            let column = index % columns;
-            let row = index / columns;
-            let left = column as f64 * frame_width;
-            let top = row as f64 * frame_height;
-            if left >= texture_width || top >= texture_height {
-                continue;
-            }
-            let right = (left + frame_width).min(texture_width);
-            let bottom = (top + frame_height).min(texture_height);
-            if right <= left || bottom <= top {
-                continue;
-            }
-            frames.push(SceneSpriteParticleFrame {
-                uv_rect: [
-                    (left / texture_width) as f32,
-                    (top / texture_height) as f32,
-                    (right / texture_width) as f32,
-                    (bottom / texture_height) as f32,
-                ],
-                aspect_ratio: ((right - left) / (bottom - top)).clamp(0.001, 1000.0),
-            });
-        }
-    }
-
+fn sprite_particle_texture_frames(
+    resolver: &SceneResourceResolver,
+    texture_path: &Path,
+) -> Vec<SceneSpriteParticleFrame> {
+    let metadata = resolver.inspect_texture_metadata(texture_path);
+    let frames = metadata
+        .frames
+        .into_iter()
+        .map(|frame| SceneSpriteParticleFrame {
+            uv_rect: frame.uv_rect,
+            aspect_ratio: frame.aspect_ratio,
+        })
+        .collect::<Vec<_>>();
     if frames.is_empty() {
         vec![full_sprite_particle_frame()]
     } else {
@@ -2223,46 +2194,30 @@ fn sprite_particle_texture_frames(texture_path: &Path) -> Vec<SceneSpriteParticl
     }
 }
 
-fn sprite_particle_texture_metadata_path(texture_path: &Path) -> PathBuf {
-    let file_name = texture_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default();
-    let lower = file_name.to_ascii_lowercase();
-    if lower.ends_with(".tex-json") || lower.ends_with(".tex.json") {
-        return texture_path.to_path_buf();
-    }
-    if lower.ends_with(".tex") {
-        return texture_path.with_extension("tex-json");
-    }
-    texture_path.with_extension("tex-json")
-}
-
-fn sprite_particle_texture_dimensions(texture_path: &Path) -> Option<(f64, f64)> {
-    let extension = texture_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase());
-    if extension.as_deref() == Some("tex") {
-        return crate::tex::inspect_tex_resolution(texture_path)
-            .ok()
-            .map(|resolution| {
-                (
-                    resolution.content_width.max(1) as f64,
-                    resolution.content_height.max(1) as f64,
-                )
-            });
-    }
-    image::image_dimensions(texture_path)
-        .ok()
-        .map(|(width, height)| (width.max(1) as f64, height.max(1) as f64))
-}
-
 fn full_sprite_particle_frame() -> SceneSpriteParticleFrame {
     SceneSpriteParticleFrame {
         uv_rect: [0.0, 0.0, 1.0, 1.0],
         aspect_ratio: 1.0,
     }
+}
+
+fn visual_texture_uv_rect(
+    resolver: Option<&SceneResourceResolver>,
+    texture_path: &Path,
+    source_kind: SceneRenderSourceKind,
+) -> [f32; 4] {
+    if !matches!(source_kind, SceneRenderSourceKind::Image) {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+    let Some(resolver) = resolver else {
+        return [0.0, 0.0, 1.0, 1.0];
+    };
+    let metadata = resolver.inspect_texture_metadata(texture_path);
+    metadata
+        .frames
+        .first()
+        .map(|frame| frame.uv_rect)
+        .unwrap_or([0.0, 0.0, 1.0, 1.0])
 }
 
 fn load_particle_runtime_from_resource(
@@ -3840,11 +3795,10 @@ mod tests {
         assert!(report.issues.is_empty());
         let item = &report.plan.rope_particles[0];
         assert_eq!(item.blend_mode, SceneRenderBlendMode::Additive);
-        assert!(
-            item.texture_path
-                .as_ref()
-                .is_some_and(|path| path.ends_with("textures/rope.png"))
-        );
+        assert!(item
+            .texture_path
+            .as_ref()
+            .is_some_and(|path| path.ends_with("textures/rope.png")));
     }
 
     #[test]
@@ -4199,6 +4153,55 @@ mod tests {
         assert_eq!(frames[1].uv_rect, [0.25, 0.0, 0.5, 0.5]);
         assert_eq!(frames[4].uv_rect, [0.0, 0.5, 0.25, 1.0]);
         assert_eq!(frames[0].aspect_ratio, 1.0);
+    }
+
+    #[test]
+    fn render_plan_consumes_scene_visual_spritesheet_uv_from_resolved_texture_metadata() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let source_root = managed_root.join("source");
+        let decoded_root = managed_root.join("decoded");
+        let texture_path = decoded_root.join("gifs/gifscene.png");
+        let decoded_dir = texture_path.parent().expect("decoded dir");
+        let source_dir = source_root.join("gifs");
+        fs::create_dir_all(decoded_dir).expect("decoded dir");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 4, Rgba([255, 255, 255, 255])))
+            .save(&texture_path)
+            .expect("decoded texture");
+        fs::write(
+            source_dir.join("gifscene.tex-json"),
+            r#"{"spritesheetsequences":[{"frames":8,"width":2,"height":2}]}"#,
+        )
+        .expect("spritesheet metadata");
+
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let scene = runtime_scene_with_objects(
+            vec![(
+                7,
+                visual_object(
+                    7,
+                    "Gif Scene",
+                    SceneAssetKind::Image,
+                    Some(texture_path.display().to_string()),
+                    Some([0.0, 0.0, 640.0, 320.0]),
+                    [1.0, 1.0, 1.0],
+                    None,
+                    None,
+                ),
+            )],
+            vec![7],
+        );
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        assert!(report.issues.is_empty());
+        assert_eq!(report.plan.visuals.len(), 1);
+        assert_eq!(report.plan.visuals[0].uv_rect, [0.0, 0.0, 0.25, 0.5]);
     }
 
     #[test]

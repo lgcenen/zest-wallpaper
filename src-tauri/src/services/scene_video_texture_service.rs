@@ -185,6 +185,7 @@ mod tests {
                 flip_y: false,
             },
             blend_mode: SceneRenderBlendMode::Normal,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
         }
     }
 

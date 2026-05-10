@@ -42,8 +42,7 @@ use crate::{
             SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem,
             SceneRenderPlan, SceneRenderQuad, SceneRenderRopeParticleItem, SceneRenderSoundItem,
             SceneRenderSourceKind, SceneRenderSpriteParticleItem, SceneRenderTextItem,
-            SceneRenderVisualItem,
-            SceneTextHorizontalAlign,
+            SceneRenderVisualItem, SceneTextHorizontalAlign,
         },
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
         scene_runtime_settings_service,
@@ -1910,7 +1909,8 @@ impl NativeSceneMetalRenderer {
             self.prepare_phase10_graph(&phase10_graph, &mut required_keys)?;
         warnings.extend(phase10_warnings);
 
-        if !plan.audios.is_empty() || !plan.particles.is_empty() || !plan.rope_particles.is_empty() {
+        if !plan.audios.is_empty() || !plan.particles.is_empty() || !plan.rope_particles.is_empty()
+        {
             self.ensure_procedural_texture(
                 WHITE_TEXTURE_KEY,
                 build_white_texture_image(),
@@ -2194,7 +2194,11 @@ impl NativeSceneMetalRenderer {
             self.advance_particle_items(&plan.particles, input_frame.response, now_ms_f64);
         }
         if !plan.rope_particles.is_empty() {
-            self.advance_rope_particle_items(&plan.rope_particles, input_frame.response, now_ms_f64);
+            self.advance_rope_particle_items(
+                &plan.rope_particles,
+                input_frame.response,
+                now_ms_f64,
+            );
         }
         if !plan.sprite_particles.is_empty() {
             if !self.paused {
@@ -2232,8 +2236,7 @@ impl NativeSceneMetalRenderer {
                     let Some(texture) = texture.as_ref() else {
                         continue;
                     };
-                    let quad =
-                        quad_primitive_from_render_quad(item.quad, SceneRenderColor::default());
+                    let quad = quad_primitive_from_render_quad(item, SceneRenderColor::default());
                     self.draw_quad(
                         &encoder,
                         texture.as_ref(),
@@ -2250,8 +2253,20 @@ impl NativeSceneMetalRenderer {
                     let Some(texture) = self.text_texture_cache.get(&key) else {
                         continue;
                     };
-                    let quad =
-                        quad_primitive_from_render_quad(item.quad, SceneRenderColor::default());
+                    let quad = SceneQuadPrimitive {
+                        left: item.quad.left,
+                        top: item.quad.top,
+                        width: item.quad.width,
+                        height: item.quad.height,
+                        rotation: item.quad.rotation,
+                        opacity: item.quad.opacity,
+                        flip_x: item.quad.flip_x,
+                        flip_y: item.quad.flip_y,
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
+                        color: SceneRenderColor::default(),
+                        transform_origin_x: item.quad.left + item.quad.width / 2.0,
+                        transform_origin_y: item.quad.top + item.quad.height / 2.0,
+                    };
                     self.draw_quad(
                         &encoder,
                         texture.as_ref(),
@@ -2392,6 +2407,7 @@ impl NativeSceneMetalRenderer {
                                 quad: visual.quad,
                                 blend_mode: visual.blend_mode,
                                 texture: texture.clone(),
+                                uv_rect: full_quad_uv_rect(),
                             });
                             outputs.insert(visual.object_id, texture);
                         }
@@ -2438,6 +2454,7 @@ impl NativeSceneMetalRenderer {
                     quad: visual.quad,
                     blend_mode: visual.blend_mode,
                     texture: texture.clone(),
+                    uv_rect: full_quad_uv_rect(),
                 });
                 outputs.insert(visual.object_id, texture);
             }
@@ -2808,6 +2825,7 @@ impl NativeSceneMetalRenderer {
                     quad: item.quad,
                     blend_mode: item.blend_mode,
                     texture,
+                    uv_rect: item.uv_rect,
                 })
             }
             SceneRenderDrawKind::Text => {
@@ -2820,6 +2838,7 @@ impl NativeSceneMetalRenderer {
                     quad: item.quad,
                     blend_mode: SceneRenderBlendMode::Normal,
                     texture,
+                    uv_rect: full_quad_uv_rect(),
                 })
             }
             SceneRenderDrawKind::Audio
@@ -2865,7 +2884,20 @@ impl NativeSceneMetalRenderer {
                 layer.texture.as_ref(),
                 layer.blend_mode,
                 &projection,
-                quad_primitive_from_render_quad(layer.quad, SceneRenderColor::default()),
+                SceneQuadPrimitive {
+                    left: layer.quad.left,
+                    top: layer.quad.top,
+                    width: layer.quad.width,
+                    height: layer.quad.height,
+                    rotation: layer.quad.rotation,
+                    opacity: layer.quad.opacity,
+                    flip_x: layer.quad.flip_x,
+                    flip_y: layer.quad.flip_y,
+                    uv_rect: layer.uv_rect,
+                    color: SceneRenderColor::default(),
+                    transform_origin_x: layer.quad.left + layer.quad.width / 2.0,
+                    transform_origin_y: layer.quad.top + layer.quad.height / 2.0,
+                },
             );
         }
         encoder.endEncoding();
@@ -3200,13 +3232,23 @@ impl NativeSceneMetalRenderer {
                 output_texture.as_ref(),
                 visual.blend_mode,
                 projection,
-                quad_primitive_from_render_quad(
-                    visual.quad,
-                    visual
+                SceneQuadPrimitive {
+                    left: visual.quad.left,
+                    top: visual.quad.top,
+                    width: visual.quad.width,
+                    height: visual.quad.height,
+                    rotation: visual.quad.rotation,
+                    opacity: visual.quad.opacity,
+                    flip_x: visual.quad.flip_x,
+                    flip_y: visual.quad.flip_y,
+                    uv_rect: full_quad_uv_rect(),
+                    color: visual
                         .base_source_kind
                         .map(|_| visual.base_color)
                         .unwrap_or_default(),
-                ),
+                    transform_origin_x: visual.quad.left + visual.quad.width / 2.0,
+                    transform_origin_y: visual.quad.top + visual.quad.height / 2.0,
+                },
             );
             return;
         }
@@ -3221,7 +3263,20 @@ impl NativeSceneMetalRenderer {
                 texture.texture.as_ref(),
                 visual.blend_mode,
                 projection,
-                quad_primitive_from_render_quad(visual.quad, visual.base_color),
+                SceneQuadPrimitive {
+                    left: visual.quad.left,
+                    top: visual.quad.top,
+                    width: visual.quad.width,
+                    height: visual.quad.height,
+                    rotation: visual.quad.rotation,
+                    opacity: visual.quad.opacity,
+                    flip_x: visual.quad.flip_x,
+                    flip_y: visual.quad.flip_y,
+                    uv_rect: full_quad_uv_rect(),
+                    color: visual.base_color,
+                    transform_origin_x: visual.quad.left + visual.quad.width / 2.0,
+                    transform_origin_y: visual.quad.top + visual.quad.height / 2.0,
+                },
             );
             return;
         }
@@ -3286,7 +3341,20 @@ impl NativeSceneMetalRenderer {
                 texture.texture.as_ref(),
                 visual.blend_mode,
                 projection,
-                quad_primitive_from_render_quad(visual.quad, visual.base_color),
+                SceneQuadPrimitive {
+                    left: visual.quad.left,
+                    top: visual.quad.top,
+                    width: visual.quad.width,
+                    height: visual.quad.height,
+                    rotation: visual.quad.rotation,
+                    opacity: visual.quad.opacity,
+                    flip_x: visual.quad.flip_x,
+                    flip_y: visual.quad.flip_y,
+                    uv_rect: full_quad_uv_rect(),
+                    color: visual.base_color,
+                    transform_origin_x: visual.quad.left + visual.quad.width / 2.0,
+                    transform_origin_y: visual.quad.top + visual.quad.height / 2.0,
+                },
             );
         }
     }
@@ -4217,7 +4285,10 @@ impl NativeSceneMetalRenderer {
         for segment in self.rope_particle_scheduler.primitives(item, now_ms) {
             self.draw_quad(
                 encoder,
-                texture.as_ref().map(|texture| texture.as_ref()).unwrap_or(white_texture),
+                texture
+                    .as_ref()
+                    .map(|texture| texture.as_ref())
+                    .unwrap_or(white_texture),
                 item.blend_mode,
                 projection,
                 quad_primitive_from_rope_particle(segment),
@@ -4869,6 +4940,7 @@ struct Phase10BackgroundLayer {
     quad: SceneRenderQuad,
     blend_mode: SceneRenderBlendMode,
     texture: Retained<ProtocolObject<dyn MTLTexture>>,
+    uv_rect: [f32; 4],
 }
 
 #[cfg(target_os = "macos")]
@@ -5065,7 +5137,10 @@ fn sprite_particle_texture_paths(item: &SceneRenderSpriteParticleItem) -> Vec<Pa
 
 #[cfg(target_os = "macos")]
 fn particle_plan_signature(plan: &SceneRenderPlan) -> Option<u64> {
-    if plan.particles.is_empty() && plan.rope_particles.is_empty() && plan.sprite_particles.is_empty() {
+    if plan.particles.is_empty()
+        && plan.rope_particles.is_empty()
+        && plan.sprite_particles.is_empty()
+    {
         return None;
     }
 
@@ -6240,22 +6315,22 @@ fn scene_projection_for_size(
 
 #[cfg(target_os = "macos")]
 fn quad_primitive_from_render_quad(
-    quad: SceneRenderQuad,
+    item: &SceneRenderVisualItem,
     color: SceneRenderColor,
 ) -> SceneQuadPrimitive {
     SceneQuadPrimitive {
-        left: quad.left,
-        top: quad.top,
-        width: quad.width,
-        height: quad.height,
-        rotation: quad.rotation,
-        opacity: quad.opacity,
-        flip_x: quad.flip_x,
-        flip_y: quad.flip_y,
-        uv_rect: full_quad_uv_rect(),
+        left: item.quad.left,
+        top: item.quad.top,
+        width: item.quad.width,
+        height: item.quad.height,
+        rotation: item.quad.rotation,
+        opacity: item.quad.opacity,
+        flip_x: item.quad.flip_x,
+        flip_y: item.quad.flip_y,
+        uv_rect: item.uv_rect,
         color,
-        transform_origin_x: quad.left + quad.width / 2.0,
-        transform_origin_y: quad.top + quad.height / 2.0,
+        transform_origin_x: item.quad.left + item.quad.width / 2.0,
+        transform_origin_y: item.quad.top + item.quad.height / 2.0,
     }
 }
 
@@ -6343,7 +6418,7 @@ fn build_scene_vertices(
 ) -> [SceneVertex; 6] {
     let projection = scene_projection_for_size(view_width, view_height, plan, camera_offset);
     build_projected_quad_vertices(
-        quad_primitive_from_render_quad(item.quad, SceneRenderColor::default()),
+        quad_primitive_from_render_quad(item, SceneRenderColor::default()),
         &projection,
     )
 }
@@ -6592,16 +6667,17 @@ mod tests {
         SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderCamera,
         SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderParticleItem, SceneRenderPlan,
         SceneRenderQuad, SceneRenderRopeControlPointItem, SceneRenderRopeParticleItem,
-        SceneRenderSourceKind, SceneRenderTextFontBinding, SceneRenderTextItem, SceneRenderVisualItem,
+        SceneRenderSourceKind, SceneRenderTextFontBinding, SceneRenderTextItem,
+        SceneRenderVisualItem,
     };
 
     #[cfg(target_os = "macos")]
     use super::{
         build_scene_pipeline_states, build_scene_vertices, load_phase10_texture_image,
         load_phase10_texture_source, particle_plan_signature, phase10_texture_path_candidates,
-        quad_primitive_from_rope_particle,
-        scene_text_font_cache_key, should_retain_visual_in_draw_plan, text_texture_cache_key,
-        unpremultiply_rgba_pixels, SceneTextHorizontalAlign,
+        quad_primitive_from_rope_particle, scene_text_font_cache_key,
+        should_retain_visual_in_draw_plan, text_texture_cache_key, unpremultiply_rgba_pixels,
+        SceneTextHorizontalAlign,
     };
     use super::{
         now_playing_runtime_warnings_for_scene, phase10_background_source_order,
@@ -6686,6 +6762,7 @@ mod tests {
                             flip_y: false,
                         },
                         blend_mode: SceneRenderBlendMode::Normal,
+                        uv_rect: [0.0, 0.0, 1.0, 1.0],
                     })
                     .collect(),
                 texts: Vec::new(),
@@ -7051,7 +7128,9 @@ mod tests {
                 SceneRenderDrawKind::Particle if particle_ids.contains(&item.object_id) => {
                     sequence.push((item.object_id, SceneRenderDrawKind::Particle));
                 }
-                SceneRenderDrawKind::RopeParticle if rope_particle_ids.contains(&item.object_id) => {
+                SceneRenderDrawKind::RopeParticle
+                    if rope_particle_ids.contains(&item.object_id) =>
+                {
                     sequence.push((item.object_id, SceneRenderDrawKind::RopeParticle));
                 }
                 SceneRenderDrawKind::SpriteParticle
@@ -7656,11 +7735,17 @@ mod tests {
         };
         let quad = quad_primitive_from_rope_particle(primitive);
 
-        assert!(quad.width > 60.0, "rope quad should span full segment length");
+        assert!(
+            quad.width > 60.0,
+            "rope quad should span full segment length"
+        );
         assert!((quad.height - 6.0).abs() < 0.001);
         assert!((quad.transform_origin_x - 40.0).abs() < 0.001);
         assert!((quad.transform_origin_y - 35.0).abs() < 0.001);
-        assert!(quad.rotation.abs() > 0.1, "rope quad should rotate with segment direction");
+        assert!(
+            quad.rotation.abs() > 0.1,
+            "rope quad should rotate with segment direction"
+        );
         assert_eq!(quad.uv_rect[0], 0.25);
         assert_eq!(quad.uv_rect[1], -0.1);
     }
@@ -7920,6 +8005,7 @@ mod tests {
                 flip_y: false,
             },
             blend_mode: SceneRenderBlendMode::Normal,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
         };
         let mut image = video.clone();
         image.object_id = 9;
