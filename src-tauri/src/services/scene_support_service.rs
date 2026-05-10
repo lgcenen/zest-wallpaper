@@ -361,10 +361,9 @@ fn support_error_from_render_issue(
             SceneDiagnosticDomain::Particle,
             "particle-resource-unsupported",
         ),
-        SceneRenderIssueCode::ParticleNoRenderableOutput => (
-            SceneDiagnosticDomain::Particle,
-            "particle-output-empty",
-        ),
+        SceneRenderIssueCode::ParticleNoRenderableOutput => {
+            (SceneDiagnosticDomain::Particle, "particle-output-empty")
+        }
         SceneRenderIssueCode::MissingAssetPath | SceneRenderIssueCode::MissingAssetFile => {
             match object_kind {
                 "sound" => (
@@ -1013,6 +1012,32 @@ fn analyze_material_resources(
                             ),
                         ),
                     );
+                } else if let Some(matched_path) = texture_lookup.matched_path.as_deref() {
+                    if let Some(error) = scene_texture_support_error(matched_path) {
+                        push_unique_issue(
+                            warnings,
+                            SceneDiagnosticEntry::warning(
+                                "material-texture-unsupported",
+                                format!(
+                                    "{} resolves material texture {}, but the current native Scene resource decoder does not support it yet.",
+                                    object_name
+                                        .map(quoted)
+                                        .unwrap_or_else(|| "Scene".to_string()),
+                                    texture_name
+                                ),
+                            )
+                            .with_object(object_id, object_name, Some("visual"))
+                            .with_resource_path(Some(texture_name))
+                            .with_detail(
+                                SceneDiagnosticDetail::resource(
+                                    SceneDiagnosticDomain::Visual,
+                                    SceneDiagnosticResourceDetail::from_lookup(&texture_lookup)
+                                        .mark_present_but_unsupported(),
+                                )
+                                .with_note(error),
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -1077,6 +1102,10 @@ fn inspect_texture_with_effect_context(
             .inspect_texture_candidates(material_path, material_json_path, texture_name)
             .lookup
     }
+}
+
+fn scene_texture_support_error(path: &Path) -> Option<String> {
+    crate::services::scene_resource_service::inspect_scene_texture_image_support(path).err()
 }
 
 fn material_pass_values(json: &Value) -> Vec<&Value> {
@@ -1798,6 +1827,90 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "material-reference-unresolved"));
+    }
+
+    #[test]
+    fn support_report_marks_resolved_bc7_material_texture_as_present_but_unsupported() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        let extracted_root = managed_root.join("extracted");
+
+        fs::create_dir_all(extracted_root.join("models")).expect("models dir");
+        fs::create_dir_all(extracted_root.join("materials")).expect("materials dir");
+        fs::create_dir_all(extracted_root.join("textures")).expect("textures dir");
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        fs::write(
+            extracted_root.join("scene.json"),
+            r#"{"objects":[{"id":1,"name":"Hero","image":"models/hero.json"}]}"#,
+        )
+        .expect("scene json");
+        fs::write(
+            extracted_root.join("models").join("hero.json"),
+            r#"{"material":"materials/hero.material"}"#,
+        )
+        .expect("hero model");
+        fs::write(
+            extracted_root.join("materials").join("hero.material"),
+            r#"{"passes":[{"shader":"shaders/hero.frag","textures":["textures/hero.tex"]}]}"#,
+        )
+        .expect("hero material");
+        fs::write(extracted_root.join("textures").join("hero.tex"), {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"TEXV0005\0");
+            bytes.extend_from_slice(b"TEXI0001\0");
+            bytes.extend_from_slice(&12_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(b"TEXB0004\0");
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_i32.to_le_bytes());
+            bytes.extend_from_slice(&16_i32.to_le_bytes());
+            bytes.extend_from_slice(&[0_u8; 16]);
+            bytes
+        })
+        .expect("bc7 texture");
+
+        let report = analyze_scene_support_with_builtin_root(
+            &scene_record(&managed_root),
+            &builtin_root,
+            None,
+        );
+
+        let warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "material-texture-unsupported")
+            .expect("material texture unsupported warning");
+        let detail = warning
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.resource.as_ref())
+            .expect("texture resource detail");
+        assert_eq!(detail.authored_reference, "textures/hero.tex");
+        assert!(detail.reference_resolved);
+        assert!(detail.present_but_unsupported);
+        assert!(warning.message.contains("does not support it yet"));
+        assert!(warning
+            .detail
+            .as_ref()
+            .map(|detail| {
+                detail
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("BC7 TEX textures are not supported yet"))
+            })
+            .unwrap_or(false));
     }
 
     #[test]

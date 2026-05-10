@@ -356,17 +356,40 @@ fn is_video_texture(header: &TextureHeader, mipmap: &TextureMipmap) -> bool {
         || payload_looks_like_mp4(&mipmap.bytes)
 }
 
-fn decode_texture_image(header: &TextureHeader, mipmap: &TextureMipmap) -> Result<DynamicImage> {
+fn validate_tex_still_image_support(header: &TextureHeader, mipmap: &TextureMipmap) -> Result<()> {
+    if is_video_texture(header, mipmap) {
+        bail!("TEX entry stores video payloads and cannot be loaded as a still image");
+    }
+
     if let Some(free_image_format) = header.free_image_format {
         if matches!(
             free_image_format,
+            FREE_IMAGE_PNG | FREE_IMAGE_JPEG | FREE_IMAGE_GIF | FREE_IMAGE_WEBP
+        ) {
+            return Ok(());
+        }
+        bail!("Unsupported embedded TEX image format {free_image_format}");
+    }
+
+    if matches!(header.format, TextureFormat::Bc7) {
+        bail!("BC7 TEX textures are not supported yet");
+    }
+
+    Ok(())
+}
+
+fn decode_texture_image(header: &TextureHeader, mipmap: &TextureMipmap) -> Result<DynamicImage> {
+    validate_tex_still_image_support(header, mipmap)?;
+
+    if let Some(_free_image_format) = header.free_image_format {
+        if matches!(
+            header.free_image_format.unwrap_or_default(),
             FREE_IMAGE_PNG | FREE_IMAGE_JPEG | FREE_IMAGE_GIF | FREE_IMAGE_WEBP
         ) {
             let image = image::load_from_memory(&mipmap.bytes)
                 .context("Unable to decode embedded image from TEX payload")?;
             return Ok(image);
         }
-        bail!("Unsupported embedded TEX image format {free_image_format}");
     }
 
     let rgba = match header.format {
@@ -394,7 +417,7 @@ fn decode_texture_image(header: &TextureHeader, mipmap: &TextureMipmap) -> Resul
             mipmap.height,
             bcndecode::BcnEncoding::Bc3,
         )?,
-        TextureFormat::Bc7 => bail!("BC7 TEX textures are not supported yet"),
+        TextureFormat::Bc7 => unreachable!("BC7 should have been rejected by support validation"),
     };
 
     Ok(DynamicImage::ImageRgba8(rgba))
@@ -436,11 +459,23 @@ fn crop_texture_image(header: &TextureHeader, mut image: DynamicImage) -> Dynami
 
 pub fn load_tex_image(source_path: &Path) -> Result<DynamicImage> {
     let (header, mipmap) = load_primary_mipmap(source_path)?;
-    if is_video_texture(&header, &mipmap) {
-        bail!("TEX entry stores video payloads and cannot be loaded as a still image");
-    }
     let image = decode_texture_image(&header, &mipmap)?;
     Ok(crop_texture_image(&header, image))
+}
+
+pub fn inspect_texture_image_support(source_path: &Path) -> Result<()> {
+    let extension = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    if extension.as_deref() == Some("tex") {
+        let (header, mipmap) = load_primary_mipmap(source_path)?;
+        return validate_tex_still_image_support(&header, &mipmap);
+    }
+
+    image::open(source_path)
+        .with_context(|| format!("Unable to decode image {}", source_path.display()))
+        .map(|_| ())
 }
 
 pub fn load_texture_image(source_path: &Path) -> Result<DynamicImage> {
@@ -549,8 +584,8 @@ mod tests {
     use crate::models::SceneAssetKind;
 
     use super::{
-        extract_texture_asset, inspect_tex_resolution, load_tex_image, load_texture_image,
-        payload_looks_like_mp4,
+        extract_texture_asset, inspect_tex_resolution, inspect_texture_image_support,
+        load_tex_image, load_texture_image, payload_looks_like_mp4,
     };
 
     fn rgba_tex_bytes(pixel: [u8; 4], width: u32, height: u32) -> Vec<u8> {
@@ -683,10 +718,50 @@ mod tests {
         assert_eq!(extracted.width, 3);
         assert_eq!(extracted.height, 2);
         assert_eq!(
-            extracted.output_path.extension().and_then(|value| value.to_str()),
+            extracted
+                .output_path
+                .extension()
+                .and_then(|value| value.to_str()),
             Some("png")
         );
         let decoded = image::open(&extracted.output_path).expect("open normalized png");
         assert_eq!(decoded.to_rgba8().get_pixel(0, 0).0, [1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn inspect_texture_image_support_reports_bc7_tex_as_unsupported() {
+        let temp = tempdir().expect("temp dir");
+        let tex_path = temp.path().join("bc7.tex");
+        fs::write(&tex_path, {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(super::TEXV_MAGIC);
+            bytes.extend_from_slice(super::TEXI_MAGIC);
+            bytes.extend_from_slice(&(super::TextureFormat::Bc7 as u32).to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(super::TEXB_V4_MAGIC);
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&super::FREE_IMAGE_UNKNOWN.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_i32.to_le_bytes());
+            bytes.extend_from_slice(&16_i32.to_le_bytes());
+            bytes.extend_from_slice(&[0_u8; 16]);
+            bytes
+        })
+        .expect("write bc7 tex");
+
+        let error =
+            inspect_texture_image_support(&tex_path).expect_err("bc7 tex should be unsupported");
+        assert!(error
+            .to_string()
+            .contains("BC7 TEX textures are not supported yet"));
     }
 }

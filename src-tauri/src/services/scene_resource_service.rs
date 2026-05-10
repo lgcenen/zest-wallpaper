@@ -1051,6 +1051,19 @@ pub fn load_scene_texture_image(texture_path: &Path) -> Result<image::DynamicIma
     })
 }
 
+pub fn inspect_scene_texture_image_support(texture_path: &Path) -> Result<(), String> {
+    let texture_path = scene_texture_image_candidates(texture_path)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .unwrap_or_else(|| texture_path.to_path_buf());
+    crate::tex::inspect_texture_image_support(&texture_path).map_err(|error| {
+        format!(
+            "unable to validate scene texture {}: {error}",
+            texture_path.display()
+        )
+    })
+}
+
 fn read_scene_texture_metadata(path: &Path) -> Result<Value, String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("unable to read {}: {error}", path.display()))?;
@@ -1823,33 +1836,30 @@ mod tests {
 
         let tex_metadata = temp.path().join("mask.tex.json");
         let tex_path = temp.path().join("mask.tex");
-        fs::write(
-            &tex_path,
-            {
-                let mut bytes = Vec::new();
-                bytes.extend_from_slice(b"TEXV0005\0");
-                bytes.extend_from_slice(b"TEXI0001\0");
-                bytes.extend_from_slice(&0_u32.to_le_bytes());
-                bytes.extend_from_slice(&0_u32.to_le_bytes());
-                bytes.extend_from_slice(&1_u32.to_le_bytes());
-                bytes.extend_from_slice(&1_u32.to_le_bytes());
-                bytes.extend_from_slice(&1_u32.to_le_bytes());
-                bytes.extend_from_slice(&1_u32.to_le_bytes());
-                bytes.extend_from_slice(&0_u32.to_le_bytes());
-                bytes.extend_from_slice(b"TEXB0004\0");
-                bytes.extend_from_slice(&1_u32.to_le_bytes());
-                bytes.extend_from_slice(&u32::MAX.to_le_bytes());
-                bytes.extend_from_slice(&0_u32.to_le_bytes());
-                bytes.extend_from_slice(&1_u32.to_le_bytes());
-                bytes.extend_from_slice(&1_u32.to_le_bytes());
-                bytes.extend_from_slice(&1_u32.to_le_bytes());
-                bytes.extend_from_slice(&0_u32.to_le_bytes());
-                bytes.extend_from_slice(&0_i32.to_le_bytes());
-                bytes.extend_from_slice(&4_i32.to_le_bytes());
-                bytes.extend_from_slice(&[1, 2, 3, 255]);
-                bytes
-            },
-        )
+        fs::write(&tex_path, {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"TEXV0005\0");
+            bytes.extend_from_slice(b"TEXI0001\0");
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(b"TEXB0004\0");
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_i32.to_le_bytes());
+            bytes.extend_from_slice(&4_i32.to_le_bytes());
+            bytes.extend_from_slice(&[1, 2, 3, 255]);
+            bytes
+        })
         .expect("mask tex");
         fs::write(&tex_metadata, br#"{"format":"rgba8888"}"#).expect("mask metadata");
 
