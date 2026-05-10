@@ -477,14 +477,6 @@ fn sprite_stage_semi_adapted_diagnostics(
                 ),
             ));
         }
-        if compact.contains("controlpointattract") {
-            diagnostics.push(semi_adapted_diagnostic(
-                "particle-stage-semi-adapted",
-                format!(
-                    "Sprite particle stage {stage_name:?} is whitelisted but not yet consumed by the runtime."
-                ),
-            ));
-        }
     }
     diagnostics
 }
@@ -868,7 +860,6 @@ fn sprite_stage_name_is_unsupported(name: &str) -> bool {
         "mask",
         "boid",
         "flock",
-        "vortex",
         "remap",
         "inherit",
         "layerimage",
@@ -1469,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    fn sprite_runtime_rejects_eventspawn_and_complex_stage_families() {
+    fn sprite_runtime_rejects_eventspawn_without_blocking_vortex_stage() {
         let particle = json!({
             "material": "materials/genericparticle.json",
             "emitter": [{"name": "sphererandom", "rate": 20}],
@@ -1488,7 +1479,7 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "particle-child-unsupported"));
-        assert!(runtime
+        assert!(!runtime
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "particle-stage-unsupported"));
@@ -1663,7 +1654,7 @@ mod tests {
     }
 
     #[test]
-    fn controlpointattract_produces_semi_adapted_diagnostic_not_blocking() {
+    fn controlpointattract_remains_supported_without_blocking_diagnostics() {
         let particle = json!({
             "material": "materials/genericparticle.json",
             "emitter": [{"name": "sphererandom", "rate": 20}],
@@ -1684,10 +1675,9 @@ mod tests {
                 .any(|d| d.code == "particle-stage-unsupported"),
             "controlpointattract should not block the sprite adapter"
         );
-        assert!(runtime
+        assert!(!runtime
             .diagnostics
             .iter()
-            .any(|d| d.code == "particle-stage-semi-adapted"
-                && d.diagnostic_kind == crate::models::SceneParticleDiagnosticKind::SemiAdapted));
+            .any(|d| d.code == "particle-stage-semi-adapted"));
     }
 }

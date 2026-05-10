@@ -6,8 +6,10 @@ use std::{
 use crate::{
     models::SceneParticleChildKind,
     services::scene_render_planner_service::{
-        SceneRenderBlendMode, SceneRenderColor, SceneRenderSpriteParticleItem,
-        SceneSpriteParticleConfig, SceneSpriteParticleFrame, SceneSpriteParticleOscillationConfig,
+        SceneRenderBlendMode, SceneRenderColor, SceneRenderSpriteControlPointItem,
+        SceneRenderSpriteParticleItem, SceneSpriteParticleAttractorConfig, SceneSpriteParticleConfig,
+        SceneSpriteParticleFrame, SceneSpriteParticleOscillationConfig,
+        SceneSpriteParticleVortexConfig,
     },
 };
 
@@ -47,6 +49,7 @@ struct SceneSpriteEmitterState {
     started_at_ms: Option<f64>,
     emission_credit: f64,
     instantaneous_emitted: bool,
+    sequence_cursor: usize,
     particles: Vec<SceneSpriteParticle>,
 }
 
@@ -69,6 +72,8 @@ struct SceneSpriteParticle {
     position_oscillation: Option<SceneSpriteParticleOscillation>,
     alpha_oscillation: Option<SceneSpriteParticleOscillation>,
     size_oscillation: Option<SceneSpriteParticleOscillation>,
+    gravity: [f64; 2],
+    drag: f64,
     fade_in_ms: f64,
     fade_out_ms: f64,
     born_at_ms: f64,
@@ -83,6 +88,13 @@ struct SceneSpriteParticleOscillation {
     frequency_hz: f64,
     phase_radians: f64,
     axis_scale: [f64; 2],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneResolvedSpriteControlPoint {
+    id: u32,
+    x: f64,
+    y: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -121,7 +133,17 @@ impl SceneSpriteRandom {
 }
 
 impl SceneSpriteParticleScheduler {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn advance(&mut self, items: &[SceneRenderSpriteParticleItem], now_ms: f64) {
+        self.advance_with_cursor(items, None, now_ms);
+    }
+
+    pub fn advance_with_cursor(
+        &mut self,
+        items: &[SceneRenderSpriteParticleItem],
+        cursor: Option<(f64, f64)>,
+        now_ms: f64,
+    ) {
         let delta_ms = self
             .last_update_ms
             .map(|previous| (now_ms - previous).clamp(0.0, 100.0))
@@ -141,22 +163,42 @@ impl SceneSpriteParticleScheduler {
                 state.children.push(SceneSpriteEmitterState::default());
             }
             state.children.truncate(item.children.len());
+            let control_points =
+                resolve_runtime_sprite_control_points(cursor, &item.config.control_points);
+            let can_emit = item.schedule_mode != crate::models::SceneParticleScheduleMode::InputDriven
+                || cursor.is_some();
 
-            let mut root_deaths =
-                advance_emitter_particles(&mut self.random, &mut state.root, delta_ms, now_ms);
+            let mut root_deaths = advance_emitter_particles(
+                &mut self.random,
+                &mut state.root,
+                &item.config,
+                &control_points,
+                delta_ms,
+                now_ms,
+            );
             emit_for_config(
                 &mut self.random,
                 &mut state.root,
                 &item.config,
+                &control_points,
+                can_emit,
                 delta_ms,
                 now_ms,
-                item.config.spawn_origin,
                 None,
             );
 
             for (child_index, child) in item.children.iter().enumerate() {
                 let child_state = &mut state.children[child_index];
-                advance_emitter_particles(&mut self.random, child_state, delta_ms, now_ms);
+                let child_control_points =
+                    resolve_runtime_sprite_control_points(cursor, &child.config.control_points);
+                advance_emitter_particles(
+                    &mut self.random,
+                    child_state,
+                    &child.config,
+                    &child_control_points,
+                    delta_ms,
+                    now_ms,
+                );
 
                 match child.child_type {
                     SceneParticleChildKind::Static => {
@@ -164,9 +206,10 @@ impl SceneSpriteParticleScheduler {
                             &mut self.random,
                             child_state,
                             &child.config,
+                            &child_control_points,
+                            can_emit,
                             delta_ms,
                             now_ms,
-                            child.config.spawn_origin,
                             Some(child.probability),
                         );
                     }
@@ -178,7 +221,9 @@ impl SceneSpriteParticleScheduler {
                             if self.random.chance(child.probability / 60.0) {
                                 let mut spawned = spawn_particle(
                                     &mut self.random,
+                                    &mut child_state.sequence_cursor,
                                     &child.config,
+                                    &child_control_points,
                                     now_ms,
                                     [parent.x, parent.y],
                                 );
@@ -194,12 +239,15 @@ impl SceneSpriteParticleScheduler {
                                 break;
                             }
                             if self.random.chance(child.probability) {
-                                child_state.particles.push(spawn_particle(
+                                let spawned = spawn_particle(
                                     &mut self.random,
+                                    &mut child_state.sequence_cursor,
                                     &child.config,
+                                    &child_control_points,
                                     now_ms,
                                     [death[0], death[1]],
-                                ));
+                                );
+                                child_state.particles.push(spawned);
                             }
                         }
                     }
@@ -249,12 +297,15 @@ impl SceneSpriteParticleScheduler {
 fn advance_emitter_particles(
     random: &mut SceneSpriteRandom,
     state: &mut SceneSpriteEmitterState,
+    config: &SceneSpriteParticleConfig,
+    control_points: &[SceneResolvedSpriteControlPoint],
     delta_ms: f64,
     now_ms: f64,
 ) -> Vec<[f64; 2]> {
     let delta_seconds = (delta_ms / 1000.0).clamp(0.0, 0.1);
     let mut deaths = Vec::new();
     state.particles.retain_mut(|particle| {
+        apply_sprite_forces(particle, config, control_points, delta_seconds);
         particle.x += particle.vx * delta_seconds;
         particle.y += particle.vy * delta_seconds;
         if particle.turbulence > 0.0 {
@@ -275,15 +326,20 @@ fn emit_for_config(
     random: &mut SceneSpriteRandom,
     state: &mut SceneSpriteEmitterState,
     config: &SceneSpriteParticleConfig,
+    control_points: &[SceneResolvedSpriteControlPoint],
+    can_emit: bool,
     delta_ms: f64,
     now_ms: f64,
-    origin: [f64; 2],
     probability: Option<f64>,
 ) {
+    if !can_emit {
+        return;
+    }
     let started_at_ms = *state.started_at_ms.get_or_insert(now_ms);
     if now_ms - started_at_ms < config.start_time_ms {
         return;
     }
+    let origin = sprite_spawn_origin(config, control_points);
     if config.instantaneous && !state.instantaneous_emitted {
         let emit_count = remaining_capacity(state, config.max_count).min(MAX_FRAME_EMITS);
         for _ in 0..emit_count {
@@ -291,9 +347,15 @@ fn emit_for_config(
                 .map(|value| random.chance(value))
                 .unwrap_or(true)
             {
-                state
-                    .particles
-                    .push(spawn_particle(random, config, now_ms, origin));
+                let spawned = spawn_particle(
+                    random,
+                    &mut state.sequence_cursor,
+                    config,
+                    control_points,
+                    now_ms,
+                    origin,
+                );
+                state.particles.push(spawned);
             }
         }
         state.instantaneous_emitted = true;
@@ -311,9 +373,15 @@ fn emit_for_config(
                     .map(|value| random.chance(value))
                     .unwrap_or(true)
                 {
-                    state
-                        .particles
-                        .push(spawn_particle(random, config, now_ms, origin));
+                    let spawned = spawn_particle(
+                        random,
+                        &mut state.sequence_cursor,
+                        config,
+                        control_points,
+                        now_ms,
+                        origin,
+                    );
+                    state.particles.push(spawned);
                 }
             }
         }
@@ -322,15 +390,14 @@ fn emit_for_config(
 
 fn spawn_particle(
     random: &mut SceneSpriteRandom,
+    sequence_cursor: &mut usize,
     config: &SceneSpriteParticleConfig,
+    control_points: &[SceneResolvedSpriteControlPoint],
     now_ms: f64,
     origin: [f64; 2],
 ) -> SceneSpriteParticle {
-    let radius = random.range(config.spawn_radius[0], config.spawn_radius[1]);
-    let angle = random.range(0.0, std::f64::consts::TAU);
-    let x = origin[0] + angle.cos() * radius;
-    let y = origin[1] + angle.sin() * radius;
-    let velocity = choose_velocity(random, config, angle);
+    let (x, y, _angle, velocity) =
+        spawn_position_and_velocity(random, sequence_cursor, config, control_points, origin);
     let color = interpolate_color(
         config.color_min,
         config.color_max,
@@ -362,6 +429,8 @@ fn spawn_particle(
         position_oscillation: spawn_position_oscillation(random, config.position_oscillation),
         alpha_oscillation: spawn_position_oscillation(random, config.alpha_oscillation),
         size_oscillation: spawn_position_oscillation(random, config.size_oscillation),
+        gravity: config.gravity,
+        drag: config.drag,
         fade_in_ms: config.fade_in_ms.max(0.0),
         fade_out_ms: config.fade_out_ms.max(0.0),
         born_at_ms: now_ms,
@@ -388,6 +457,178 @@ fn spawn_position_oscillation(
             * std::f64::consts::TAU,
         axis_scale: config.axis_scale,
     })
+}
+
+fn resolve_runtime_sprite_control_points(
+    cursor: Option<(f64, f64)>,
+    control_points: &[SceneRenderSpriteControlPointItem],
+) -> Vec<SceneResolvedSpriteControlPoint> {
+    let mut resolved = control_points
+        .iter()
+        .map(|control_point| SceneResolvedSpriteControlPoint {
+            id: control_point.id,
+            x: control_point.position[0],
+            y: control_point.position[1],
+        })
+        .collect::<Vec<_>>();
+    if let Some((cursor_x, cursor_y)) = cursor {
+        for control_point in control_points {
+            if !control_point.lock_to_pointer {
+                continue;
+            }
+            if let Some(runtime_point) = resolved.iter_mut().find(|point| point.id == control_point.id)
+            {
+                runtime_point.x = cursor_x;
+                runtime_point.y = cursor_y;
+            }
+        }
+    }
+    resolved
+}
+
+fn sprite_spawn_origin(
+    config: &SceneSpriteParticleConfig,
+    control_points: &[SceneResolvedSpriteControlPoint],
+) -> [f64; 2] {
+    sprite_primary_control_point(config, control_points)
+        .map(|point| [point.x, point.y])
+        .unwrap_or(config.spawn_origin)
+}
+
+fn sprite_primary_control_point<'a>(
+    config: &SceneSpriteParticleConfig,
+    control_points: &'a [SceneResolvedSpriteControlPoint],
+) -> Option<&'a SceneResolvedSpriteControlPoint> {
+    config
+        .control_points
+        .iter()
+        .find(|control_point| control_point.lock_to_pointer)
+        .and_then(|control_point| control_points.iter().find(|point| point.id == control_point.id))
+        .or_else(|| control_points.first())
+}
+
+fn spawn_position_and_velocity(
+    random: &mut SceneSpriteRandom,
+    sequence_cursor: &mut usize,
+    config: &SceneSpriteParticleConfig,
+    control_points: &[SceneResolvedSpriteControlPoint],
+    origin: [f64; 2],
+) -> (f64, f64, f64, [f64; 2]) {
+    if let (Some(sequence), Some(anchor)) = (
+        config.sequence_control_point,
+        sprite_primary_control_point(config, control_points),
+    ) {
+        let sequence_index = *sequence_cursor % sequence.count.max(1);
+        *sequence_cursor = (*sequence_cursor).wrapping_add(1);
+        let angle = std::f64::consts::TAU * sequence_index as f64 / sequence.count.max(1) as f64;
+        let radius = config.spawn_radius[1]
+            .max(config.size_range[0] * 0.25)
+            .max(4.0);
+        let ring_offset = [angle.cos() * radius, angle.sin() * radius];
+        let base_velocity = [
+            random.range(sequence.speed_range[0][0], sequence.speed_range[1][0]),
+            random.range(sequence.speed_range[0][1], sequence.speed_range[1][1]),
+        ];
+        let velocity = if base_velocity[0].abs() > 0.001 || base_velocity[1].abs() > 0.001 {
+            rotate_2d(base_velocity, angle + config.orientation)
+        } else {
+            choose_velocity(random, config, angle)
+        };
+        return (
+            anchor.x + ring_offset[0],
+            anchor.y + ring_offset[1],
+            angle,
+            velocity,
+        );
+    }
+
+    let radius = random.range(config.spawn_radius[0], config.spawn_radius[1]);
+    let angle = random.range(0.0, std::f64::consts::TAU);
+    let x = origin[0] + angle.cos() * radius;
+    let y = origin[1] + angle.sin() * radius;
+    let velocity = choose_velocity(random, config, angle);
+    (x, y, angle, velocity)
+}
+
+fn apply_sprite_forces(
+    particle: &mut SceneSpriteParticle,
+    config: &SceneSpriteParticleConfig,
+    control_points: &[SceneResolvedSpriteControlPoint],
+    delta_seconds: f64,
+) {
+    if particle.drag > 0.0 {
+        let damping = (1.0 - particle.drag * delta_seconds).clamp(0.0, 1.0);
+        particle.vx *= damping;
+        particle.vy *= damping;
+    }
+    particle.vx += particle.gravity[0] * delta_seconds;
+    particle.vy += particle.gravity[1] * delta_seconds;
+
+    let anchor = sprite_primary_control_point(config, control_points);
+    for attractor in &config.attractors {
+        let Some(anchor) = anchor else {
+            break;
+        };
+        apply_attractor(particle, attractor, anchor, delta_seconds);
+    }
+    for vortex in &config.vortexes {
+        let Some(anchor) = anchor else {
+            break;
+        };
+        apply_vortex(particle, vortex, anchor, delta_seconds);
+    }
+}
+
+fn apply_attractor(
+    particle: &mut SceneSpriteParticle,
+    attractor: &SceneSpriteParticleAttractorConfig,
+    anchor: &SceneResolvedSpriteControlPoint,
+    delta_seconds: f64,
+) {
+    let target_x = anchor.x + attractor.origin_offset[0];
+    let target_y = anchor.y + attractor.origin_offset[1];
+    let dx = target_x - particle.x;
+    let dy = target_y - particle.y;
+    let distance = (dx * dx + dy * dy).sqrt();
+    if distance <= 0.001 {
+        return;
+    }
+    if attractor.threshold > 0.0 && distance > attractor.threshold {
+        return;
+    }
+    let falloff = if attractor.threshold > 0.0 {
+        1.0 - (distance / attractor.threshold).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let force = attractor.scale * falloff * delta_seconds;
+    particle.vx += dx / distance * force;
+    particle.vy += dy / distance * force;
+}
+
+fn apply_vortex(
+    particle: &mut SceneSpriteParticle,
+    vortex: &SceneSpriteParticleVortexConfig,
+    anchor: &SceneResolvedSpriteControlPoint,
+    delta_seconds: f64,
+) {
+    let center_x = anchor.x + vortex.origin_offset[0];
+    let center_y = anchor.y + vortex.origin_offset[1];
+    let dx = particle.x - center_x;
+    let dy = particle.y - center_y;
+    let distance = (dx * dx + dy * dy).sqrt();
+    if distance <= 0.001 || distance < vortex.distance_inner {
+        return;
+    }
+    if vortex.distance_outer > 0.0 && distance > vortex.distance_outer {
+        return;
+    }
+    let outer = vortex.distance_outer.max(vortex.distance_inner + 0.001);
+    let t = ((distance - vortex.distance_inner) / (outer - vortex.distance_inner)).clamp(0.0, 1.0);
+    let speed = vortex.speed_inner + (vortex.speed_outer - vortex.speed_inner) * t;
+    let tangent = [-dy / distance, dx / distance];
+    particle.vx += tangent[0] * speed * delta_seconds;
+    particle.vy += tangent[1] * speed * delta_seconds;
 }
 
 fn choose_velocity(
@@ -583,9 +824,11 @@ mod tests {
     use super::{SceneSpriteParticleConfig, SceneSpriteParticleScheduler};
     use crate::models::{SceneParticleChildKind, SceneParticleScheduleMode};
     use crate::services::scene_render_planner_service::{
-        SceneRenderBlendMode, SceneRenderColor, SceneRenderSpriteParticleItem,
+        SceneRenderBlendMode, SceneRenderColor, SceneRenderSpriteControlPointItem,
+        SceneRenderSpriteParticleItem, SceneSpriteParticleAttractorConfig,
         SceneSpriteParticleChildItem, SceneSpriteParticleFrame,
-        SceneSpriteParticleOscillationConfig,
+        SceneSpriteParticleOscillationConfig, SceneSpriteParticleSequenceControlPointConfig,
+        SceneSpriteParticleVortexConfig,
     };
     use std::path::PathBuf;
 
@@ -626,6 +869,8 @@ mod tests {
             position_oscillation: None,
             alpha_oscillation: None,
             size_oscillation: None,
+            gravity: [0.0, 0.0],
+            drag: 0.0,
             fade_in_ms: 0.0,
             fade_out_ms: 0.0,
             emission_rate: 120.0,
@@ -633,6 +878,10 @@ mod tests {
             start_time_ms: 0.0,
             instantaneous: false,
             sequence_multiplier: 0.0,
+            control_points: vec![],
+            sequence_control_point: None,
+            attractors: vec![],
+            vortexes: vec![],
         }
     }
 
@@ -706,6 +955,104 @@ mod tests {
         assert!(!second.is_empty());
         assert!(second[0].left < first[0].left);
         assert!(second[0].top > first[0].top);
+    }
+
+    #[test]
+    fn sprite_scheduler_emits_input_driven_particles_from_pointer_locked_control_point() {
+        let mut cfg = config();
+        cfg.spawn_origin = [0.0, 0.0];
+        cfg.control_points = vec![SceneRenderSpriteControlPointItem {
+            id: 0,
+            position: [10.0, 20.0],
+            lock_to_pointer: true,
+        }];
+        cfg.sequence_control_point = Some(SceneSpriteParticleSequenceControlPointConfig {
+            count: 5,
+            speed_range: [[0.0, 80.0], [0.0, 80.0]],
+        });
+        cfg.spawn_radius = [0.0, 0.0];
+        cfg.emission_rate = 20.0;
+        cfg.max_count = 8;
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 13,
+            object_name: "CursorSprite".to_string(),
+            schedule_mode: crate::models::SceneParticleScheduleMode::InputDriven,
+            config: cfg,
+            children: vec![],
+        };
+
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance_with_cursor(&[item.clone()], Some((200.0, 160.0)), 0.0);
+        scheduler.advance_with_cursor(&[item.clone()], Some((240.0, 180.0)), 100.0);
+
+        let primitives = scheduler.primitives(&item, 400.0, 100.0);
+        assert!(!primitives.is_empty());
+        let centroid_x =
+            primitives.iter().map(|primitive| primitive.left + primitive.width / 2.0).sum::<f64>()
+                / primitives.len() as f64;
+        let centroid_y = primitives
+            .iter()
+            .map(|primitive| 400.0 - primitive.top - primitive.height / 2.0)
+            .sum::<f64>()
+            / primitives.len() as f64;
+        assert!(centroid_x > 180.0);
+        assert!(centroid_y > 140.0);
+    }
+
+    #[test]
+    fn sprite_scheduler_applies_attractor_and_vortex_forces() {
+        let mut cfg = config();
+        cfg.instantaneous = true;
+        cfg.max_count = 1;
+        cfg.spawn_radius = [12.0, 12.0];
+        cfg.velocity_range = Some([[0.0, 0.0], [0.0, 0.0]]);
+        cfg.lifetime_ms_range = [1000.0, 1000.0];
+        cfg.gravity = [0.0, 0.0];
+        cfg.drag = 0.0;
+        cfg.control_points = vec![SceneRenderSpriteControlPointItem {
+            id: 0,
+            position: [100.0, 100.0],
+            lock_to_pointer: true,
+        }];
+        cfg.sequence_control_point = Some(SceneSpriteParticleSequenceControlPointConfig {
+            count: 1,
+            speed_range: [[0.0, 0.0], [0.0, 0.0]],
+        });
+        cfg.attractors = vec![SceneSpriteParticleAttractorConfig {
+            origin_offset: [0.0, 0.0],
+            scale: 400.0,
+            threshold: 200.0,
+        }];
+        cfg.vortexes = vec![SceneSpriteParticleVortexConfig {
+            origin_offset: [0.0, 0.0],
+            distance_inner: 0.0,
+            distance_outer: 200.0,
+            speed_inner: 240.0,
+            speed_outer: 120.0,
+        }];
+        let item = SceneRenderSpriteParticleItem {
+            object_id: 14,
+            object_name: "Forces".to_string(),
+            schedule_mode: crate::models::SceneParticleScheduleMode::InputDriven,
+            config: cfg,
+            children: vec![],
+        };
+
+        let mut scheduler = SceneSpriteParticleScheduler::default();
+        scheduler.advance_with_cursor(&[item.clone()], Some((100.0, 100.0)), 0.0);
+        scheduler.advance_with_cursor(&[item.clone()], Some((100.0, 100.0)), 16.0);
+        let start = scheduler.primitives(&item, 400.0, 16.0);
+        scheduler.advance_with_cursor(&[item.clone()], Some((100.0, 100.0)), 100.0);
+        let next = scheduler.primitives(&item, 400.0, 100.0);
+
+        assert_eq!(start.len(), 1);
+        assert_eq!(next.len(), 1);
+        let start_center = [start[0].left + start[0].width / 2.0, 400.0 - start[0].top - start[0].height / 2.0];
+        let next_center = [next[0].left + next[0].width / 2.0, 400.0 - next[0].top - next[0].height / 2.0];
+        assert!(
+            (next_center[0] - start_center[0]).abs() > 1.0
+                || (next_center[1] - start_center[1]).abs() > 1.0
+        );
     }
 
     #[test]

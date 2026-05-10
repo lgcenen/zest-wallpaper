@@ -261,6 +261,35 @@ pub struct SceneSpriteParticleOscillationConfig {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SceneRenderSpriteControlPointItem {
+    pub id: u32,
+    pub position: [f64; 2],
+    pub lock_to_pointer: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSpriteParticleSequenceControlPointConfig {
+    pub count: usize,
+    pub speed_range: [[f64; 2]; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSpriteParticleAttractorConfig {
+    pub origin_offset: [f64; 2],
+    pub scale: f64,
+    pub threshold: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSpriteParticleVortexConfig {
+    pub origin_offset: [f64; 2],
+    pub distance_inner: f64,
+    pub distance_outer: f64,
+    pub speed_inner: f64,
+    pub speed_outer: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SceneSpriteParticleConfig {
     pub texture_path: PathBuf,
     pub texture_frames: Vec<SceneSpriteParticleFrame>,
@@ -284,6 +313,8 @@ pub struct SceneSpriteParticleConfig {
     pub position_oscillation: Option<SceneSpriteParticleOscillationConfig>,
     pub alpha_oscillation: Option<SceneSpriteParticleOscillationConfig>,
     pub size_oscillation: Option<SceneSpriteParticleOscillationConfig>,
+    pub gravity: [f64; 2],
+    pub drag: f64,
     pub fade_in_ms: f64,
     pub fade_out_ms: f64,
     pub emission_rate: f64,
@@ -291,6 +322,10 @@ pub struct SceneSpriteParticleConfig {
     pub start_time_ms: f64,
     pub instantaneous: bool,
     pub sequence_multiplier: f64,
+    pub control_points: Vec<SceneRenderSpriteControlPointItem>,
+    pub sequence_control_point: Option<SceneSpriteParticleSequenceControlPointConfig>,
+    pub attractors: Vec<SceneSpriteParticleAttractorConfig>,
+    pub vortexes: Vec<SceneSpriteParticleVortexConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1633,6 +1668,8 @@ fn plan_sprite_particle_config(
         base.transform.position[0] + object_offset[0] + emitter_offset[0],
         base.transform.position[1] + object_offset[1] + emitter_offset[1],
     ];
+    let control_points =
+        resolve_sprite_control_points(base, runtime, scale_x, scale_y, object_rotation);
     let authored_size = stage_range(
         &runtime.system.initializers,
         &["sizerandom", "size"],
@@ -1774,6 +1811,20 @@ fn plan_sprite_particle_config(
         &runtime.system.operators,
         &["oscillatesize", "oscillate size", "oscillate_size"],
     );
+    let gravity = find_stage(&runtime.system.operators, &["movement"])
+        .and_then(|stage| stage_vector2(stage, &["gravity"]))
+        .map(|value| [value[0] * scale_x, value[1] * scale_y])
+        .unwrap_or([0.0, 0.0]);
+    let drag = find_stage(&runtime.system.operators, &["movement"])
+        .and_then(|stage| stage_f64(stage, &["drag"]))
+        .unwrap_or(0.0)
+        .max(0.0);
+    let sequence_control_point =
+        sprite_sequence_control_point_config(&runtime.system.initializers, scale_x, scale_y);
+    let attractors =
+        sprite_attractor_configs(&runtime.system.operators, scale_x, scale_y, object_rotation);
+    let vortexes =
+        sprite_vortex_configs(&runtime.system.operators, scale_x, scale_y, object_rotation);
     let [fade_in_ms, fade_out_ms] = stage_range(
         &runtime.system.operators,
         &["alphafade"],
@@ -1830,6 +1881,8 @@ fn plan_sprite_particle_config(
         position_oscillation,
         alpha_oscillation,
         size_oscillation,
+        gravity,
+        drag,
         fade_in_ms,
         fade_out_ms,
         emission_rate: sprite_override_scalar(
@@ -1852,6 +1905,162 @@ fn plan_sprite_particle_config(
             .map(|emitter| emitter.instantaneous)
             .unwrap_or(false),
         sequence_multiplier: runtime.system.sequence_multiplier.unwrap_or(0.0).max(0.0),
+        control_points,
+        sequence_control_point,
+        attractors,
+        vortexes,
+    })
+}
+
+fn resolve_sprite_control_points(
+    base: &crate::models::EvaluatedSceneObjectBase,
+    runtime: &SceneParticleRuntime,
+    scale_x: f64,
+    scale_y: f64,
+    object_rotation: f64,
+) -> Vec<SceneRenderSpriteControlPointItem> {
+    let parent_rotation = base.transform.rotation;
+    let object_offset = rotate_2d(
+        [
+            runtime.object_origin[0] * base.transform.scale[0],
+            runtime.object_origin[1] * base.transform.scale[1],
+        ],
+        parent_rotation,
+    );
+    let root = [
+        base.transform.position[0] + object_offset[0],
+        base.transform.position[1] + object_offset[1],
+    ];
+
+    let mut resolved = Vec::with_capacity(runtime.system.control_points.len());
+    for (index, control_point) in runtime.system.control_points.iter().enumerate() {
+        let authored = control_point.offset.unwrap_or([0.0, 0.0, 0.0]);
+        let local = rotate_2d([authored[0] * scale_x, authored[1] * scale_y], object_rotation);
+        let parent_position = control_point
+            .parent_control_point
+            .and_then(|parent_id| {
+                resolved
+                    .iter()
+                    .find(|candidate: &&SceneRenderSpriteControlPointItem| candidate.id == parent_id)
+                    .map(|candidate| candidate.position)
+            })
+            .unwrap_or(root);
+        resolved.push(SceneRenderSpriteControlPointItem {
+            id: control_point.id.unwrap_or(index as u32),
+            position: [parent_position[0] + local[0], parent_position[1] + local[1]],
+            lock_to_pointer: control_point.lock_to_pointer
+                || control_point_flags_lock_to_pointer(&control_point.flags),
+        });
+    }
+
+    resolved
+}
+
+fn sprite_sequence_control_point_config(
+    stages: &[SceneParticleStageRuntime],
+    scale_x: f64,
+    scale_y: f64,
+) -> Option<SceneSpriteParticleSequenceControlPointConfig> {
+    let stage = find_stage(stages, &["mapsequencearoundcontrolpoint"])?;
+    let count = stage_f64(stage, &["count"])
+        .map(|value| value.round().clamp(1.0, 64.0) as usize)
+        .unwrap_or(0);
+    if count == 0 {
+        return None;
+    }
+    let speed_range = stage_vector_range(
+        stages,
+        &["mapsequencearoundcontrolpoint"],
+        &["speedmin", "minspeed", "min"],
+        &["speedmax", "maxspeed", "max"],
+    )
+    .map(|range| {
+        [
+            [range[0][0] * scale_x, range[0][1] * scale_y],
+            [range[1][0] * scale_x, range[1][1] * scale_y],
+        ]
+    })
+    .unwrap_or([[0.0, 0.0], [0.0, 0.0]]);
+    Some(SceneSpriteParticleSequenceControlPointConfig { count, speed_range })
+}
+
+fn sprite_attractor_configs(
+    stages: &[SceneParticleStageRuntime],
+    scale_x: f64,
+    scale_y: f64,
+    object_rotation: f64,
+) -> Vec<SceneSpriteParticleAttractorConfig> {
+    sprite_stage_instances(stages, &["controlpointattract"])
+        .into_iter()
+        .map(|stage| {
+            let origin = stage_vector2(stage, &["origin"]).unwrap_or([0.0, 0.0]);
+            let origin_offset =
+                rotate_2d([origin[0] * scale_x, origin[1] * scale_y], object_rotation);
+            SceneSpriteParticleAttractorConfig {
+                origin_offset,
+                scale: stage_f64(stage, &["scale"]).unwrap_or(0.0),
+                threshold: stage_f64(stage, &["threshold"]).unwrap_or(0.0).abs(),
+            }
+        })
+        .collect()
+}
+
+fn sprite_vortex_configs(
+    stages: &[SceneParticleStageRuntime],
+    scale_x: f64,
+    scale_y: f64,
+    object_rotation: f64,
+) -> Vec<SceneSpriteParticleVortexConfig> {
+    sprite_stage_instances(stages, &["vortex"])
+        .into_iter()
+        .map(|stage| {
+            let origin = stage_vector2(stage, &["origin"]).unwrap_or([0.0, 0.0]);
+            let origin_offset =
+                rotate_2d([origin[0] * scale_x, origin[1] * scale_y], object_rotation);
+            let distance_inner = stage_f64(stage, &["distanceinner", "inner", "mindistance"])
+                .unwrap_or(0.0)
+                .abs()
+                * scale_x.min(scale_y);
+            let distance_outer = stage_f64(stage, &["distanceouter", "outer", "maxdistance"])
+                .unwrap_or(distance_inner.max(1.0))
+                .abs()
+                * scale_x.min(scale_y);
+            SceneSpriteParticleVortexConfig {
+                origin_offset,
+                distance_inner,
+                distance_outer: distance_outer.max(distance_inner),
+                speed_inner: stage_f64(stage, &["speedinner", "innerspeed"]).unwrap_or(0.0),
+                speed_outer: stage_f64(stage, &["speedouter", "outerspeed"]).unwrap_or(0.0),
+            }
+        })
+        .collect()
+}
+
+fn sprite_stage_instances<'a>(
+    stages: &'a [SceneParticleStageRuntime],
+    name_tokens: &[&str],
+) -> Vec<&'a SceneParticleStageRuntime> {
+    stages
+        .iter()
+        .filter(|stage| {
+            let name = stage.name.to_ascii_lowercase();
+            name_tokens
+                .iter()
+                .any(|token| name.contains(&token.to_ascii_lowercase()))
+        })
+        .collect()
+}
+
+fn control_point_flags_lock_to_pointer(flags: &[String]) -> bool {
+    flags.iter().any(|flag| {
+        let normalized = flag.trim().to_ascii_lowercase();
+        normalized == "locktopointer"
+            || normalized == "lock_to_pointer"
+            || normalized == "pointer"
+            || normalized
+                .parse::<u32>()
+                .map(|bits| (bits & 1) != 0)
+                .unwrap_or(false)
     })
 }
 
@@ -4115,6 +4324,81 @@ mod tests {
         let config = &report.plan.sprite_particles[0].config;
         assert_eq!(config.max_count, 512);
         assert!(config.texture_path.ends_with("textures/sprite.png"));
+    }
+
+    #[test]
+    fn render_plan_consumes_input_driven_sprite_control_point_and_force_configs() {
+        let temp = tempdir().expect("temp dir");
+        let managed_root = temp.path().join("managed");
+        let builtin_root = temp.path().join("builtin");
+        write_sprite_particle_material_fixture(&managed_root);
+        fs::create_dir_all(&builtin_root).expect("builtin dir");
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed_root, &builtin_root);
+        let mut particle = particle_object(4, "CursorSprite", SceneParticleKind::PetalTrail);
+        if let EvaluatedSceneObject::Particle { base, .. } = &mut particle {
+            base.transform.position = [0.0, 0.0, 0.0];
+            base.transform.rotation = 0.0;
+        }
+        let mut scene = runtime_scene_with_objects(vec![(4, particle)], vec![4]);
+        let mut runtime = supported_sprite_particle_runtime(4);
+        runtime.system.renderers[0].family = SceneParticleRendererFamily::SpriteTrail;
+        runtime.system.renderers[0].name = Some("spritetrail".to_string());
+        runtime.system.control_points = vec![
+            SceneParticleControlPointRuntime {
+                id: Some(0),
+                flags: vec!["1".to_string()],
+                ..SceneParticleControlPointRuntime::default()
+            },
+            SceneParticleControlPointRuntime {
+                id: Some(1),
+                offset: Some([0.0, -9999.0, 0.0]),
+                ..SceneParticleControlPointRuntime::default()
+            },
+        ];
+        runtime.system.initializers.push(SceneParticleStageRuntime {
+            name: "mapsequencearoundcontrolpoint".to_string(),
+            fields: BTreeMap::from([
+                ("count".to_string(), serde_json::json!(5)),
+                ("speedmin".to_string(), serde_json::json!("0 100 0")),
+                ("speedmax".to_string(), serde_json::json!("0 100 0")),
+            ]),
+        });
+        runtime.system.operators.push(SceneParticleStageRuntime {
+            name: "controlpointattract".to_string(),
+            fields: BTreeMap::from([
+                ("origin".to_string(), serde_json::json!("0 0 0")),
+                ("scale".to_string(), serde_json::json!(500)),
+                ("threshold".to_string(), serde_json::json!(200)),
+            ]),
+        });
+        runtime.system.operators.push(SceneParticleStageRuntime {
+            name: "vortex".to_string(),
+            fields: BTreeMap::from([
+                ("distanceinner".to_string(), serde_json::json!(0)),
+                ("distanceouter".to_string(), serde_json::json!(50)),
+                ("speedinner".to_string(), serde_json::json!(300)),
+                ("speedouter".to_string(), serde_json::json!(0)),
+            ]),
+        });
+        scene.source.particle_runtimes = vec![runtime];
+
+        let report = build_scene_render_plan_with_resolver(&scene, Some(&resolver));
+
+        assert!(!report.is_blocked());
+        assert!(report.issues.is_empty());
+        let item = &report.plan.sprite_particles[0];
+        assert_eq!(item.schedule_mode, SceneParticleScheduleMode::InputDriven);
+        assert_eq!(item.config.control_points.len(), 2);
+        assert!(item.config.control_points[0].lock_to_pointer);
+        assert_eq!(
+            item.config.sequence_control_point
+                .expect("sequence config")
+                .count,
+            5
+        );
+        assert_eq!(item.config.attractors.len(), 1);
+        assert_eq!(item.config.vortexes.len(), 1);
     }
 
     #[test]

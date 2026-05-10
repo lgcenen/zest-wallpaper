@@ -570,7 +570,7 @@ fn advance_ropetrail_state(
     now_ms: f64,
 ) {
     state.control_points = resolve_runtime_rope_control_points(cursor, item);
-    let Some(anchor) = state.control_points.last().copied() else {
+    let Some(anchor) = rope_trail_anchor_point(&state.control_points, item) else {
         state.trail_points.clear();
         return;
     };
@@ -670,7 +670,42 @@ fn resolve_runtime_rope_control_points(
         }
     }
 
-    resolved
+    collapse_duplicate_rope_control_points(&resolved)
+}
+
+fn collapse_duplicate_rope_control_points(
+    points: &[SceneResolvedRopeControlPoint],
+) -> Vec<SceneResolvedRopeControlPoint> {
+    let mut collapsed = Vec::with_capacity(points.len());
+    for point in points {
+        if collapsed
+            .iter()
+            .any(|existing: &SceneResolvedRopeControlPoint| {
+                (existing.x - point.x).abs() <= 0.001 && (existing.y - point.y).abs() <= 0.001
+            })
+        {
+            continue;
+        }
+        collapsed.push(*point);
+    }
+    collapsed
+}
+
+fn rope_trail_anchor_point(
+    resolved: &[SceneResolvedRopeControlPoint],
+    item: &SceneRenderRopeParticleItem,
+) -> Option<SceneResolvedRopeControlPoint> {
+    item.control_points
+        .iter()
+        .rev()
+        .find(|control_point| control_point.lock_to_pointer)
+        .and_then(|control_point| {
+            resolved
+                .iter()
+                .find(|point| point.id == control_point.id)
+                .copied()
+        })
+        .or_else(|| resolved.last().copied())
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1558,6 +1593,89 @@ mod tests {
             expired.iter().all(|primitive| primitive.opacity < 0.05) || expired.is_empty(),
             "expired ropetrail segments should fully fade out"
         );
+    }
+
+    #[test]
+    fn rope_scheduler_collapses_duplicate_placeholder_control_points() {
+        let mut scheduler = SceneRopeParticleScheduler::default();
+        let mut item = rope_item();
+        item.control_points = vec![
+            SceneRenderRopeControlPointItem {
+                id: 0,
+                position: [20.0, 30.0],
+                lock_to_pointer: true,
+            },
+            SceneRenderRopeControlPointItem {
+                id: 1,
+                position: [20.0, 30.0],
+                lock_to_pointer: false,
+            },
+            SceneRenderRopeControlPointItem {
+                id: 2,
+                position: [20.0, 30.0],
+                lock_to_pointer: false,
+            },
+            SceneRenderRopeControlPointItem {
+                id: 3,
+                position: [20.0, 30.0],
+                lock_to_pointer: false,
+            },
+        ];
+        item.segment_count = 6;
+
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 180.0, y: 60.0 }),
+            std::slice::from_ref(&item),
+            1000.0,
+        );
+
+        let primitives = scheduler.primitives(&item, 1000.0);
+        assert_eq!(primitives.len(), item.segment_count as usize);
+        assert!(primitives.iter().all(|primitive| {
+            let dx = primitive.end[0] - primitive.start[0];
+            let dy = primitive.end[1] - primitive.start[1];
+            (dx * dx + dy * dy).sqrt() > 0.01
+        }));
+    }
+
+    #[test]
+    fn rope_trail_prefers_pointer_locked_anchor_when_not_last_control_point() {
+        let mut scheduler = SceneRopeParticleScheduler::default();
+        let mut item = rope_trail_item();
+        item.control_points = vec![
+            SceneRenderRopeControlPointItem {
+                id: 0,
+                position: [20.0, 30.0],
+                lock_to_pointer: true,
+            },
+            SceneRenderRopeControlPointItem {
+                id: 1,
+                position: [20.0, 30.0],
+                lock_to_pointer: false,
+            },
+            SceneRenderRopeControlPointItem {
+                id: 2,
+                position: [20.0, 30.0],
+                lock_to_pointer: false,
+            },
+        ];
+
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 180.0, y: 90.0 }),
+            std::slice::from_ref(&item),
+            1000.0,
+        );
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 220.0, y: 120.0 }),
+            std::slice::from_ref(&item),
+            1016.0,
+        );
+
+        let primitives = scheduler.primitives(&item, 1016.0);
+        assert!(!primitives.is_empty());
+        let last = primitives.last().expect("rope trail segment");
+        assert!(last.end[0] > 180.0, "pointer-locked anchor should drive trail endpoint");
+        assert!(last.end[1] > 90.0, "pointer-locked anchor should drive trail endpoint");
     }
 
     #[test]

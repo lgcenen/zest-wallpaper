@@ -2203,7 +2203,11 @@ impl NativeSceneMetalRenderer {
         if !plan.sprite_particles.is_empty() {
             if !self.paused {
                 self.sprite_particle_scheduler
-                    .advance(&plan.sprite_particles, now_ms_f64);
+                    .advance_with_cursor(
+                        &plan.sprite_particles,
+                        input_frame.response.cursor(),
+                        now_ms_f64,
+                    );
             } else {
                 self.sprite_particle_scheduler.pause();
             }
@@ -5283,6 +5287,9 @@ fn hash_sprite_particle_config(
     hash_optional_oscillation(hasher, &config.position_oscillation);
     hash_optional_oscillation(hasher, &config.alpha_oscillation);
     hash_optional_oscillation(hasher, &config.size_oscillation);
+    config.gravity[0].to_bits().hash(hasher);
+    config.gravity[1].to_bits().hash(hasher);
+    config.drag.to_bits().hash(hasher);
     config.fade_in_ms.to_bits().hash(hasher);
     config.fade_out_ms.to_bits().hash(hasher);
     config.emission_rate.to_bits().hash(hasher);
@@ -5290,6 +5297,40 @@ fn hash_sprite_particle_config(
     config.start_time_ms.to_bits().hash(hasher);
     config.instantaneous.hash(hasher);
     config.sequence_multiplier.to_bits().hash(hasher);
+    config.control_points.len().hash(hasher);
+    for control_point in &config.control_points {
+        control_point.id.hash(hasher);
+        control_point.position[0].to_bits().hash(hasher);
+        control_point.position[1].to_bits().hash(hasher);
+        control_point.lock_to_pointer.hash(hasher);
+    }
+    match config.sequence_control_point {
+        Some(sequence) => {
+            true.hash(hasher);
+            sequence.count.hash(hasher);
+            for vector in sequence.speed_range {
+                vector[0].to_bits().hash(hasher);
+                vector[1].to_bits().hash(hasher);
+            }
+        }
+        None => false.hash(hasher),
+    }
+    config.attractors.len().hash(hasher);
+    for attractor in &config.attractors {
+        attractor.origin_offset[0].to_bits().hash(hasher);
+        attractor.origin_offset[1].to_bits().hash(hasher);
+        attractor.scale.to_bits().hash(hasher);
+        attractor.threshold.to_bits().hash(hasher);
+    }
+    config.vortexes.len().hash(hasher);
+    for vortex in &config.vortexes {
+        vortex.origin_offset[0].to_bits().hash(hasher);
+        vortex.origin_offset[1].to_bits().hash(hasher);
+        vortex.distance_inner.to_bits().hash(hasher);
+        vortex.distance_outer.to_bits().hash(hasher);
+        vortex.speed_inner.to_bits().hash(hasher);
+        vortex.speed_outer.to_bits().hash(hasher);
+    }
 }
 
 #[cfg(target_os = "macos")]
