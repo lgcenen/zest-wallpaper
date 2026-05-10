@@ -3803,6 +3803,100 @@ impl NativeSceneMetalRenderer {
                 uniforms.color = color1;
                 uniforms.user0 = [color2[0], color2[1], color2[2], 1.0];
             }
+            Some(SceneCompatEffectKind::CloudMotion) => {
+                uniforms.intensity = phase10_uniform_float(
+                    &uniform_values,
+                    &[
+                        "amount",
+                        "uieditorpropertiesamount",
+                        "ui_editor_properties_amount",
+                    ],
+                    0.1,
+                );
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &[
+                        "direction",
+                        "uieditorpropertiesdirection",
+                        "ui_editor_properties_direction",
+                    ],
+                    1.5707964,
+                );
+            }
+            Some(SceneCompatEffectKind::Clouds) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["alpha", "cloudsalpha"], 1.0);
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &["threshold", "cloudthreshold"],
+                    0.0,
+                );
+                uniforms.user0[0] = phase10_uniform_float(
+                    &uniform_values,
+                    &["feather", "cloudfeather"],
+                    0.5,
+                );
+                uniforms.user0[1] = phase10_uniform_float(
+                    &uniform_values,
+                    &["smoothness", "cloudlod"],
+                    0.0,
+                );
+                let speed = phase10_uniform_vec4(
+                    &uniform_values,
+                    &["speed", "cloudspeeds"],
+                    [0.01, 0.01, -0.02, -0.02],
+                );
+                let scale = phase10_uniform_vec4(
+                    &uniform_values,
+                    &["scale", "cloudscales"],
+                    [1.3, 1.3, 0.5, 0.5],
+                );
+                uniforms.user1 = [speed[0], speed[1], scale[0], scale[2]];
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["colorstart", "color1"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                let color2 = phase10_uniform_color(
+                    &uniform_values,
+                    &["colorend", "color2"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                uniforms.user0[2] = color2[0];
+                uniforms.user0[3] = color2[1];
+            }
+            Some(SceneCompatEffectKind::WaterFlow) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["strength", "flowamp"], 1.0);
+                uniforms.radius =
+                    phase10_uniform_float(&uniform_values, &["phasescale", "flowphasescale"], 2.0);
+            }
+            Some(SceneCompatEffectKind::Nitro) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["multiply", "nitroalpha"], 1.0);
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &["smoothness", "nitrolod"],
+                    1.0,
+                );
+                let bounds =
+                    phase10_uniform_vec2(&uniform_values, &["bounds", "nitroranges"], [0.3, 0.25]);
+                uniforms.user0[0] = bounds[0];
+                uniforms.user0[1] = bounds[1];
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["colorstart", "nitrocolor0"],
+                    [0.0, 0.5, 1.0, 1.0],
+                );
+                let color1 = phase10_uniform_color(
+                    &uniform_values,
+                    &["colorend", "nitrocolor1"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                uniforms.user0[2] = color1[0];
+                uniforms.user0[3] = color1[1];
+                uniforms.user1[0] = color1[2];
+            }
             _ => {}
         }
 

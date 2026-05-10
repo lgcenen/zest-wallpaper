@@ -44,6 +44,10 @@ pub enum SceneCompatEffectKind {
     ColorKey,
     FishEye,
     EdgeDetection,
+    CloudMotion,
+    Clouds,
+    WaterFlow,
+    Nitro,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +301,48 @@ const CHROMATIC_ABERRATION_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = 
     },
 ];
 
+const THREE_SLOT_MASK_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::NoiseTexture,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+];
+
+const WATERFLOW_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::FlowMap,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 2,
+        semantic: ScenePhase10bBindingSemantic::TimeOffset,
+        uv_space: ScenePhase10bUvSpace::AuxTexture,
+        required: true,
+    },
+];
+
 const PULSE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Pulse,
     family: "pulse",
@@ -545,6 +591,65 @@ const EDGEDETECTION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectC
         "outlinecolor",
     ],
     runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
+};
+
+const CLOUDMOTION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::CloudMotion,
+    family: "cloudmotion",
+    required_texture_slots: &[0, 2],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[("MASK", 0)],
+    supported_uniforms: &[
+        "uieditorpropertiesamount",
+        "uieditorpropertiesdirection",
+        "amount",
+        "direction",
+    ],
+    runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
+};
+
+const CLOUDS_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Clouds,
+    family: "clouds",
+    required_texture_slots: &[0, 1],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[
+        ("BLENDMODE", 0),
+        ("MASK", 0),
+        ("SHADING", 7),
+        ("WRITEALPHA", 0),
+    ],
+    supported_uniforms: &[
+        "alpha",
+        "colorend",
+        "colorstart",
+        "feather",
+        "scale",
+        "smoothness",
+        "speed",
+        "threshold",
+    ],
+    runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
+};
+
+const WATERFLOW_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::WaterFlow,
+    family: "waterflow",
+    required_texture_slots: &[0, 1, 2],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[],
+    supported_uniforms: &["phasescale", "strength"],
+    runtime_binding_layout: WATERFLOW_TEXTURE_SLOTS,
+};
+
+const NITRO_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::Nitro,
+    family: "nitro",
+    required_texture_slots: &[0, 1],
+    supported_texture_slots: &[0, 1, 2],
+    supported_combo_defaults: &[("BLENDMODE", 22), ("MASK", 0), ("WRITEALPHA", 0)],
+    supported_uniforms: &["bounds", "colorend", "colorstart", "multiply", "smoothness"],
+    runtime_binding_layout: THREE_SLOT_MASK_TEXTURE_SLOTS,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1341,6 +1446,10 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "colorkey" => Some(&COLORKEY_CONTRACT),
         "fisheye" => Some(&FISHEYE_CONTRACT),
         "edgedetection" => Some(&EDGEDETECTION_CONTRACT),
+        "cloudmotion" => Some(&CLOUDMOTION_CONTRACT),
+        "clouds" => Some(&CLOUDS_CONTRACT),
+        "waterflow" => Some(&WATERFLOW_CONTRACT),
+        "nitro" => Some(&NITRO_CONTRACT),
         _ => None,
     }
 }
@@ -1367,6 +1476,10 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::ColorKey => Some(&COLORKEY_CONTRACT),
         SceneCompatEffectKind::FishEye => Some(&FISHEYE_CONTRACT),
         SceneCompatEffectKind::EdgeDetection => Some(&EDGEDETECTION_CONTRACT),
+        SceneCompatEffectKind::CloudMotion => Some(&CLOUDMOTION_CONTRACT),
+        SceneCompatEffectKind::Clouds => Some(&CLOUDS_CONTRACT),
+        SceneCompatEffectKind::WaterFlow => Some(&WATERFLOW_CONTRACT),
+        SceneCompatEffectKind::Nitro => Some(&NITRO_CONTRACT),
     }
 }
 
@@ -1485,6 +1598,18 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::EdgeDetection => {
             defines.insert("PHASE10_EFFECT_EDGEDETECTION".to_string(), 1);
+        }
+        SceneCompatEffectKind::CloudMotion => {
+            defines.insert("PHASE10_EFFECT_CLOUDMOTION".to_string(), 1);
+        }
+        SceneCompatEffectKind::Clouds => {
+            defines.insert("PHASE10_EFFECT_CLOUDS".to_string(), 1);
+        }
+        SceneCompatEffectKind::WaterFlow => {
+            defines.insert("PHASE10_EFFECT_WATERFLOW".to_string(), 1);
+        }
+        SceneCompatEffectKind::Nitro => {
+            defines.insert("PHASE10_EFFECT_NITRO".to_string(), 1);
         }
     }
     if let Some(contract) = phase10b_effect_contract_for_kind(kind) {
@@ -2316,6 +2441,56 @@ mod tests {
     }
 
     #[test]
+    fn batch2_group_c_authored_effect_shader_pairs_map_to_phase_10b_compat_program() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let builtin = temp.path().join("builtin");
+        let external = temp.path().join("external-assets");
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            "fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        let resolver = SceneResourceResolver::for_managed_root_with_asset_roots(
+            &managed,
+            &builtin,
+            Some(external.clone()),
+        );
+
+        for (family, shader_ref, expected) in [
+            ("cloudmotion", "effects/cloudmotion", SceneCompatEffectKind::CloudMotion),
+            ("clouds", "effects/clouds", SceneCompatEffectKind::Clouds),
+            ("waterflow", "effects/waterflow", SceneCompatEffectKind::WaterFlow),
+            ("nitro", "effects/nitro", SceneCompatEffectKind::Nitro),
+        ] {
+            write(
+                &external.join(format!("effects/{family}/materials/effects/{family}.json")),
+                format!(r#"{{"passes":[{{"shader":"{shader_ref}"}}]}}"#).as_str(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &external.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                "void main() {}",
+            );
+            write(
+                &external.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                "void main() {}",
+            );
+
+            let plan = load_scene_material_plan_with_effect_package_root(
+                &resolver,
+                &format!("materials/effects/{family}.json"),
+                &external.join(format!("effects/{family}")),
+            )
+            .expect("batch2 group c compat effect material");
+
+            assert_eq!(
+                plan.passes[0].program.kind,
+                SceneShaderProgramKind::EffectCompat(expected)
+            );
+        }
+    }
+
+    #[test]
     fn material_plan_preserves_sparse_authored_texture_slot_ordinals() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -2370,6 +2545,10 @@ mod tests {
             (SceneCompatEffectKind::ColorKey, vec![0]),
             (SceneCompatEffectKind::FishEye, vec![0]),
             (SceneCompatEffectKind::EdgeDetection, vec![0]),
+            (SceneCompatEffectKind::CloudMotion, vec![0, 1, 2]),
+            (SceneCompatEffectKind::Clouds, vec![0, 1, 2]),
+            (SceneCompatEffectKind::WaterFlow, vec![0, 1, 2]),
+            (SceneCompatEffectKind::Nitro, vec![0, 1, 2]),
         ];
 
         for (kind, supported_slots) in families {
@@ -2502,6 +2681,26 @@ mod tests {
             .supported_combo_defaults
             .contains(&("BLENDMODE", 0)));
         assert!(edgedetection.supported_uniforms.contains(&"outlinecolor"));
+
+        let cloudmotion = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::CloudMotion)
+            .expect("cloudmotion contract");
+        assert!(cloudmotion.supported_combo_defaults.contains(&("MASK", 0)));
+        assert!(cloudmotion.supported_uniforms.contains(&"amount"));
+
+        let clouds = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Clouds)
+            .expect("clouds contract");
+        assert!(clouds.supported_combo_defaults.contains(&("SHADING", 7)));
+        assert!(clouds.supported_uniforms.contains(&"colorstart"));
+
+        let waterflow = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::WaterFlow)
+            .expect("waterflow contract");
+        assert_eq!(waterflow.supported_combo_defaults, &[]);
+        assert!(waterflow.supported_uniforms.contains(&"phasescale"));
+
+        let nitro = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::Nitro)
+            .expect("nitro contract");
+        assert!(nitro.supported_combo_defaults.contains(&("BLENDMODE", 22)));
+        assert!(nitro.supported_uniforms.contains(&"multiply"));
     }
 
     #[test]

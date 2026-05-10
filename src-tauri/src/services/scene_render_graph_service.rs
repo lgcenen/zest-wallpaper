@@ -1441,6 +1441,19 @@ fn phase10b_combo_value_supported(
             matches!(normalized.as_str(), "blendmode")
                 && matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32)
         }
+        "cloudmotion" => matches!(normalized.as_str(), "mask") && matches!(combo_value, 0 | 1),
+        "clouds" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32),
+            "mask" | "writealpha" => matches!(combo_value, 0 | 1),
+            "shading" => matches!(combo_value, 0 | 7 | 100),
+            _ => false,
+        },
+        "waterflow" => false,
+        "nitro" => match normalized.as_str() {
+            "blendmode" => matches!(combo_value, 0 | 2 | 7 | 9 | 22 | 30 | 31 | 32),
+            "mask" | "writealpha" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -1463,6 +1476,9 @@ fn phase10b_combo_required_texture_slot(
         "opacity" if normalized == "mask" => Some(1),
         "spin" if normalized == "mask" => Some(1),
         "chromaticaberration" if normalized == "mask" => Some(1),
+        "cloudmotion" if normalized == "mask" => Some(1),
+        "clouds" if normalized == "mask" => Some(2),
+        "nitro" if normalized == "mask" => Some(2),
         _ => None,
     }
 }
@@ -2896,6 +2912,123 @@ mod tests {
         }
     }
 
+    #[test]
+    fn phase10_graph_supports_batch2_group_c_authored_effect_shader_families() {
+        for (family, shader_ref, pass_json, material_json) in [
+            (
+                "cloudmotion",
+                "effects/cloudmotion",
+                r#"{"combos":{"MASK":0},"constantshadervalues":{"ui_editor_properties_amount":0.1,"ui_editor_properties_direction":1.57079632679}}"#,
+                r#"{"passes":[{"shader":"effects/cloudmotion","textures":[null,null,"textures/noise.png"]}]}"#,
+            ),
+            (
+                "clouds",
+                "effects/clouds",
+                r#"{"combos":{"SHADING":7,"BLENDMODE":0,"WRITEALPHA":0},"constantshadervalues":{"alpha":1.0,"threshold":0.0,"feather":0.5,"colorstart":"1 1 1","colorend":"1 1 1"}}"#,
+                r#"{"passes":[{"shader":"effects/clouds","textures":[null,"textures/clouds.png"]}]}"#,
+            ),
+            (
+                "waterflow",
+                "effects/waterflow",
+                r#"{"constantshadervalues":{"strength":1.0,"phasescale":2.0}}"#,
+                r#"{"passes":[{"shader":"effects/waterflow","textures":[null,"textures/flow.png","textures/phase.png"]}]}"#,
+            ),
+            (
+                "nitro",
+                "effects/nitro",
+                r#"{"combos":{"BLENDMODE":22,"MASK":0,"WRITEALPHA":0},"constantshadervalues":{"multiply":1.0,"colorstart":"0 0.5 1","colorend":"1 1 1","bounds":"0.3 0.25","smoothness":1.0}}"#,
+                r#"{"passes":[{"shader":"effects/nitro","textures":[null,"textures/noise.png"]}]}"#,
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":217,
+                          "name":"{family}",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[
+                            {{
+                              "file":"effects/{family}/effect.json",
+                              "visible":true,
+                              "passes":[{pass_json}]
+                            }}
+                          ]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                material_json.as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+            write(&extracted.join("textures/noise.png"), b"png");
+            write(&extracted.join("textures/clouds.png"), b"png");
+            write(&extracted.join("textures/flow.png"), b"png");
+            write(&extracted.join("textures/phase.png"), b"png");
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            assert!(!report.is_blocked(), "{family} should be supported: {:?}", report.issues);
+            assert!(report
+                .issues
+                .iter()
+                .all(|issue| issue.diagnostic_code != Some("effect-unsupported")));
+            assert_eq!(report.graph.visuals.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+        }
+    }
+
 
     #[test]
     fn phase10d_graph_distinguishes_input_sources_named_targets_and_pass_chain() {
@@ -3901,6 +4034,164 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("requires g_Texture1"));
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_c_combo_value_outside_contract() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":218,
+                  "name":"CloudsInvalidCombo",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/clouds/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/clouds/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/clouds.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/clouds/materials/effects/clouds.json"),
+            br#"{"passes":[{"shader":"effects/clouds","combos":{"SHADING":5},"textures":[null,"textures/clouds.png"]}]}"#,
+        );
+        write(
+            &extracted.join("effects/clouds/shaders/effects/clouds.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/clouds/shaders/effects/clouds.frag"),
+            b"void main() {}",
+        );
+        write(&extracted.join("textures/clouds.png"), b"png");
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+            .expect("unsupported effect issue");
+        assert!(issue.resource_present_but_unsupported);
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("combo SHADING=5"));
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_c_mask_combo_without_authored_slot() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":219,
+                  "name":"NitroMissingMask",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/nitro/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/nitro/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/nitro.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/nitro/materials/effects/nitro.json"),
+            br#"{"passes":[{"shader":"effects/nitro","combos":{"BLENDMODE":22,"MASK":1,"WRITEALPHA":0},"textures":[null,"textures/noise.png"]}]}"#,
+        );
+        write(
+            &extracted.join("effects/nitro/shaders/effects/nitro.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/nitro/shaders/effects/nitro.frag"),
+            b"void main() {}",
+        );
+        write(&extracted.join("textures/noise.png"), b"png");
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+            .expect("unsupported effect issue");
+        assert!(issue.resource_present_but_unsupported);
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("requires g_Texture2"));
     }
 
     #[test]

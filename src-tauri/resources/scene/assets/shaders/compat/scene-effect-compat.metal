@@ -575,6 +575,88 @@ fragment float4 phase10_effect_fragment(
     float edge_mix = min(1.0, max(0.0, g - uniforms.radius) * uniforms.angle);
     float3 combined_color = mix(uniforms.user0.rgb, uniforms.color.rgb, edge_mix) * uniforms.speed;
     sampled.rgb = apply_tint_blend(sampled.rgb, combined_color, clamp(uniforms.intensity, 0.0, 1.0));
+#elif PHASE10_EFFECT_CLOUDMOTION
+    float mask = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        mask *= aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float3 noise = has_aux_texture(uniforms.aux2_texel_size)
+        ? aux2_texture.sample(texture_sampler, stage_vertex.slot2_uv).rgb
+        : float3(0.5, 0.5, 0.5);
+    float2 offset = vec2((noise.x * 2.0 - 1.0) * uniforms.intensity * mask, 0.0);
+    offset = rotate2d(offset, uniforms.angle + 1.57079632679);
+    float2 motion_uv = primary_uv + offset;
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        float dst_mask = aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv + offset, float2(0.0), float2(1.0))).r;
+        motion_uv = mix(primary_uv, motion_uv, dst_mask);
+    }
+#endif
+    sampled = sample_input(input_texture, texture_sampler, motion_uv);
+#elif PHASE10_EFFECT_CLOUDS
+    float mask = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        mask *= aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float cloud = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fract(primary_uv * 1.3 + uniforms.time * uniforms.user1.xy)).r
+        : 1.0;
+    float threshold = uniforms.radius;
+    float feather = max(uniforms.user0.x, 0.0001);
+    float blend = smoothstep(threshold - feather, threshold + feather, cloud) * mask * uniforms.intensity;
+    float3 end_color = float3(uniforms.user0.z, uniforms.user0.w, uniforms.user1.x);
+    float3 cloud_color = mix(uniforms.color.rgb, end_color, cloud);
+    sampled.rgb = apply_tint_blend(sampled.rgb, cloud_color, blend);
+#if WRITEALPHA
+    sampled.a = max(sampled.a, blend);
+#endif
+#elif PHASE10_EFFECT_WATERFLOW
+    float flow_phase = has_aux_texture(uniforms.aux2_texel_size)
+        ? aux2_texture.sample(texture_sampler, primary_uv * uniforms.radius).r
+        : 0.0;
+    float2 flow_colors = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, stage_vertex.slot1_uv).rg
+        : float2(0.498, 0.498);
+    float2 flow_mask = (flow_colors - float2(0.498, 0.498)) * 2.0;
+    float flow_amount = length(flow_mask);
+    float phase = fract(uniforms.time * 0.5);
+    float2 offset_a = flow_mask * uniforms.intensity * 0.1 * (phase - 0.5);
+    float2 offset_b = flow_mask * uniforms.intensity * 0.1 * (fract(phase + 0.5) - 0.5);
+    float4 flow_a = sample_input(input_texture, texture_sampler, primary_uv + offset_a);
+    float4 flow_b = sample_input(input_texture, texture_sampler, primary_uv + offset_b);
+    float4 flow = mix(flow_a, flow_b, smoothstep(0.2, 0.8, flow_phase));
+    sampled = mix(sampled, flow, clamp(flow_amount, 0.0, 1.0));
+#elif PHASE10_EFFECT_NITRO
+    float base_noise = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, stage_vertex.slot1_uv).r
+        : 0.0;
+    float nitro0 = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fract(stage_vertex.slot1_uv + float2(uniforms.time * 0.05, 0.0))).r
+        : 0.0;
+    float nitro1 = has_aux_texture(uniforms.aux_texel_size)
+        ? aux_texture.sample(texture_sampler, fract(stage_vertex.slot1_uv * 1.333 - float2(uniforms.time * 0.03, 0.0))).r
+        : 0.0;
+    float core = smoothstep(nitro0, nitro1, 0.1 + base_noise * 0.8);
+    float low = uniforms.user0.y;
+    float high = uniforms.user0.x;
+    float nitro = smoothstep(low, high, nitro0 * nitro1) * smoothstep(high, low, nitro0 * nitro1);
+    nitro = core * nitro * 4.0;
+    float mask = 1.0;
+#if MASK
+    if (has_aux_texture(uniforms.aux2_texel_size)) {
+        mask *= aux2_texture.sample(texture_sampler, clamp(stage_vertex.slot2_uv, float2(0.0), float2(1.0))).r;
+    }
+#endif
+    float3 end_color = float3(uniforms.user0.z, uniforms.user0.w, uniforms.user1.x);
+    float3 nitro_color = mix(uniforms.color.rgb, end_color, nitro);
+    sampled.rgb = apply_tint_blend(sampled.rgb, nitro_color, nitro * uniforms.intensity * mask);
+#if WRITEALPHA
+    sampled.a = max(sampled.a, nitro * mask);
+#endif
 #endif
 
     sampled *= stage_vertex.color;
