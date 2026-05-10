@@ -4190,6 +4190,128 @@ mod tests {
     }
 
     #[test]
+    fn phase10_graph_routes_batch3_graph_lifecycle_use_cases_into_phase10d_scope() {
+        for (family, shader_ref, pass_json) in [
+            (
+                "depthparallax",
+                "effects/depthparallax",
+                r#"{"combos":{"QUALITY":2,"MASK":0},"constantshadervalues":{"center":0.24,"scale":"0.47 0.47","sens":5},"textures":[null,"textures/depth.png"]}"#,
+            ),
+            (
+                "fire",
+                "effects/fire",
+                r#"{"combos":{"BLENDMODE":0,"REFRACT":1},"constantshadervalues":{"ui_editor_properties_alpha":2.67,"ui_editor_properties_color_end":"1 0.8 0","ui_editor_properties_color_start":"1 0.25 0","ui_editor_properties_feather":0.2,"ui_editor_properties_scale":1.34,"ui_editor_properties_smoothness":0.93,"ui_editor_properties_threshold":0.0},"textures":[null,"textures/flow.png","textures/clouds.png"]}"#,
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":233,
+                          "name":"{family}RequiresPhase10d",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[
+                            {{
+                              "file":"effects/{family}/effect.json",
+                              "visible":true,
+                              "passes":[{pass_json}]
+                            }}
+                          ]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                br#"{
+                  "passes":[{"target":"scratch","material":"materials/effects/effect.json"}]
+                }"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/effect.json")),
+                format!(r#"{{"passes":[{{"shader":"{shader_ref}"}}]}}"#).as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+            write(&extracted.join("textures/depth.png"), b"png");
+            write(&extracted.join("textures/flow.png"), b"png");
+            write(&extracted.join("textures/clouds.png"), b"png");
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            assert!(
+                report
+                    .graph
+                    .visuals
+                    .iter()
+                    .all(|visual| visual.effect_chain.is_empty()),
+                "{family} should not remain in phase-10b effect chain once graph lifecycle features are required"
+            );
+
+            if let Some(issue) = report
+                .issues
+                .iter()
+                .find(|issue| issue.resource_present_but_unsupported)
+            {
+                assert!(
+                    issue.message.contains("phase-10d graph input scope"),
+                    "{family}: {:?}",
+                    issue.message
+                );
+                assert!(issue
+                    .detail
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("phase-10d"));
+            } else {
+                panic!("{family} should surface a phase-10d-scoped unsupported issue");
+            }
+        }
+    }
+
+    #[test]
     fn phase10_graph_rejects_batch2_group_d_combo_value_outside_contract() {
         for (family, shader_ref, combo_name, combo_value, material_json, expected_fragment) in [
             (
