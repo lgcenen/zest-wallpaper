@@ -581,6 +581,12 @@ fn build_rope_particle_contract(
         renderer_family: renderer.family,
         schedule_mode,
         control_points: build_rope_control_points(system),
+        emission_rate: system
+            .emitters
+            .first()
+            .and_then(|emitter| emitter.rate)
+            .unwrap_or(0.0)
+            .max(0.0),
         segment_count: renderer
             .segments
             .or(renderer.subdivision)
@@ -1351,6 +1357,7 @@ mod tests {
         assert_eq!(contract.min_length, 40.0);
         assert_eq!(contract.max_length, 200.0);
         assert_eq!(contract.width, 5.0);
+        assert_eq!(contract.emission_rate, 24.0);
         assert_eq!(contract.lifetime_ms, 1400.0);
         assert!((contract.alpha - 0.75).abs() < 0.001);
         assert_eq!(contract.color.as_deref(), Some("0.1 0.2 0.8"));
@@ -1410,6 +1417,7 @@ mod tests {
             .rope_contract
             .as_ref()
             .expect("rope contract");
+        assert_eq!(contract.emission_rate, 32.0);
         assert_eq!(contract.width, 7.0);
         assert_eq!(contract.lifetime_ms, 2500.0);
         assert!((contract.alpha - 0.45).abs() < 0.001);

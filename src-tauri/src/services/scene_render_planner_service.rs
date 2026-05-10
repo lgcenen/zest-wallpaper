@@ -230,6 +230,7 @@ pub struct SceneRenderRopeParticleItem {
     pub renderer_family: SceneParticleRendererFamily,
     pub schedule_mode: SceneParticleScheduleMode,
     pub control_points: Vec<SceneRenderRopeControlPointItem>,
+    pub emission_rate: f64,
     pub segment_count: u32,
     pub subdivision: u32,
     pub length: f64,
@@ -1393,6 +1394,7 @@ fn plan_rope_particle_item(
         renderer_family: contract.renderer_family,
         schedule_mode: contract.schedule_mode,
         control_points,
+        emission_rate: contract.emission_rate,
         segment_count: contract.segment_count,
         subdivision: contract.subdivision,
         length: contract.length,
@@ -3509,6 +3511,7 @@ mod tests {
                             override_binding: None,
                         },
                     ],
+                    emission_rate: 32.0,
                     segment_count: 12,
                     subdivision: 4,
                     length: 240.0,
@@ -3938,6 +3941,7 @@ mod tests {
         assert_eq!(item.segment_count, 12);
         assert_eq!(item.subdivision, 4);
         assert_eq!(item.length, 240.0);
+        assert_eq!(item.emission_rate, 32.0);
         assert_eq!(item.width, 6.0);
         assert_eq!(item.lifetime_ms, 1500.0);
         assert_eq!(item.control_points.len(), 2);

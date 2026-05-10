@@ -313,7 +313,6 @@ impl SceneRopeParticleScheduler {
             let state = self.states.entry(item.object_id).or_default();
             match item.renderer_family {
                 SceneParticleRendererFamily::Rope => {
-                    state.trail_points.clear();
                     advance_rope_state(state, cursor, item, delta_ms, now_ms);
                 }
                 SceneParticleRendererFamily::RopeTrail => {
@@ -345,7 +344,9 @@ impl SceneRopeParticleScheduler {
             return Vec::new();
         };
         match item.renderer_family {
-            SceneParticleRendererFamily::Rope => rope_primitives_from_control_points(state, item),
+            SceneParticleRendererFamily::Rope => {
+                rope_primitives_from_control_points(state, item, now_ms)
+            }
             SceneParticleRendererFamily::RopeTrail => {
                 rope_trail_primitives_from_state(state, item, now_ms)
             }
@@ -556,10 +557,16 @@ fn advance_rope_state(
     state: &mut SceneRopeParticleState,
     cursor: Option<SceneParticleCursor>,
     item: &SceneRenderRopeParticleItem,
-    _delta_ms: f64,
-    _now_ms: f64,
+    delta_ms: f64,
+    now_ms: f64,
 ) {
     state.control_points = resolve_runtime_rope_control_points(cursor, item);
+    if rope_uses_emitter_path(item) {
+        advance_rope_emitter_path_state(state, item, delta_ms, now_ms);
+    } else {
+        state.trail_points.clear();
+        state.trail_emission_credit = 0.0;
+    }
 }
 
 fn advance_ropetrail_state(
@@ -570,8 +577,18 @@ fn advance_ropetrail_state(
     now_ms: f64,
 ) {
     state.control_points = resolve_runtime_rope_control_points(cursor, item);
+    advance_rope_emitter_path_state(state, item, delta_ms, now_ms);
+}
+
+fn advance_rope_emitter_path_state(
+    state: &mut SceneRopeParticleState,
+    item: &SceneRenderRopeParticleItem,
+    delta_ms: f64,
+    now_ms: f64,
+) {
     let Some(anchor) = rope_trail_anchor_point(&state.control_points, item) else {
         state.trail_points.clear();
+        state.trail_emission_credit = 0.0;
         return;
     };
 
@@ -618,9 +635,13 @@ fn emit_rope_trail_points(
             y: current.y,
         },
     );
+    if distance <= 0.001 {
+        return;
+    }
     let spacing = rope_trail_point_spacing(item).max(1.0);
     let min_credit = (delta_ms / 16.0).clamp(0.5, 4.0) * 0.15;
-    state.trail_emission_credit += distance / spacing;
+    let rate_credit = item.emission_rate.max(0.0) * delta_ms / 1000.0;
+    state.trail_emission_credit += (distance / spacing).max(rate_credit);
     state.trail_emission_credit = state.trail_emission_credit.max(min_credit);
     let emit_count = state
         .trail_emission_credit
@@ -708,11 +729,21 @@ fn rope_trail_anchor_point(
         .or_else(|| resolved.last().copied())
 }
 
+fn rope_uses_emitter_path(item: &SceneRenderRopeParticleItem) -> bool {
+    item.renderer_family == SceneParticleRendererFamily::Rope
+        && item.emission_rate > 0.0
+        && item.control_points.iter().any(|control_point| control_point.lock_to_pointer)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn rope_primitives_from_control_points(
     state: &SceneRopeParticleState,
     item: &SceneRenderRopeParticleItem,
+    now_ms: f64,
 ) -> Vec<SceneRopeParticlePrimitive> {
+    if rope_uses_emitter_path(item) {
+        return rope_trail_primitives_from_state(state, item, now_ms);
+    }
     if state.control_points.len() < 2 || item.segment_count == 0 || item.width <= 0.0 {
         return Vec::new();
     }
@@ -1083,6 +1114,7 @@ mod tests {
                     lock_to_pointer: true,
                 },
             ],
+            emission_rate: 0.0,
             segment_count: 8,
             subdivision: 2,
             length: 180.0,
@@ -1109,6 +1141,7 @@ mod tests {
         item.object_id = 11;
         item.object_name = "RopeTrail".to_string();
         item.renderer_family = SceneParticleRendererFamily::RopeTrail;
+        item.emission_rate = 32.0;
         item.length = 90.0;
         item.segment_count = 12;
         item.subdivision = 3;
@@ -1676,6 +1709,50 @@ mod tests {
         let last = primitives.last().expect("rope trail segment");
         assert!(last.end[0] > 180.0, "pointer-locked anchor should drive trail endpoint");
         assert!(last.end[1] > 90.0, "pointer-locked anchor should drive trail endpoint");
+    }
+
+    #[test]
+    fn rope_scheduler_uses_emitter_path_for_pointer_locked_rope() {
+        let mut scheduler = SceneRopeParticleScheduler::default();
+        let mut item = rope_item();
+        item.emission_rate = 32.0;
+        item.control_points = vec![
+            SceneRenderRopeControlPointItem {
+                id: 0,
+                position: [20.0, 30.0],
+                lock_to_pointer: true,
+            },
+            SceneRenderRopeControlPointItem {
+                id: 1,
+                position: [20.0, 30.0],
+                lock_to_pointer: false,
+            },
+            SceneRenderRopeControlPointItem {
+                id: 2,
+                position: [20.0, 30.0],
+                lock_to_pointer: false,
+            },
+        ];
+        item.segment_count = 6;
+        item.lifetime_ms = 1200.0;
+
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 100.0, y: 80.0 }),
+            std::slice::from_ref(&item),
+            1000.0,
+        );
+        scheduler.advance(
+            Some(SceneParticleCursor { x: 180.0, y: 110.0 }),
+            std::slice::from_ref(&item),
+            1016.0,
+        );
+
+        let primitives = scheduler.primitives(&item, 1016.0);
+        assert!(!primitives.is_empty());
+        assert!(
+            primitives.iter().all(|primitive| primitive.start[0] > 80.0 && primitive.end[0] > 80.0),
+            "emitter-backed rope should render from the cursor trail instead of the authored root"
+        );
     }
 
     #[test]

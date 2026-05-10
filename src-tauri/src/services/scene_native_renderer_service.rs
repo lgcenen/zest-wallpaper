@@ -5190,6 +5190,7 @@ fn particle_plan_signature(plan: &SceneRenderPlan) -> Option<u64> {
         item.object_name.hash(&mut hasher);
         item.renderer_family.hash(&mut hasher);
         item.schedule_mode.hash(&mut hasher);
+        item.emission_rate.to_bits().hash(&mut hasher);
         item.segment_count.hash(&mut hasher);
         item.subdivision.hash(&mut hasher);
         item.length.to_bits().hash(&mut hasher);
@@ -6983,6 +6984,7 @@ mod tests {
                     lock_to_pointer: false,
                 },
             ],
+            emission_rate: 0.0,
             segment_count: 8,
             subdivision: 2,
             length: 120.0,

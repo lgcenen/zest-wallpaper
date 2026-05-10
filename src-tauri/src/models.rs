@@ -280,6 +280,7 @@ pub struct SceneRopeParticleRuntimeContract {
     pub schedule_mode: SceneParticleScheduleMode,
     #[serde(default)]
     pub control_points: Vec<SceneRopeParticleControlPointRuntime>,
+    pub emission_rate: f64,
     pub segment_count: u32,
     pub subdivision: u32,
     pub length: f64,
