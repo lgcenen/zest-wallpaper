@@ -469,6 +469,112 @@ fragment float4 phase10_effect_fragment(
     float4 rotated = sample_input(input_texture, texture_sampler, tex_coord);
     float4 original = sample_input(input_texture, texture_sampler, primary_uv);
     sampled = mix(original, rotated, mask);
+#elif PHASE10_EFFECT_CHROMATIC_ABERRATION
+    float2 center = uniforms.user0.xy;
+    float center_falloff = clamp(uniforms.user0.z, 0.0, 1.0);
+    float strength = uniforms.user0.w;
+    float2 delta = primary_uv - center;
+    float2 coords0 = primary_uv;
+    float2 coords1 = primary_uv;
+#if MODE == 0
+    float falloff = mix(0.5 / (length(delta) + 0.0001), 1.0, center_falloff);
+    delta *= strength * 0.01 * falloff;
+    coords0 = primary_uv + delta;
+    coords1 = primary_uv - delta;
+#elif MODE == 1
+    float2 direction = float2(-sin(uniforms.angle), cos(uniforms.angle));
+    float falloff = mix(1.0, abs(dot(direction, delta)) * 2.0, center_falloff);
+    direction *= strength * 0.01 * falloff;
+    coords0 = primary_uv + direction;
+    coords1 = primary_uv - direction;
+#elif MODE == 2
+    float falloff = mix(0.5 / (length(delta) + 0.0001), 1.0, center_falloff);
+    float amt = strength * 0.01 * falloff;
+    coords0 = center + rotate2d(delta, amt);
+    coords1 = center + rotate2d(delta, -amt);
+#elif MODE == 3
+    float2 ref_coords = primary_uv;
+    ref_coords -= float2(0.5);
+    ref_coords *= float2(1.0 - strength * 0.0125);
+    ref_coords += float2(0.5);
+    float2 centered0 = ref_coords * 2.0 - 1.0;
+    float v0 = dot(centered0, centered0);
+    coords0 = (centered0 * (1.0 + strength * 0.05 * v0)) * 0.5 + 0.5;
+    float2 centered1 = ref_coords * 2.0 - 1.0;
+    float v1 = dot(centered1, centered1);
+    coords1 = (centered1 * (1.0 - strength * 0.02 * v1)) * 0.5 + 0.5;
+#endif
+    float4 sc = sample_input(input_texture, texture_sampler, primary_uv);
+    float4 s0 = sample_input(input_texture, texture_sampler, coords0);
+    float4 s1 = sample_input(input_texture, texture_sampler, coords1);
+    sampled = sc;
+#if VARIATION == 0
+    sampled.r = s0.r;
+    sampled.b = s1.b;
+#elif VARIATION == 1
+    sampled.g = s1.g;
+    sampled.b = s0.b;
+#elif VARIATION == 2
+    sampled.g = s0.g;
+    sampled.r = s1.r;
+#endif
+#if MASK
+    if (has_aux_texture(uniforms.aux_texel_size)) {
+        float mask = aux_texture.sample(texture_sampler, clamp(stage_vertex.slot1_uv, float2(0.0), float2(1.0))).r;
+        sampled = mix(sc, sampled, mask);
+    }
+#endif
+#elif PHASE10_EFFECT_COLORKEY
+    float delta = dot(abs(uniforms.color.rgb - sampled.rgb), float3(1.0, 1.0, 1.0));
+    float blend = smoothstep(0.001, 0.002 + max(uniforms.radius, 0.0), delta - uniforms.angle);
+#if INVERT == 1
+    blend = 1.0 - blend;
+#endif
+    sampled.a *= mix(clamp(uniforms.intensity, 0.0, 1.0), 1.0, blend);
+#if FLATTEN == 1
+    sampled.rgb *= sampled.a;
+#endif
+#elif PHASE10_EFFECT_FISHEYE
+    float2 center = uniforms.user0.xy;
+    float size = max(uniforms.user0.z, 0.01);
+    float scale = uniforms.user0.w;
+    constexpr float aperture = 178.0;
+    float aperture_half = 0.5 * aperture * (3.14159265359 / 180.0);
+    float max_factor = sin(aperture_half);
+    float2 xy = (primary_uv - center) * 2.0 / size;
+    float d = length(xy);
+    float alpha = 1.0;
+    float2 uv = primary_uv;
+    if (d < (2.0 - max_factor)) {
+        d = length(xy * max_factor);
+        float z = sqrt(max(1.0 - d * d, 0.0001));
+        float r = atan2(d, z) / 3.14159265359;
+        float phi = atan2(xy.y, xy.x);
+        uv.x = r * cos(phi) * size + center.x;
+        uv.y = r * sin(phi) * size + center.y;
+    } else {
+#if BACKGROUND == 0
+        alpha = 0.0;
+#endif
+    }
+    sampled = sample_input(input_texture, texture_sampler, mix(primary_uv, uv, scale));
+    sampled.a *= alpha;
+#elif PHASE10_EFFECT_EDGEDETECTION
+    float2 px = uniforms.texel_size;
+    float3 sample00 = sample_input(input_texture, texture_sampler, primary_uv + float2(-px.x, -px.y)).rgb;
+    float3 sample10 = sample_input(input_texture, texture_sampler, primary_uv + float2(0.0, -px.y)).rgb;
+    float3 sample20 = sample_input(input_texture, texture_sampler, primary_uv + float2(px.x, -px.y)).rgb;
+    float3 sample01 = sample_input(input_texture, texture_sampler, primary_uv + float2(-px.x, 0.0)).rgb;
+    float3 sample21 = sample_input(input_texture, texture_sampler, primary_uv + float2(px.x, 0.0)).rgb;
+    float3 sample02 = sample_input(input_texture, texture_sampler, primary_uv + float2(-px.x, px.y)).rgb;
+    float3 sample12 = sample_input(input_texture, texture_sampler, primary_uv + float2(0.0, px.y)).rgb;
+    float3 sample22 = sample_input(input_texture, texture_sampler, primary_uv + float2(px.x, px.y)).rgb;
+    float3 gx = sample20 - sample00 + (sample21 - sample01) * 2.0 + sample22 - sample02;
+    float3 gy = sample00 - sample02 + (sample10 - sample12) * 2.0 + sample20 - sample22;
+    float g = abs(dot(gx, float3(0.299, 0.587, 0.114))) + abs(dot(gy, float3(0.299, 0.587, 0.114)));
+    float edge_mix = min(1.0, max(0.0, g - uniforms.radius) * uniforms.angle);
+    float3 combined_color = mix(uniforms.user0.rgb, uniforms.color.rgb, edge_mix) * uniforms.speed;
+    sampled.rgb = apply_tint_blend(sampled.rgb, combined_color, clamp(uniforms.intensity, 0.0, 1.0));
 #endif
 
     sampled *= stage_vertex.color;

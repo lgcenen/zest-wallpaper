@@ -1426,6 +1426,21 @@ fn phase10b_combo_value_supported(
             "mask" | "repeat" => matches!(combo_value, 0 | 1),
             _ => false,
         },
+        "chromaticaberration" => match normalized.as_str() {
+            "mask" => matches!(combo_value, 0 | 1),
+            "mode" => matches!(combo_value, 0 | 1 | 2 | 3),
+            "variation" => matches!(combo_value, 0 | 1 | 2),
+            _ => false,
+        },
+        "colorkey" => match normalized.as_str() {
+            "flatten" | "invert" => matches!(combo_value, 0 | 1),
+            _ => false,
+        },
+        "fisheye" => matches!(normalized.as_str(), "background") && matches!(combo_value, 0 | 1),
+        "edgedetection" => {
+            matches!(normalized.as_str(), "blendmode")
+                && matches!(combo_value, 0 | 2 | 7 | 9 | 30 | 31 | 32)
+        }
         _ => false,
     }
 }
@@ -1447,6 +1462,7 @@ fn phase10b_combo_required_texture_slot(
         "foliagesway" if normalized == "mask" => Some(1),
         "opacity" if normalized == "mask" => Some(1),
         "spin" if normalized == "mask" => Some(1),
+        "chromaticaberration" if normalized == "mask" => Some(1),
         _ => None,
     }
 }
@@ -2772,6 +2788,116 @@ mod tests {
     }
 
     #[test]
+    fn phase10_graph_supports_batch2_group_b_authored_effect_shader_families() {
+        for (family, shader_ref, pass_json) in [
+            (
+                "chromaticaberration",
+                "effects/chromatic_aberration",
+                r#"{"combos":{"MODE":0,"VARIATION":0},"constantshadervalues":{"ui_editor_properties_center":"0.5 0.5","ui_editor_properties_center_falloff":0.5,"ui_editor_properties_strength":9}}"#,
+            ),
+            (
+                "colorkey",
+                "effects/colorkey",
+                r#"{"combos":{"INVERT":0,"FLATTEN":0},"constantshadervalues":{"alpha":0.0,"fuzziness":0.03,"tolerance":0.4,"color":"0.53 0.67 0.53"}}"#,
+            ),
+            (
+                "fisheye",
+                "effects/fisheye",
+                r#"{"combos":{"BACKGROUND":1},"constantshadervalues":{"center":"0.5 0.5","size":1.0,"distortion":1.7}}"#,
+            ),
+            (
+                "edgedetection",
+                "effects/edgedetection",
+                r#"{"combos":{"BLENDMODE":0},"constantshadervalues":{"alpha":1.0,"detectionthreshold":0.0,"detectionmultiply":5.0,"outlinebackground":"1 1 1","outlinecolor":"0 0 0"}}"#,
+            ),
+        ] {
+            let temp = tempdir().expect("temp dir");
+            let managed = temp.path().join("managed");
+            let extracted = managed.join("extracted");
+            let builtin = temp.path().join("builtin");
+
+            write(
+                &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+                b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+            );
+            write(
+                &extracted.join("scene.json"),
+                format!(
+                    r#"{{
+                      "objects":[
+                        {{
+                          "id":214,
+                          "name":"{family}",
+                          "image":"models/util/solidlayer.json",
+                          "origin":"960 540 0",
+                          "size":"256 256",
+                          "effects":[
+                            {{
+                              "file":"effects/{family}/effect.json",
+                              "visible":true,
+                              "passes":[{pass_json}]
+                            }}
+                          ]
+                        }}
+                      ]
+                    }}"#
+                )
+                .as_bytes(),
+            );
+            write(
+                &extracted.join("models/util/solidlayer.json"),
+                br#"{"solidlayer":true}"#,
+            );
+            write(
+                &extracted.join(format!("effects/{family}/effect.json")),
+                format!(r#"{{"passes":[{{"material":"materials/effects/{family}.json"}}]}}"#)
+                    .as_bytes(),
+            );
+            write(
+                &extracted.join(format!("effects/{family}/materials/effects/{family}.json")),
+                format!(r#"{{"passes":[{{"shader":"{shader_ref}"}}]}}"#).as_bytes(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                b"void main() {}",
+            );
+            write(
+                &extracted.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                b"void main() {}",
+            );
+
+            let mut record = scene_record(&managed);
+            record.scene_manifest = Some(
+                crate::scene::parse_scene_manifest(
+                    &extracted.join("scene.json"),
+                    &extracted,
+                    &BTreeMap::new(),
+                )
+                .expect("manifest"),
+            );
+            let runtime = runtime_document_service::runtime_record(&record);
+            let scene = match &runtime.runtime {
+                crate::models::WallpaperRuntime::Scene { scene } => scene,
+                _ => panic!("expected scene runtime"),
+            };
+            let resolver =
+                SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+            let report = build_scene_phase10_graph(scene, &resolver);
+
+            assert!(!report.is_blocked(), "{family} should be supported: {:?}", report.issues);
+            assert!(report
+                .issues
+                .iter()
+                .all(|issue| issue.diagnostic_code != Some("effect-unsupported")));
+            assert_eq!(report.graph.visuals.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain.len(), 1);
+            assert_eq!(report.graph.visuals[0].effect_chain[0].passes.len(), 1);
+        }
+    }
+
+
+    #[test]
     fn phase10d_graph_distinguishes_input_sources_named_targets_and_pass_chain() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -3587,6 +3713,162 @@ mod tests {
         );
         write(
             &extracted.join("effects/spin/shaders/effects/spin.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+            .expect("unsupported effect issue");
+        assert!(issue.resource_present_but_unsupported);
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("requires g_Texture1"));
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_b_combo_value_outside_contract() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":215,
+                  "name":"ChromaticInvalidCombo",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/chromaticaberration/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/chromaticaberration/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/chromaticaberration.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/chromaticaberration/materials/effects/chromaticaberration.json"),
+            br#"{"passes":[{"shader":"effects/chromatic_aberration","combos":{"MODE":4}}]}"#,
+        );
+        write(
+            &extracted.join("effects/chromaticaberration/shaders/effects/chromatic_aberration.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/chromaticaberration/shaders/effects/chromatic_aberration.frag"),
+            b"void main() {}",
+        );
+
+        let mut record = scene_record(&managed);
+        record.scene_manifest = Some(
+            crate::scene::parse_scene_manifest(
+                &extracted.join("scene.json"),
+                &extracted,
+                &BTreeMap::new(),
+            )
+            .expect("manifest"),
+        );
+        let runtime = runtime_document_service::runtime_record(&record);
+        let scene = match &runtime.runtime {
+            crate::models::WallpaperRuntime::Scene { scene } => scene,
+            _ => panic!("expected scene runtime"),
+        };
+        let resolver =
+            SceneResourceResolver::for_managed_root_with_builtin_root(&managed, &builtin);
+        let report = build_scene_phase10_graph(scene, &resolver);
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.diagnostic_code == Some("effect-unsupported"))
+            .expect("unsupported effect issue");
+        assert!(issue.resource_present_but_unsupported);
+        assert!(issue
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("combo MODE=4"));
+    }
+
+    #[test]
+    fn phase10_graph_rejects_batch2_group_b_mask_combo_without_authored_slot() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let extracted = managed.join("extracted");
+        let builtin = temp.path().join("builtin");
+
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            b"fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        write(
+            &extracted.join("scene.json"),
+            br#"{
+              "objects":[
+                {
+                  "id":216,
+                  "name":"ChromaticMissingMask",
+                  "image":"models/util/solidlayer.json",
+                  "origin":"960 540 0",
+                  "size":"256 256",
+                  "effects":[{"file":"effects/chromaticaberration/effect.json","visible":true}]
+                }
+              ]
+            }"#,
+        );
+        write(
+            &extracted.join("models/util/solidlayer.json"),
+            br#"{"solidlayer":true}"#,
+        );
+        write(
+            &extracted.join("effects/chromaticaberration/effect.json"),
+            br#"{"passes":[{"material":"materials/effects/chromaticaberration.json"}]}"#,
+        );
+        write(
+            &extracted.join("effects/chromaticaberration/materials/effects/chromaticaberration.json"),
+            br#"{"passes":[{"shader":"effects/chromatic_aberration","combos":{"MASK":1,"MODE":0,"VARIATION":0}}]}"#,
+        );
+        write(
+            &extracted.join("effects/chromaticaberration/shaders/effects/chromatic_aberration.vert"),
+            b"void main() {}",
+        );
+        write(
+            &extracted.join("effects/chromaticaberration/shaders/effects/chromatic_aberration.frag"),
             b"void main() {}",
         );
 

@@ -40,6 +40,10 @@ pub enum SceneCompatEffectKind {
     Skew,
     Perspective,
     Spin,
+    ChromaticAberration,
+    ColorKey,
+    FishEye,
+    EdgeDetection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +282,21 @@ const SPIN_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
     },
 ];
 
+const CHROMATIC_ABERRATION_TEXTURE_SLOTS: &[ScenePhase10bTextureSlotContract] = &[
+    ScenePhase10bTextureSlotContract {
+        slot: 0,
+        semantic: ScenePhase10bBindingSemantic::PreviousInput,
+        uv_space: ScenePhase10bUvSpace::PrimaryInput,
+        required: true,
+    },
+    ScenePhase10bTextureSlotContract {
+        slot: 1,
+        semantic: ScenePhase10bBindingSemantic::OpacityMask,
+        uv_space: ScenePhase10bUvSpace::MaskTexture,
+        required: false,
+    },
+];
+
 const PULSE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     kind: SceneCompatEffectKind::Pulse,
     family: "pulse",
@@ -472,6 +491,60 @@ const SPIN_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
     supported_combo_defaults: &[("MASK", 0), ("REPEAT", 1)],
     supported_uniforms: &["center", "feather", "size", "spincenter"],
     runtime_binding_layout: SPIN_TEXTURE_SLOTS,
+};
+
+const CHROMATIC_ABERRATION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::ChromaticAberration,
+    family: "chromaticaberration",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0, 1],
+    supported_combo_defaults: &[("MASK", 0), ("MODE", 0), ("VARIATION", 0)],
+    supported_uniforms: &[
+        "uieditorpropertiescenter",
+        "uieditorpropertiescenterfalloff",
+        "uieditorpropertiesdirection",
+        "uieditorpropertiesstrength",
+    ],
+    runtime_binding_layout: CHROMATIC_ABERRATION_TEXTURE_SLOTS,
+};
+
+const COLORKEY_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::ColorKey,
+    family: "colorkey",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0],
+    supported_combo_defaults: &[("FLATTEN", 0), ("INVERT", 0)],
+    supported_uniforms: &["alpha", "color", "fuzziness", "tolerance"],
+    runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
+};
+
+const FISHEYE_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::FishEye,
+    family: "fisheye",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0],
+    supported_combo_defaults: &[("BACKGROUND", 1)],
+    supported_uniforms: &["center", "distortion", "scale", "size"],
+    runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
+};
+
+const EDGEDETECTION_CONTRACT: ScenePhase10bEffectContract = ScenePhase10bEffectContract {
+    kind: SceneCompatEffectKind::EdgeDetection,
+    family: "edgedetection",
+    required_texture_slots: &[0],
+    supported_texture_slots: &[0],
+    supported_combo_defaults: &[("BLENDMODE", 0)],
+    supported_uniforms: &[
+        "alpha",
+        "brightness",
+        "detectmultiply",
+        "detectionmultiply",
+        "detectionsize",
+        "detectionthreshold",
+        "outlinebackground",
+        "outlinecolor",
+    ],
+    runtime_binding_layout: TRANSFORM_TEXTURE_SLOTS,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1264,6 +1337,10 @@ pub fn phase10b_supported_effect_contract_for_shader_ref(
         "skew" => Some(&SKEW_CONTRACT),
         "perspective" => Some(&PERSPECTIVE_CONTRACT),
         "spin" => Some(&SPIN_CONTRACT),
+        "chromaticaberration" => Some(&CHROMATIC_ABERRATION_CONTRACT),
+        "colorkey" => Some(&COLORKEY_CONTRACT),
+        "fisheye" => Some(&FISHEYE_CONTRACT),
+        "edgedetection" => Some(&EDGEDETECTION_CONTRACT),
         _ => None,
     }
 }
@@ -1286,6 +1363,10 @@ pub fn phase10b_effect_contract_for_kind(
         SceneCompatEffectKind::Skew => Some(&SKEW_CONTRACT),
         SceneCompatEffectKind::Perspective => Some(&PERSPECTIVE_CONTRACT),
         SceneCompatEffectKind::Spin => Some(&SPIN_CONTRACT),
+        SceneCompatEffectKind::ChromaticAberration => Some(&CHROMATIC_ABERRATION_CONTRACT),
+        SceneCompatEffectKind::ColorKey => Some(&COLORKEY_CONTRACT),
+        SceneCompatEffectKind::FishEye => Some(&FISHEYE_CONTRACT),
+        SceneCompatEffectKind::EdgeDetection => Some(&EDGEDETECTION_CONTRACT),
     }
 }
 
@@ -1392,6 +1473,18 @@ fn compat_effect_shader_defines(
         }
         SceneCompatEffectKind::Spin => {
             defines.insert("PHASE10_EFFECT_SPIN".to_string(), 1);
+        }
+        SceneCompatEffectKind::ChromaticAberration => {
+            defines.insert("PHASE10_EFFECT_CHROMATIC_ABERRATION".to_string(), 1);
+        }
+        SceneCompatEffectKind::ColorKey => {
+            defines.insert("PHASE10_EFFECT_COLORKEY".to_string(), 1);
+        }
+        SceneCompatEffectKind::FishEye => {
+            defines.insert("PHASE10_EFFECT_FISHEYE".to_string(), 1);
+        }
+        SceneCompatEffectKind::EdgeDetection => {
+            defines.insert("PHASE10_EFFECT_EDGEDETECTION".to_string(), 1);
         }
     }
     if let Some(contract) = phase10b_effect_contract_for_kind(kind) {
@@ -2165,6 +2258,64 @@ mod tests {
     }
 
     #[test]
+    fn batch2_group_b_authored_effect_shader_pairs_map_to_phase_10b_compat_program() {
+        let temp = tempdir().expect("temp dir");
+        let managed = temp.path().join("managed");
+        let builtin = temp.path().join("builtin");
+        let external = temp.path().join("external-assets");
+        write(
+            &builtin.join("assets/shaders/compat/scene-effect-compat.metal"),
+            "fragment float4 phase10_effect_fragment() { return float4(1); }",
+        );
+        let resolver = SceneResourceResolver::for_managed_root_with_asset_roots(
+            &managed,
+            &builtin,
+            Some(external.clone()),
+        );
+
+        for (family, shader_ref, expected) in [
+            (
+                "chromaticaberration",
+                "effects/chromatic_aberration",
+                SceneCompatEffectKind::ChromaticAberration,
+            ),
+            ("colorkey", "effects/colorkey", SceneCompatEffectKind::ColorKey),
+            ("fisheye", "effects/fisheye", SceneCompatEffectKind::FishEye),
+            (
+                "edgedetection",
+                "effects/edgedetection",
+                SceneCompatEffectKind::EdgeDetection,
+            ),
+        ] {
+            write(
+                &external.join(format!("effects/{family}/materials/effects/{family}.json")),
+                format!(r#"{{"passes":[{{"shader":"{shader_ref}"}}]}}"#).as_str(),
+            );
+            let shader_stem = shader_ref.rsplit('/').next().expect("shader stem");
+            write(
+                &external.join(format!("effects/{family}/shaders/effects/{shader_stem}.vert")),
+                "void main() {}",
+            );
+            write(
+                &external.join(format!("effects/{family}/shaders/effects/{shader_stem}.frag")),
+                "void main() {}",
+            );
+
+            let plan = load_scene_material_plan_with_effect_package_root(
+                &resolver,
+                &format!("materials/effects/{family}.json"),
+                &external.join(format!("effects/{family}")),
+            )
+            .expect("batch2 group b compat effect material");
+
+            assert_eq!(
+                plan.passes[0].program.kind,
+                SceneShaderProgramKind::EffectCompat(expected)
+            );
+        }
+    }
+
+    #[test]
     fn material_plan_preserves_sparse_authored_texture_slot_ordinals() {
         let temp = tempdir().expect("temp dir");
         let managed = temp.path().join("managed");
@@ -2215,6 +2366,10 @@ mod tests {
             (SceneCompatEffectKind::Skew, vec![0]),
             (SceneCompatEffectKind::Perspective, vec![0]),
             (SceneCompatEffectKind::Spin, vec![0, 1]),
+            (SceneCompatEffectKind::ChromaticAberration, vec![0, 1]),
+            (SceneCompatEffectKind::ColorKey, vec![0]),
+            (SceneCompatEffectKind::FishEye, vec![0]),
+            (SceneCompatEffectKind::EdgeDetection, vec![0]),
         ];
 
         for (kind, supported_slots) in families {
@@ -2317,6 +2472,36 @@ mod tests {
         assert!(spin.supported_combo_defaults.contains(&("REPEAT", 1)));
         assert!(spin.supported_uniforms.contains(&"center"));
         assert!(spin.supported_uniforms.contains(&"spincenter"));
+
+        let chromatic = super::phase10b_effect_contract_for_kind(
+            SceneCompatEffectKind::ChromaticAberration,
+        )
+        .expect("chromatic contract");
+        assert!(chromatic.supported_combo_defaults.contains(&("MODE", 0)));
+        assert!(chromatic.supported_combo_defaults.contains(&("VARIATION", 0)));
+        assert!(chromatic
+            .supported_uniforms
+            .contains(&"uieditorpropertiesstrength"));
+
+        let colorkey = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::ColorKey)
+            .expect("colorkey contract");
+        assert!(colorkey.supported_combo_defaults.contains(&("INVERT", 0)));
+        assert!(colorkey.supported_combo_defaults.contains(&("FLATTEN", 0)));
+        assert!(colorkey.supported_uniforms.contains(&"fuzziness"));
+
+        let fisheye = super::phase10b_effect_contract_for_kind(SceneCompatEffectKind::FishEye)
+            .expect("fisheye contract");
+        assert!(fisheye.supported_combo_defaults.contains(&("BACKGROUND", 1)));
+        assert!(fisheye.supported_uniforms.contains(&"distortion"));
+
+        let edgedetection = super::phase10b_effect_contract_for_kind(
+            SceneCompatEffectKind::EdgeDetection,
+        )
+        .expect("edgedetection contract");
+        assert!(edgedetection
+            .supported_combo_defaults
+            .contains(&("BLENDMODE", 0)));
+        assert!(edgedetection.supported_uniforms.contains(&"outlinecolor"));
     }
 
     #[test]

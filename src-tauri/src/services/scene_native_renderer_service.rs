@@ -3702,6 +3702,107 @@ impl NativeSceneMetalRenderer {
                 uniforms.user0[3] =
                     phase10_uniform_float(&uniform_values, &["feather"], uniforms.user0[3]);
             }
+            Some(SceneCompatEffectKind::ChromaticAberration) => {
+                uniforms.user0 = phase10_uniform_vec4(
+                    &uniform_values,
+                    &[
+                        "center",
+                        "uieditorpropertiescenter",
+                        "ui_editor_properties_center",
+                    ],
+                    [0.5, 0.5, 0.5, 9.0],
+                );
+                uniforms.user0[2] = phase10_uniform_float(
+                    &uniform_values,
+                    &[
+                        "centerfalloff",
+                        "uieditorpropertiescenterfalloff",
+                        "ui_editor_properties_center_falloff",
+                    ],
+                    uniforms.user0[2],
+                );
+                uniforms.user0[3] = phase10_uniform_float(
+                    &uniform_values,
+                    &[
+                        "strength",
+                        "uieditorpropertiesstrength",
+                        "ui_editor_properties_strength",
+                    ],
+                    uniforms.user0[3],
+                );
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &[
+                        "direction",
+                        "uieditorpropertiesdirection",
+                        "ui_editor_properties_direction",
+                    ],
+                    1.5707964,
+                );
+            }
+            Some(SceneCompatEffectKind::ColorKey) => {
+                uniforms.intensity = phase10_uniform_float(&uniform_values, &["alpha"], 0.0);
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &["fuzziness", "keyfuzz"],
+                    0.0,
+                );
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &["tolerance", "keytolerance"],
+                    0.1,
+                );
+                uniforms.color = phase10_uniform_color(
+                    &uniform_values,
+                    &["color", "keycolor"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+            }
+            Some(SceneCompatEffectKind::FishEye) => {
+                uniforms.user0 = phase10_uniform_vec4(
+                    &uniform_values,
+                    &["center"],
+                    [0.5, 0.5, 1.0, 1.0],
+                );
+                uniforms.user0[2] =
+                    phase10_uniform_float(&uniform_values, &["size"], uniforms.user0[2]);
+                uniforms.user0[3] = phase10_uniform_float(
+                    &uniform_values,
+                    &["distortion", "scale"],
+                    uniforms.user0[3],
+                );
+            }
+            Some(SceneCompatEffectKind::EdgeDetection) => {
+                uniforms.intensity =
+                    phase10_uniform_float(&uniform_values, &["alpha", "blendalpha"], 1.0);
+                uniforms.speed = phase10_uniform_float(
+                    &uniform_values,
+                    &["brightness", "blendbrightness"],
+                    1.0,
+                );
+                uniforms.radius = phase10_uniform_float(
+                    &uniform_values,
+                    &["detectthreshold", "detectionthreshold"],
+                    0.5,
+                );
+                uniforms.angle = phase10_uniform_float(
+                    &uniform_values,
+                    &["detectmultiply", "detectionmultiply"],
+                    1.0,
+                );
+                let color1 = phase10_uniform_color(
+                    &uniform_values,
+                    &["outlinecolor"],
+                    [0.0, 0.0, 0.0, 1.0],
+                );
+                let color2 = phase10_uniform_color(
+                    &uniform_values,
+                    &["outlinebackground"],
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                uniforms.color = color1;
+                uniforms.user0 = [color2[0], color2[1], color2[2], 1.0];
+            }
             _ => {}
         }
 
