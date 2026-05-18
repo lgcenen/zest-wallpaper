@@ -33,38 +33,13 @@
 
 - 项目 QQ 交流群：[`867740762`](https://qm.qq.com/q/984wIUELGE)
 
-## 支持范围
-
-| 能力 | 状态 |
-| --- | --- |
-| 场景壁纸 | 部分支持 |
-| 视频壁纸 | 支持 |
-| 网页壁纸 | 支持 |
-| 音频输入 | 支持 |
-| 全屏自动暂停 | 支持 |
-| 多显示器 | 尚未测试 |
-| 创意工坊壁纸下载 | 未支持 |
-
-## 平台与技术栈
-
-- 仅限 macOS `14.0+` 使用
-- 当前打包产物仅支持 Apple Silicon (`arm64`)
-- 目前暂不支持 Intel 芯片 Mac
-- Tauri 2
-- React + Vite
-- Rust
-
 ## 安装
 
 ### 1. 从 Releases 下载
 
 从 GitHub Releases 下载最新测试版。
 
-如果 macOS 阻止应用打开，你可以先尝试：
-
-- 前往“系统设置 -> 隐私与安全性”，点击“仍要打开”
-
-也可以在终端执行：
+如果电脑显示“Zest Wallpaper.app”已损坏，无法打开。请在终端执行：
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Zest Wallpaper.app"
@@ -117,6 +92,27 @@ npm test
 cargo test -j 1 --manifest-path src-tauri/Cargo.toml
 cargo check -j 1 --manifest-path src-tauri/Cargo.toml
 ```
+
+## 支持范围
+
+| 能力 | 状态 |
+| --- | --- |
+| 场景壁纸 | 部分支持 |
+| 视频壁纸 | 支持 |
+| 网页壁纸 | 支持 |
+| 音频输入 | 支持 |
+| 全屏自动暂停 | 支持 |
+| 多显示器 | 尚未测试 |
+| 创意工坊壁纸下载 | 未支持 |
+
+## 平台与技术栈
+
+- 仅限 macOS `14.0+` 使用
+- 当前打包产物仅支持 Apple Silicon (`arm64`)
+- 目前暂不支持 Intel 芯片 Mac
+- Tauri 2
+- React + Vite
+- Rust
 
 ## 特别鸣谢
 

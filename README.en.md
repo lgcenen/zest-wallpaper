@@ -33,27 +33,6 @@ This project is under active development.
 
 - QQ group: [`867740762`](https://qm.qq.com/q/984wIUELGE)
 
-## Scope
-
-| Capability | Status |
-| --- | --- |
-| Scene wallpapers | Partially supported |
-| Video wallpapers | Supported |
-| Web wallpapers | Supported |
-| Audio input | Supported |
-| Fullscreen auto-pause | Supported |
-| Multi-display | Not yet tested |
-| Workshop wallpaper download | Not supported |
-
-## Platform and Stack
-
-- macOS `14.0+` only
-- current packaged builds support Apple Silicon (`arm64`) only
-- Intel Mac builds are not supported at this time
-- Tauri 2
-- React + Vite
-- Rust
-
 ## Installation
 
 ### 1. Download from Releases
@@ -64,7 +43,7 @@ If macOS blocks the app from opening, try this first:
 
 - Go to `System Settings -> Privacy & Security` and click `Open Anyway`
 
-You can also run this in Terminal:
+If your computer says `Zest Wallpaper.app` is damaged and can't be opened, run this in Terminal:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Zest Wallpaper.app"
@@ -117,6 +96,27 @@ npm test
 cargo test -j 1 --manifest-path src-tauri/Cargo.toml
 cargo check -j 1 --manifest-path src-tauri/Cargo.toml
 ```
+
+## Scope
+
+| Capability | Status |
+| --- | --- |
+| Scene wallpapers | Partially supported |
+| Video wallpapers | Supported |
+| Web wallpapers | Supported |
+| Audio input | Supported |
+| Fullscreen auto-pause | Supported |
+| Multi-display | Not yet tested |
+| Workshop wallpaper download | Not supported |
+
+## Platform and Stack
+
+- macOS `14.0+` only
+- current packaged builds support Apple Silicon (`arm64`) only
+- Intel Mac builds are not supported at this time
+- Tauri 2
+- React + Vite
+- Rust
 
 ## Special Thanks
 

@@ -40,9 +40,11 @@ fi
 
   printf '\n## Install Note\n\n'
   printf 'This is an unsigned macOS test build.\n\n'
-  printf 'If macOS blocks the app, go to `System Settings -> Privacy & Security` and click `Open Anyway`.\n\n'
-  printf 'Advanced users can also run:\n\n'
+  printf 'If your computer says `Zest Wallpaper.app` is damaged and can'\''t be opened, run this in Terminal:\n'
+  printf '如果电脑显示“Zest Wallpaper.app”已损坏，无法打开，请在终端执行：\n\n'
   printf '```bash\n'
   printf 'xattr -dr com.apple.quarantine "/Applications/Zest Wallpaper.app"\n'
   printf '```\n'
+  printf '\nThen open the app again.\n'
+  printf '然后重新打开应用。\n'
 } 
