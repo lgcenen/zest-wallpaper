@@ -1,6 +1,8 @@
 mod bridge_injection;
 mod path_resolution;
+mod request_handler;
 mod response_builder;
+mod root_registry;
 mod server;
 
 pub fn get_web_runtime_url(path: &str) -> Result<String, String> {
@@ -110,10 +112,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_server_supports_head_without_body() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        fs::write(
+            root.join("index.html"),
+            "<html><head><title>Demo</title></head><body>ok</body></html>",
+        )
+        .expect("index");
+
+        let runtime_url =
+            get_web_runtime_url(root.join("index.html").to_str().expect("entry path"))
+                .expect("runtime url");
+        let server = ensure_web_runtime_server().expect("runtime server");
+        let index_path = runtime_url
+            .strip_prefix(&format!("http://127.0.0.1:{}", server.port))
+            .expect("runtime path");
+
+        let response = get_http_response_with_method(server.port, index_path, "HEAD");
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        assert!(response.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(!response.contains("wallpaperPropertyListener"));
+        assert!(response.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn runtime_server_rejects_unsupported_methods() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        fs::write(root.join("index.html"), "<html><body>ok</body></html>").expect("index");
+
+        let runtime_url =
+            get_web_runtime_url(root.join("index.html").to_str().expect("entry path"))
+                .expect("runtime url");
+        let server = ensure_web_runtime_server().expect("runtime server");
+        let index_path = runtime_url
+            .strip_prefix(&format!("http://127.0.0.1:{}", server.port))
+            .expect("runtime path");
+
+        let response = get_http_response_with_method(server.port, index_path, "POST");
+        assert!(response.starts_with("HTTP/1.1 405 Method Not Allowed"));
+        assert!(response.ends_with("Method Not Allowed"));
+    }
+
     fn get_http_response(port: u16, path: &str) -> String {
+        get_http_response_with_method(port, path, "GET")
+    }
+
+    fn get_http_response_with_method(port: u16, path: &str, method: &str) -> String {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-        let request =
-            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        );
         stream.write_all(request.as_bytes()).expect("request");
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("response");

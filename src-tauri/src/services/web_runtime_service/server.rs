@@ -1,21 +1,14 @@
 use std::{
-    collections::HashMap,
-    fs,
-    io::{BufRead, BufReader},
-    net::{TcpListener, TcpStream},
-    path::PathBuf,
-    sync::{Arc, Mutex as StdMutex, OnceLock},
+    net::TcpListener,
+    sync::OnceLock,
     thread,
 };
 
-use super::{
-    path_resolution::{parse_runtime_request_target, resolve_runtime_asset, AssetResolutionError},
-    response_builder::{write_http_response, HttpResponse},
-};
+use super::{request_handler::handle_web_runtime_connection, root_registry::RuntimeRootRegistry};
 
 pub(super) struct WebRuntimeServer {
     pub(super) port: u16,
-    pub(super) roots: Arc<StdMutex<HashMap<String, PathBuf>>>,
+    pub(super) roots: RuntimeRootRegistry,
 }
 
 static WEB_RUNTIME_SERVER: OnceLock<Result<WebRuntimeServer, String>> = OnceLock::new();
@@ -28,14 +21,14 @@ pub(super) fn ensure_web_runtime_server() -> Result<&'static WebRuntimeServer, S
             .local_addr()
             .map_err(|error| format!("failed to inspect web runtime port: {error}"))?
             .port();
-        let roots = Arc::new(StdMutex::new(HashMap::new()));
-        let thread_roots = Arc::clone(&roots);
+        let roots = RuntimeRootRegistry::new();
+        let thread_roots = roots.clone();
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else {
                     continue;
                 };
-                let roots = Arc::clone(&thread_roots);
+                let roots = thread_roots.clone();
                 thread::spawn(move || {
                     let _ = handle_web_runtime_connection(stream, &roots);
                 });
@@ -53,73 +46,7 @@ pub(super) fn ensure_web_runtime_server() -> Result<&'static WebRuntimeServer, S
 pub(super) fn register_runtime_root(
     server: &WebRuntimeServer,
     token: String,
-    root: PathBuf,
+    root: std::path::PathBuf,
 ) -> Result<(), String> {
-    let mut roots = server.roots.lock().map_err(|error| error.to_string())?;
-    roots.insert(token, root);
-    Ok(())
-}
-
-fn handle_web_runtime_connection(
-    stream: TcpStream,
-    roots: &Arc<StdMutex<HashMap<String, PathBuf>>>,
-) -> Result<(), String> {
-    let mut reader = BufReader::new(
-        stream
-            .try_clone()
-            .map_err(|error| format!("failed to clone stream: {error}"))?,
-    );
-    let mut request_line = String::new();
-    reader
-        .read_line(&mut request_line)
-        .map_err(|error| format!("failed to read request line: {error}"))?;
-
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let target = parts.next().unwrap_or("/");
-    let send_body = method != "HEAD";
-    if method != "GET" && method != "HEAD" {
-        write_http_response(stream, HttpResponse::method_not_allowed(), send_body);
-        return Ok(());
-    }
-
-    let Some(request) = parse_runtime_request_target(target) else {
-        write_http_response(stream, HttpResponse::not_found(), send_body);
-        return Ok(());
-    };
-
-    let root = {
-        let roots = roots.lock().map_err(|error| error.to_string())?;
-        roots.get(&request.token).cloned()
-    };
-    let Some(root) = root else {
-        write_http_response(stream, HttpResponse::not_found(), send_body);
-        return Ok(());
-    };
-
-    let canonical = match resolve_runtime_asset(&root, &request.relative_path) {
-        Ok(path) => path,
-        Err(AssetResolutionError::Forbidden) => {
-            write_http_response(stream, HttpResponse::forbidden(), send_body);
-            return Ok(());
-        }
-        Err(AssetResolutionError::NotFound) => {
-            write_http_response(stream, HttpResponse::not_found(), send_body);
-            return Ok(());
-        }
-    };
-
-    let body = match fs::read(&canonical) {
-        Ok(body) => body,
-        Err(_) => {
-            write_http_response(stream, HttpResponse::not_found(), send_body);
-            return Ok(());
-        }
-    };
-    write_http_response(
-        stream,
-        HttpResponse::from_asset(&canonical, body),
-        send_body,
-    );
-    Ok(())
+    server.roots.register(token, root)
 }
