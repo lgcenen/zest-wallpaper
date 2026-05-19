@@ -185,11 +185,29 @@ pub fn player_window_labels<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
     labels
 }
 
+pub fn player_window_label_set<R: Runtime>(app: &AppHandle<R>) -> std::collections::BTreeSet<String> {
+    player_window_labels(app).into_iter().collect()
+}
+
 pub fn expected_player_window_labels<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Vec<String>> {
     Ok(current_player_window_plan(app)?
         .into_iter()
         .map(|entry| entry.label)
         .collect())
+}
+
+pub fn expected_player_window_label_set<R: Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<std::collections::BTreeSet<String>> {
+    Ok(expected_player_window_labels(app)?.into_iter().collect())
+}
+
+pub fn player_window<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    app.get_webview_window(label)
+        .ok_or_else(|| format!("player window {label} was not found"))
 }
 
 pub fn player_window_plan_signature<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<String> {

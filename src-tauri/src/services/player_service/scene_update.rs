@@ -541,9 +541,7 @@ fn active_runtime_pause_snapshot(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<(Option<String>, bool), String> {
-    let labels = window_service::player_window_labels(app)
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
+    let labels = window_service::player_window_label_set(app);
     let player = state.player.lock().map_err(|error| error.to_string())?;
     Ok((
         player.active_id.clone(),

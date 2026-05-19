@@ -187,9 +187,9 @@ fn desired_video_playback_spec(
     };
     let _ = diagnostic_service::clear_diagnostic(app, DIAGNOSTIC_SUBSYSTEM, MISSING_SOURCE_CODE);
 
-    let mut labels = window_service::player_window_labels(app);
-    labels.sort();
-    labels.dedup();
+    let labels = window_service::player_window_label_set(app)
+        .into_iter()
+        .collect::<Vec<_>>();
     if labels.is_empty() {
         return Ok(None);
     }
@@ -505,9 +505,7 @@ impl NativeVideoViewHandle {
             let app = app.clone();
             let label = label.to_string();
             return run_on_main(move |_mtm| {
-                let window = app
-                    .get_webview_window(&label)
-                    .ok_or_else(|| format!("player window {label} was not found"))?;
+                let window = window_service::player_window(&app, &label)?;
                 let session_host = session
                     .host
                     .get(unsafe { MainThreadMarker::new_unchecked() });

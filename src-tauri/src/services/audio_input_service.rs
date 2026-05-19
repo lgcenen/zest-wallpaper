@@ -255,9 +255,7 @@ fn desired_audio_demand(app: &AppHandle) -> Result<AudioDemand, String> {
 }
 
 fn live_player_window_labels(app: &AppHandle) -> BTreeSet<String> {
-    window_service::player_window_labels(app)
-        .into_iter()
-        .collect()
+    window_service::player_window_label_set(app)
 }
 
 fn wait_for_refresh(state: &SharedAudioServiceState, timeout: Duration) {

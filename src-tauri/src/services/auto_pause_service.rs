@@ -204,8 +204,8 @@ fn window_covers_screen(screen: &ScreenSample, window: &WindowSample) -> bool {
 #[cfg(target_os = "macos")]
 fn player_screen_labels_for_system_pause(app: &AppHandle) -> Result<BTreeSet<String>, String> {
     let expected_labels =
-        window_service::expected_player_window_labels(app).map_err(|error| error.to_string())?;
-    let live_labels = window_service::player_window_labels(app);
+        window_service::expected_player_window_label_set(app).map_err(|error| error.to_string())?;
+    let live_labels = window_service::player_window_label_set(app);
     Ok(expected_labels.into_iter().chain(live_labels).collect())
 }
 

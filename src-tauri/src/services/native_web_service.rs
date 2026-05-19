@@ -378,9 +378,9 @@ fn desired_web_runtime_spec(
     let _ = diagnostic_service::clear_diagnostic(app, DIAGNOSTIC_SUBSYSTEM, MISSING_ENTRY_CODE);
 
     let runtime_url = web_runtime_service::get_web_runtime_url(&entry_path)?;
-    let mut labels = window_service::player_window_labels(app);
-    labels.sort();
-    labels.dedup();
+    let labels = window_service::player_window_label_set(app)
+        .into_iter()
+        .collect::<Vec<_>>();
     if labels.is_empty() {
         return Ok(None);
     }
@@ -869,9 +869,7 @@ impl NativeWebViewHandle {
             let label = label.to_string();
             let spec = spec.clone();
             return run_on_main(move |mtm| {
-                let window = app
-                    .get_webview_window(&label)
-                    .ok_or_else(|| format!("player window {label} was not found"))?;
+                let window = window_service::player_window(&app, &label)?;
                 let host = self.host.get(mtm);
                 host.sync(&window, &spec)
             });
