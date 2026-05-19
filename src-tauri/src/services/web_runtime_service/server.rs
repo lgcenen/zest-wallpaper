@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     net::{TcpListener, TcpStream},
     path::PathBuf,
     sync::{Arc, Mutex as StdMutex, OnceLock},
@@ -9,11 +9,8 @@ use std::{
 };
 
 use super::{
-    bridge_injection::prepare_web_runtime_body,
-    request_resolution::{
-        guess_content_type, parse_runtime_request_target, resolve_runtime_asset,
-        AssetResolutionError,
-    },
+    path_resolution::{parse_runtime_request_target, resolve_runtime_asset, AssetResolutionError},
+    response_builder::{write_http_response, HttpResponse},
 };
 
 pub(super) struct WebRuntimeServer {
@@ -53,6 +50,16 @@ pub(super) fn ensure_web_runtime_server() -> Result<&'static WebRuntimeServer, S
     }
 }
 
+pub(super) fn register_runtime_root(
+    server: &WebRuntimeServer,
+    token: String,
+    root: PathBuf,
+) -> Result<(), String> {
+    let mut roots = server.roots.lock().map_err(|error| error.to_string())?;
+    roots.insert(token, root);
+    Ok(())
+}
+
 fn handle_web_runtime_connection(
     stream: TcpStream,
     roots: &Arc<StdMutex<HashMap<String, PathBuf>>>,
@@ -72,24 +79,12 @@ fn handle_web_runtime_connection(
     let target = parts.next().unwrap_or("/");
     let send_body = method != "HEAD";
     if method != "GET" && method != "HEAD" {
-        write_http_response(
-            stream,
-            "HTTP/1.1 405 Method Not Allowed",
-            "text/plain; charset=utf-8",
-            b"Method Not Allowed",
-            send_body,
-        );
+        write_http_response(stream, HttpResponse::method_not_allowed(), send_body);
         return Ok(());
     }
 
     let Some(request) = parse_runtime_request_target(target) else {
-        write_http_response(
-            stream,
-            "HTTP/1.1 404 Not Found",
-            "text/plain; charset=utf-8",
-            b"Not Found",
-            send_body,
-        );
+        write_http_response(stream, HttpResponse::not_found(), send_body);
         return Ok(());
     };
 
@@ -98,36 +93,18 @@ fn handle_web_runtime_connection(
         roots.get(&request.token).cloned()
     };
     let Some(root) = root else {
-        write_http_response(
-            stream,
-            "HTTP/1.1 404 Not Found",
-            "text/plain; charset=utf-8",
-            b"Not Found",
-            send_body,
-        );
+        write_http_response(stream, HttpResponse::not_found(), send_body);
         return Ok(());
     };
 
     let canonical = match resolve_runtime_asset(&root, &request.relative_path) {
         Ok(path) => path,
         Err(AssetResolutionError::Forbidden) => {
-            write_http_response(
-                stream,
-                "HTTP/1.1 403 Forbidden",
-                "text/plain; charset=utf-8",
-                b"Forbidden",
-                send_body,
-            );
+            write_http_response(stream, HttpResponse::forbidden(), send_body);
             return Ok(());
         }
         Err(AssetResolutionError::NotFound) => {
-            write_http_response(
-                stream,
-                "HTTP/1.1 404 Not Found",
-                "text/plain; charset=utf-8",
-                b"Not Found",
-                send_body,
-            );
+            write_http_response(stream, HttpResponse::not_found(), send_body);
             return Ok(());
         }
     };
@@ -135,36 +112,14 @@ fn handle_web_runtime_connection(
     let body = match fs::read(&canonical) {
         Ok(body) => body,
         Err(_) => {
-            write_http_response(
-                stream,
-                "HTTP/1.1 404 Not Found",
-                "text/plain; charset=utf-8",
-                b"Not Found",
-                send_body,
-            );
+            write_http_response(stream, HttpResponse::not_found(), send_body);
             return Ok(());
         }
     };
-    let body = prepare_web_runtime_body(&canonical, body);
-    let content_type = guess_content_type(&canonical);
-    write_http_response(stream, "HTTP/1.1 200 OK", content_type, &body, send_body);
-    Ok(())
-}
-
-fn write_http_response(
-    mut stream: TcpStream,
-    status_line: &str,
-    content_type: &str,
-    body: &[u8],
-    send_body: bool,
-) {
-    let header = format!(
-        "{status_line}\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
-        body.len()
+    write_http_response(
+        stream,
+        HttpResponse::from_asset(&canonical, body),
+        send_body,
     );
-    let _ = stream.write_all(header.as_bytes());
-    if send_body {
-        let _ = stream.write_all(body);
-    }
-    let _ = stream.flush();
+    Ok(())
 }

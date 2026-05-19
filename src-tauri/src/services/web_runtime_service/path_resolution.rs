@@ -4,6 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(super) struct RuntimeEntry {
+    pub(super) token: String,
+    pub(super) root: PathBuf,
+    pub(super) entry_name: String,
+}
+
 pub(super) struct RuntimeRequest {
     pub(super) token: String,
     pub(super) relative_path: PathBuf,
@@ -12,6 +18,35 @@ pub(super) struct RuntimeRequest {
 pub(super) enum AssetResolutionError {
     Forbidden,
     NotFound,
+}
+
+pub(super) fn resolve_runtime_entry(path: &str) -> Result<RuntimeEntry, String> {
+    let entry_path = PathBuf::from(path);
+    let root = entry_path
+        .parent()
+        .ok_or_else(|| "web wallpaper entry path is missing a parent directory".to_string())?
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve web runtime root: {error}"))?;
+    let entry_name = entry_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "web wallpaper entry path is missing a file name".to_string())?;
+    let token = runtime_token(&root);
+
+    Ok(RuntimeEntry {
+        token,
+        root,
+        entry_name: entry_name.to_string(),
+    })
+}
+
+pub(super) fn build_runtime_url(port: u16, entry: &RuntimeEntry) -> String {
+    format!(
+        "http://127.0.0.1:{}/web-runtime/{}/{}",
+        port,
+        entry.token,
+        url_encode_component(&entry.entry_name)
+    )
 }
 
 pub(super) fn guess_content_type(path: &Path) -> &'static str {
@@ -42,27 +77,6 @@ pub(super) fn guess_content_type(path: &Path) -> &'static str {
         Some("splat") => "application/octet-stream",
         _ => "application/octet-stream",
     }
-}
-
-pub(super) fn url_encode_component(input: &str) -> String {
-    let mut encoded = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => {
-                let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
-            }
-        }
-    }
-    encoded
-}
-
-pub(super) fn runtime_token(root: &Path) -> String {
-    let mut hasher = DefaultHasher::new();
-    root.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
 }
 
 pub(super) fn parse_runtime_request_target(target: &str) -> Option<RuntimeRequest> {
@@ -101,6 +115,27 @@ pub(super) fn resolve_runtime_asset(
         return Err(AssetResolutionError::Forbidden);
     }
     Ok(canonical)
+}
+
+fn runtime_token(root: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    root.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn url_encode_component(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => {
+                let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
+            }
+        }
+    }
+    encoded
 }
 
 fn percent_decode(input: &str) -> String {

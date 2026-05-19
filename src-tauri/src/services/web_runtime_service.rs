@@ -1,34 +1,14 @@
 mod bridge_injection;
-mod request_resolution;
+mod path_resolution;
+mod response_builder;
 mod server;
 
-use std::path::PathBuf;
-
 pub fn get_web_runtime_url(path: &str) -> Result<String, String> {
-    let entry_path = PathBuf::from(path);
-    let root = entry_path
-        .parent()
-        .ok_or_else(|| "web wallpaper entry path is missing a parent directory".to_string())?
-        .canonicalize()
-        .map_err(|error| format!("failed to resolve web runtime root: {error}"))?;
-    let entry_name = entry_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "web wallpaper entry path is missing a file name".to_string())?;
-    let token = request_resolution::runtime_token(&root);
-
+    let entry = path_resolution::resolve_runtime_entry(path)?;
     let server = server::ensure_web_runtime_server()?;
-    {
-        let mut roots = server.roots.lock().map_err(|error| error.to_string())?;
-        roots.insert(token.clone(), root);
-    }
+    server::register_runtime_root(server, entry.token.clone(), entry.root.clone())?;
 
-    Ok(format!(
-        "http://127.0.0.1:{}/web-runtime/{}/{}",
-        server.port,
-        token,
-        request_resolution::url_encode_component(entry_name)
-    ))
+    Ok(path_resolution::build_runtime_url(server.port, &entry))
 }
 
 #[cfg(test)]
