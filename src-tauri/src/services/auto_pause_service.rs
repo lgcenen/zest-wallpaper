@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use tauri::AppHandle;
 
-use crate::services::window_service;
+use crate::services::player_host_service;
 
 const FINDER_BUNDLE_ID: &str = "com.apple.finder";
 const CONTENT_WINDOW_LAYER: i32 = 0;
@@ -204,8 +204,8 @@ fn window_covers_screen(screen: &ScreenSample, window: &WindowSample) -> bool {
 #[cfg(target_os = "macos")]
 fn player_screen_labels_for_system_pause(app: &AppHandle) -> Result<BTreeSet<String>, String> {
     let expected_labels =
-        window_service::expected_player_window_label_set(app).map_err(|error| error.to_string())?;
-    let live_labels = window_service::player_window_label_set(app);
+        player_host_service::expected_player_host_label_set(app).map_err(|error| error.to_string())?;
+    let live_labels = player_host_service::live_player_host_label_set(app);
     Ok(expected_labels.into_iter().chain(live_labels).collect())
 }
 
@@ -265,7 +265,7 @@ fn sample_frontmost_and_screens(
     use objc2_app_kit::{NSScreen, NSWorkspace};
 
     let expected_labels =
-        window_service::expected_player_window_labels(app).map_err(|error| error.to_string())?;
+        player_host_service::expected_player_host_labels(app).map_err(|error| error.to_string())?;
     if expected_labels.is_empty() {
         return Ok((None, Vec::new()));
     }

@@ -6,6 +6,7 @@ pub mod input_service;
 pub mod lifecycle_service;
 pub mod native_video_service;
 pub mod native_web_service;
+pub mod player_host_service;
 pub mod player_service;
 pub mod runtime_audio_settings_service;
 pub mod runtime_document_service;

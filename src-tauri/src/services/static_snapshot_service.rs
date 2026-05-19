@@ -5,7 +5,7 @@ use tauri::AppHandle;
 
 use crate::{
     models::WallpaperRecord,
-    services::{diagnostic_service, window_service},
+    services::{diagnostic_service, player_host_service},
     store::{save_static_snapshot_sync_state, AppState, StaticSnapshotSyncState},
 };
 
@@ -378,7 +378,7 @@ fn sync_player_window_snapshot_background(
     };
 
     if let Err(error) =
-        window_service::set_player_windows_snapshot_background_color(app, red, green, blue)
+        player_host_service::set_player_host_snapshot_background_color(app, red, green, blue)
     {
         diagnostic_service::record_warning(
             app,

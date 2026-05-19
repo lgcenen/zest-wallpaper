@@ -10,9 +10,9 @@ use crate::{
         SceneRuntimeDocument, SceneTextBehavior, WallpaperRuntime, WallpaperRuntimeRecord,
     },
     services::{
-        audio_input_service, native_video_service, native_web_service,
+        audio_input_service, native_video_service, native_web_service, player_host_service,
         scene_native_renderer_service, scene_now_playing_provider_service,
-        scene_text_behavior_service, window_service,
+        scene_text_behavior_service,
     },
     store::AppState,
 };
@@ -541,7 +541,7 @@ fn active_runtime_pause_snapshot(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<(Option<String>, bool), String> {
-    let labels = window_service::player_window_label_set(app);
+    let labels = player_host_service::live_player_host_label_set(app);
     let player = state.player.lock().map_err(|error| error.to_string())?;
     Ok((
         player.active_id.clone(),

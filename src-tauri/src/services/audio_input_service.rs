@@ -11,7 +11,7 @@ use rustfft::{num_complex::Complex32, FftPlanner};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::services::{diagnostic_service, native_web_service, window_service};
+use crate::services::{diagnostic_service, native_web_service, player_host_service};
 
 #[cfg(target_os = "macos")]
 use dispatch2::{DispatchQueue as NativeDispatchQueue, DispatchRetained};
@@ -255,7 +255,7 @@ fn desired_audio_demand(app: &AppHandle) -> Result<AudioDemand, String> {
 }
 
 fn live_player_window_labels(app: &AppHandle) -> BTreeSet<String> {
-    window_service::player_window_label_set(app)
+    player_host_service::live_player_host_label_set(app)
 }
 
 fn wait_for_refresh(state: &SharedAudioServiceState, timeout: Duration) {

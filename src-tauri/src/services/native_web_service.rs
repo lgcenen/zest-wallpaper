@@ -17,8 +17,9 @@ use crate::{
         audio_input_service::{self, AudioSnapshot},
         diagnostic_service,
         input_service::SharedInputSnapshot,
+        player_host_service,
         runtime_audio_settings_service::normalize_output_volume_percent,
-        web_runtime_service, window_service,
+        web_runtime_service,
     },
 };
 
@@ -378,7 +379,7 @@ fn desired_web_runtime_spec(
     let _ = diagnostic_service::clear_diagnostic(app, DIAGNOSTIC_SUBSYSTEM, MISSING_ENTRY_CODE);
 
     let runtime_url = web_runtime_service::get_web_runtime_url(&entry_path)?;
-    let labels = window_service::player_window_label_set(app)
+    let labels = player_host_service::live_player_host_label_set(app)
         .into_iter()
         .collect::<Vec<_>>();
     if labels.is_empty() {
@@ -869,7 +870,7 @@ impl NativeWebViewHandle {
             let label = label.to_string();
             let spec = spec.clone();
             return run_on_main(move |mtm| {
-                let window = window_service::player_window(&app, &label)?;
+                let window = player_host_service::player_host_window(&app, &label)?;
                 let host = self.host.get(mtm);
                 host.sync(&window, &spec)
             });

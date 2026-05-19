@@ -11,8 +11,8 @@ use tauri::{
 use crate::{
     services::{
         audio_input_service, auto_pause_service, diagnostic_service, input_service,
-        native_video_service, native_web_service, player_service, scene_native_renderer_service,
-        static_snapshot_service, window_service,
+        native_video_service, native_web_service, player_host_service, player_service,
+        scene_native_renderer_service, static_snapshot_service, window_service,
     },
     store::{AppState, DynamicPlayerState},
 };
@@ -231,14 +231,14 @@ pub fn handle_window_event(window: &Window, event: &WindowEvent) {
 }
 
 pub fn show_player_windows(app: &AppHandle) -> tauri::Result<()> {
-    let visible_count = window_service::show_player_windows(app)?;
+    let visible_count = player_host_service::show_player_hosts(app)?;
     let _ = audio_input_service::prune_scene_audio_interest(app);
     record_player_visible(app, visible_count > 0);
     Ok(())
 }
 
 pub fn close_player_windows(app: &AppHandle) -> tauri::Result<()> {
-    window_service::close_player_windows(app)?;
+    player_host_service::close_player_hosts(app)?;
     let _ = audio_input_service::prune_scene_audio_interest(app);
     record_player_visible(app, false);
     Ok(())
@@ -335,7 +335,7 @@ fn start_player_lifecycle_worker(app: AppHandle) {
 
             if player_snapshot.active_id.is_none() {
                 let _ = player_service::sync_native_runtime_for_active_wallpaper(&app, &state);
-                if !window_service::player_window_labels(&app).is_empty() {
+                if !player_host_service::live_player_host_labels(&app).is_empty() {
                     let _ = close_player_windows(&app);
                 }
                 let _ = player_service::set_player_auto_pause_screen_labels(
@@ -347,12 +347,12 @@ fn start_player_lifecycle_worker(app: AppHandle) {
                 continue;
             }
 
-            let expected_labels = match window_service::expected_player_window_labels(&app) {
+            let expected_labels = match player_host_service::expected_player_host_labels(&app) {
                 Ok(labels) => labels,
                 Err(_) => continue,
             };
-            let current_labels = window_service::player_window_labels(&app);
-            let plan_signature = match window_service::player_window_plan_signature(&app) {
+            let current_labels = player_host_service::live_player_host_labels(&app);
+            let plan_signature = match player_host_service::player_host_plan_signature(&app) {
                 Ok(signature) => signature,
                 Err(_) => continue,
             };

@@ -7,7 +7,7 @@ use std::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::services::{native_web_service, window_service};
+use crate::services::{native_web_service, player_host_service};
 
 #[cfg(target_os = "macos")]
 use dispatch2::run_on_main;
@@ -99,7 +99,7 @@ fn sample_and_dispatch(app: &AppHandle) -> Result<(), String> {
         state.replace_snapshot(snapshot.clone())?;
     }
 
-    for label in window_service::player_window_labels(app) {
+    for label in player_host_service::live_player_host_labels(app) {
         let _ = app.emit_to(label, "player:input", snapshot.clone());
     }
     native_web_service::dispatch_shared_input(app, &snapshot)?;

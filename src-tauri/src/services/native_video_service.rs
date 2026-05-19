@@ -9,8 +9,8 @@ use tauri::{AppHandle, Manager};
 use crate::{
     models::{WallpaperRuntime, WallpaperRuntimeRecord},
     services::{
-        diagnostic_service, runtime_audio_settings_service::normalize_output_volume_percent,
-        window_service,
+        diagnostic_service, player_host_service,
+        runtime_audio_settings_service::normalize_output_volume_percent,
     },
 };
 
@@ -187,7 +187,7 @@ fn desired_video_playback_spec(
     };
     let _ = diagnostic_service::clear_diagnostic(app, DIAGNOSTIC_SUBSYSTEM, MISSING_SOURCE_CODE);
 
-    let labels = window_service::player_window_label_set(app)
+    let labels = player_host_service::live_player_host_label_set(app)
         .into_iter()
         .collect::<Vec<_>>();
     if labels.is_empty() {
@@ -505,7 +505,7 @@ impl NativeVideoViewHandle {
             let app = app.clone();
             let label = label.to_string();
             return run_on_main(move |_mtm| {
-                let window = window_service::player_window(&app, &label)?;
+                let window = player_host_service::player_host_window(&app, &label)?;
                 let session_host = session
                     .host
                     .get(unsafe { MainThreadMarker::new_unchecked() });

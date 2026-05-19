@@ -16,6 +16,7 @@ use crate::{
     },
     services::{
         audio_input_service, diagnostic_service, input_service,
+        player_host_service,
         runtime_audio_settings_service::{
             effective_output_volume, normalize_output_volume_percent,
         },
@@ -65,7 +66,6 @@ use crate::{
             self, SceneVideoTextureLifecycleAction, SceneVideoTextureSourceSpec,
             SceneVideoTextureSourceState, SceneVideoTextureWarning,
         },
-        window_service,
     },
 };
 
@@ -459,7 +459,7 @@ fn desired_scene_renderer_spec(
         }
     };
 
-    let labels = window_service::player_window_label_set(app)
+    let labels = player_host_service::live_player_host_label_set(app)
         .into_iter()
         .collect::<Vec<_>>();
     if labels.is_empty() {
@@ -1174,7 +1174,7 @@ fn sync_scene_audio_interest(
         .map(|spec| spec.window_labels.iter().cloned().collect::<BTreeSet<_>>())
         .unwrap_or_default();
 
-    for label in window_service::player_window_label_set(app) {
+    for label in player_host_service::live_player_host_label_set(app) {
         let interested = interested_labels.contains(&label);
         audio_input_service::set_scene_audio_interest(app, &label, interested)?;
     }
@@ -1257,7 +1257,7 @@ impl NativeSceneViewHandle {
             let label = label.to_string();
             let spec = spec.clone();
             return run_on_main(move |mtm| {
-                let window = window_service::player_window(&app, &label)?;
+                let window = player_host_service::player_host_window(&app, &label)?;
                 let host = self.host.get(mtm);
                 host.sync(&window, &spec)
             });
@@ -1283,7 +1283,7 @@ impl NativeSceneViewHandle {
             let label = label.to_string();
             let texts = texts.to_vec();
             return run_on_main(move |mtm| {
-                let window = window_service::player_window(&app, &label)?;
+                let window = player_host_service::player_host_window(&app, &label)?;
                 let host = self.host.get(mtm);
                 host.update_dynamic_text(&window, texts, paused)
             });

@@ -5,8 +5,8 @@ use tauri::{AppHandle, Emitter};
 use crate::{
     models::{WallpaperRecord, WallpaperRuntime, WallpaperRuntimeRecord, WallpaperType},
     services::{
-        lifecycle_service, scene_manifest_service, scene_support_service,
-        static_snapshot_generation_service, static_snapshot_service, window_service,
+        lifecycle_service, player_host_service, scene_manifest_service, scene_support_service,
+        static_snapshot_generation_service, static_snapshot_service,
     },
     store::{find_record, save_library, save_player_state, AppState, DynamicPlayerState},
 };
@@ -46,7 +46,7 @@ pub fn apply_dynamic_wallpaper(
         .map_err(|error| error.to_string())?
         .clone();
     let previous_runtime = active_runtime_snapshot(state)?;
-    let had_player_windows = !window_service::player_window_labels(app).is_empty();
+    let had_player_windows = !player_host_service::live_player_host_labels(app).is_empty();
     let snapshot_stage_logged = Cell::new(false);
 
     let effective_paused = match apply_runtime_record_transaction(
