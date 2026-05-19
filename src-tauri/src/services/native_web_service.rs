@@ -870,9 +870,10 @@ impl NativeWebViewHandle {
             let label = label.to_string();
             let spec = spec.clone();
             return run_on_main(move |mtm| {
-                let window = player_host_service::player_host_window(&app, &label)?;
                 let host = self.host.get(mtm);
-                host.sync(&window, &spec)
+                player_host_service::with_player_host_container_view(&app, &label, mtm, |container| {
+                    host.sync(container, &spec)
+                })
             });
         }
 
@@ -1150,10 +1151,7 @@ impl NativeWebViewHost {
         })
     }
 
-    fn sync(&self, window: &tauri::WebviewWindow, spec: &WebRuntimeSpec) -> Result<(), String> {
-        let container_ptr = window.ns_view().map_err(|error| error.to_string())?;
-        let container = unsafe { &*(container_ptr.cast::<NSView>()) };
-
+    fn sync(&self, container: &NSView, spec: &WebRuntimeSpec) -> Result<(), String> {
         self.view.setFrame(container.bounds());
         if !self.view.isDescendantOf(container) {
             self.view.removeFromSuperview();

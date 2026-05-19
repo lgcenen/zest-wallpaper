@@ -504,13 +504,14 @@ impl NativeVideoViewHandle {
         {
             let app = app.clone();
             let label = label.to_string();
-            return run_on_main(move |_mtm| {
-                let window = player_host_service::player_host_window(&app, &label)?;
+            return run_on_main(move |mtm| {
                 let session_host = session
                     .host
                     .get(unsafe { MainThreadMarker::new_unchecked() });
                 let view_host = self.host.get(unsafe { MainThreadMarker::new_unchecked() });
-                view_host.attach(&window, session_host)
+                player_host_service::with_player_host_container_view(&app, &label, mtm, |container| {
+                    view_host.attach(container, session_host)
+                })
             });
         }
 
@@ -620,12 +621,9 @@ impl NativeVideoViewHost {
 
     fn attach(
         &self,
-        window: &tauri::WebviewWindow,
+        container: &NSView,
         session: &NativeVideoSessionHost,
     ) -> Result<(), String> {
-        let container_ptr = window.ns_view().map_err(|error| error.to_string())?;
-        let container = unsafe { &*(container_ptr.cast::<NSView>()) };
-
         unsafe {
             self.view.setPlayer(Some(&session.player));
             self.view.removeFromSuperview();

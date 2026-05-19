@@ -1257,9 +1257,10 @@ impl NativeSceneViewHandle {
             let label = label.to_string();
             let spec = spec.clone();
             return run_on_main(move |mtm| {
-                let window = player_host_service::player_host_window(&app, &label)?;
                 let host = self.host.get(mtm);
-                host.sync(&window, &spec)
+                player_host_service::with_player_host_container_view(&app, &label, mtm, |container| {
+                    host.sync(container, &spec)
+                })
             });
         }
 
@@ -1283,9 +1284,10 @@ impl NativeSceneViewHandle {
             let label = label.to_string();
             let texts = texts.to_vec();
             return run_on_main(move |mtm| {
-                let window = player_host_service::player_host_window(&app, &label)?;
                 let host = self.host.get(mtm);
-                host.update_dynamic_text(&window, texts, paused)
+                player_host_service::with_player_host_container_view(&app, &label, mtm, |container| {
+                    host.update_dynamic_text(container, texts, paused)
+                })
             });
         }
 
@@ -1405,7 +1407,7 @@ impl NativeSceneViewHost {
 
     fn sync(
         &self,
-        window: &tauri::WebviewWindow,
+        container: &NSView,
         spec: &SceneRendererSpec,
     ) -> Result<Vec<NativeSceneWarning>, String> {
         let warnings = self.delegate.apply_scene(
@@ -1414,8 +1416,6 @@ impl NativeSceneViewHost {
             spec.phase10_graph.clone(),
             spec.paused,
         )?;
-        let container_ptr = window.ns_view().map_err(|error| error.to_string())?;
-        let container = unsafe { &*(container_ptr.cast::<NSView>()) };
         let device = self.delegate.metal_device();
         let needs_attach = !self.view.isDescendantOf(container);
 
@@ -1437,13 +1437,11 @@ impl NativeSceneViewHost {
 
     fn update_dynamic_text(
         &self,
-        window: &tauri::WebviewWindow,
+        container: &NSView,
         texts: Vec<SceneRenderTextItem>,
         paused: bool,
     ) -> Result<Vec<NativeSceneWarning>, String> {
         let warnings = self.delegate.apply_dynamic_text_update(texts)?;
-        let container_ptr = window.ns_view().map_err(|error| error.to_string())?;
-        let container = unsafe { &*(container_ptr.cast::<NSView>()) };
         if !self.view.isDescendantOf(container) {
             return Err(
                 "native Scene view is not attached to the target player window".to_string(),

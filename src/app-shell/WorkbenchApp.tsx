@@ -1587,10 +1587,6 @@ export default function WorkbenchApp() {
   }, [activeWallpaperId, isApplyingWallpaperId]);
 
   useEffect(() => {
-    if (window.__WALLPAPER_PLAYER__) {
-      return;
-    }
-
     const onDrop = async (event: DragEvent) => {
       event.preventDefault();
       const file = event.dataTransfer?.files?.[0] as File & { path?: string };

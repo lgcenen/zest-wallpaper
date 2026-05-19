@@ -101,6 +101,7 @@ pub fn configure_app_on_setup(app: &mut App) -> tauri::Result<()> {
     let _ = app.manage(audio_input_service::SharedAudioServiceState::default());
     let _ = app.manage(diagnostic_service::DiagnosticServiceState::default());
     let _ = app.manage(input_service::SharedInputServiceState::default());
+    let _ = app.manage(player_host_service::PlayerHostServiceState::default());
     let _ = app.manage(scene_native_renderer_service::NativeSceneRendererServiceState::default());
     let _ = app.manage(native_video_service::NativeVideoServiceState::default());
     let _ = app.manage(native_web_service::NativeWebServiceState::default());
