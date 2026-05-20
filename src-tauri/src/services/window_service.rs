@@ -14,11 +14,12 @@ use objc2_web_kit::WKWebView;
 const PRIMARY_PLAYER_LABEL: &str = "player";
 const SECONDARY_PLAYER_PREFIX: &str = "player-screen-";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct DisplayTopology {
     name: Option<String>,
     position: (i32, i32),
     size: (u32, u32),
+    scale_factor: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +98,7 @@ fn display_topology(monitor: &Monitor) -> DisplayTopology {
         name: monitor.name().cloned(),
         position: (monitor.position().x, monitor.position().y),
         size: (monitor.size().width, monitor.size().height),
+        scale_factor: monitor.scale_factor(),
     }
 }
 
@@ -115,10 +117,32 @@ fn plan_player_windows(displays: &[DisplayTopology]) -> Vec<PlayerHostPlan> {
         .enumerate()
         .map(|(index, display)| PlayerHostPlan {
             label: player_window_label(index),
-            position: display.position,
-            size: display.size,
+            position: (
+                logical_coordinate(display.position.0, display.scale_factor),
+                logical_coordinate(display.position.1, display.scale_factor),
+            ),
+            size: (
+                logical_extent(display.size.0, display.scale_factor),
+                logical_extent(display.size.1, display.scale_factor),
+            ),
         })
         .collect()
+}
+
+fn logical_coordinate(value: i32, scale_factor: f64) -> i32 {
+    if scale_factor <= f64::EPSILON {
+        value
+    } else {
+        ((value as f64) / scale_factor).round() as i32
+    }
+}
+
+fn logical_extent(value: u32, scale_factor: f64) -> u32 {
+    if scale_factor <= f64::EPSILON {
+        value
+    } else {
+        ((value as f64) / scale_factor).round().max(1.0) as u32
+    }
 }
 
 fn player_window_label(index: usize) -> String {
@@ -151,16 +175,19 @@ mod tests {
                 name: Some("Right".to_string()),
                 position: (2560, 0),
                 size: (2560, 1440),
+                scale_factor: 1.0,
             },
             DisplayTopology {
                 name: Some("Left".to_string()),
                 position: (0, 0),
                 size: (2560, 1440),
+                scale_factor: 1.0,
             },
             DisplayTopology {
                 name: Some("Top".to_string()),
                 position: (0, -900),
                 size: (1600, 900),
+                scale_factor: 1.0,
             },
         ]);
 
@@ -178,13 +205,28 @@ mod tests {
             name: Some("Main".to_string()),
             position: (0, 0),
             size: (1920, 1080),
+            scale_factor: 1.0,
         }]));
         let after = plan_signature(&plan_player_windows(&[DisplayTopology {
             name: Some("Main".to_string()),
             position: (0, 0),
             size: (2560, 1440),
+            scale_factor: 1.0,
         }]));
 
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn retina_displays_are_converted_to_logical_points_for_native_hosts() {
+        let plan = plan_player_windows(&[DisplayTopology {
+            name: Some("Retina".to_string()),
+            position: (0, 0),
+            size: (3024, 1964),
+            scale_factor: 2.0,
+        }]);
+
+        assert_eq!(plan[0].position, (0, 0));
+        assert_eq!(plan[0].size, (1512, 982));
     }
 }
