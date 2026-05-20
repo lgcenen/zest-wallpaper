@@ -1018,64 +1018,6 @@ struct Phase10EffectUniforms {
     angle: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase10BackgroundSourceKind {
-    Phase10Visual,
-    Visual,
-    Text,
-}
-
-fn phase10_background_source_order(
-    plan: &SceneRenderPlan,
-    graph: &ScenePhase10GraphPlan,
-) -> Vec<(SceneRenderDrawItem, Phase10BackgroundSourceKind)> {
-    let phase10_visual_ids = graph
-        .visuals
-        .iter()
-        .map(|visual| visual.object_id)
-        .collect::<BTreeSet<_>>();
-    let visual_ids = plan
-        .visuals
-        .iter()
-        .map(|visual| visual.object_id)
-        .collect::<BTreeSet<_>>();
-    let text_ids = plan
-        .texts
-        .iter()
-        .map(|text| text.object_id)
-        .collect::<BTreeSet<_>>();
-
-    plan.draw_order
-        .iter()
-        .filter_map(|draw_item| match draw_item.kind {
-            SceneRenderDrawKind::Visual if phase10_visual_ids.contains(&draw_item.object_id) => {
-                Some((*draw_item, Phase10BackgroundSourceKind::Phase10Visual))
-            }
-            SceneRenderDrawKind::Visual if visual_ids.contains(&draw_item.object_id) => {
-                Some((*draw_item, Phase10BackgroundSourceKind::Visual))
-            }
-            SceneRenderDrawKind::Text if text_ids.contains(&draw_item.object_id) => {
-                Some((*draw_item, Phase10BackgroundSourceKind::Text))
-            }
-            SceneRenderDrawKind::Audio
-            | SceneRenderDrawKind::Particle
-            | SceneRenderDrawKind::RopeParticle
-            | SceneRenderDrawKind::SpriteParticle
-            | SceneRenderDrawKind::Sound
-            | SceneRenderDrawKind::Visual
-            | SceneRenderDrawKind::Text => None,
-        })
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-struct Phase10BackgroundLayer {
-    quad: SceneRenderQuad,
-    blend_mode: SceneRenderBlendMode,
-    texture: Retained<ProtocolObject<dyn MTLTexture>>,
-    uv_rect: [f32; 4],
-}
-
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 enum Phase10PassContext<'a> {
@@ -2081,11 +2023,14 @@ mod tests {
         quad_primitive_from_rope_particle, should_retain_visual_in_draw_plan,
     };
     use super::{
-        now_playing_runtime_warnings_for_scene, phase10_background_source_order,
+        now_playing_runtime_warnings_for_scene,
         runtime_dependency_warnings_for_plan, video_texture_frame_warning,
-        video_texture_source_warning, NativeSceneRendererSnapshot, Phase10BackgroundSourceKind,
-        SceneDiagnosticDomain, SceneRenderColor, SceneRendererSpec, SceneSessionPlan,
+        video_texture_source_warning, NativeSceneRendererSnapshot, SceneDiagnosticDomain,
+        SceneRenderColor, SceneRendererSpec, SceneSessionPlan,
         AUDIO_INPUT_UNAVAILABLE_CODE, INPUT_SNAPSHOT_UNAVAILABLE_CODE,
+    };
+    use super::scene_metal_renderer::{
+        phase10_background_source_order, Phase10BackgroundSourceKind,
     };
     use crate::models::{
         SceneEvaluatedDocument, SceneManifest, SceneNowPlayingAvailability,
