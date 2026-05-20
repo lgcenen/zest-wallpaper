@@ -15,6 +15,10 @@ use super::scene_effect_runtime_service::{
     phase10_visual_needs_background_snapshot, phase10_visual_requires_offscreen_chain,
     rotate2d, Phase10EffectTextureSource,
 };
+use super::scene_effect_target_runtime_service::{
+    phase10_texture_metrics_from_size, phase10_texture_metrics_from_texture,
+    Phase10RenderTargetStores, Phase10TextureHandle, Phase10TextureMetrics,
+};
 
 use crate::services::scene_resource_service;
 #[cfg(target_os = "macos")]
@@ -33,10 +37,7 @@ pub(super) struct NativeSceneMetalRenderer {
     texture_cache: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
     texture_resolution_cache: BTreeMap<String, Phase10TextureMetrics>,
     text_texture_cache: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
-    phase10_output_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
-    phase10_scratch_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
-    phase10_named_target_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
-    phase10_background_textures: BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
+    phase10_targets: Phase10RenderTargetStores,
     video_sources: BTreeMap<u32, NativeSceneVideoSource>,
     mdl_cache: BTreeMap<PathBuf, SceneMdlDocument>,
     compiled_shader_variants:
@@ -130,10 +131,7 @@ impl NativeSceneMetalRenderer {
             texture_cache: BTreeMap::new(),
             texture_resolution_cache: BTreeMap::new(),
             text_texture_cache: BTreeMap::new(),
-            phase10_output_textures: BTreeMap::new(),
-            phase10_scratch_textures: BTreeMap::new(),
-            phase10_named_target_textures: BTreeMap::new(),
-            phase10_background_textures: BTreeMap::new(),
+            phase10_targets: Phase10RenderTargetStores::default(),
 
             video_sources: BTreeMap::new(),
             mdl_cache: BTreeMap::new(),
@@ -437,8 +435,7 @@ impl NativeSceneMetalRenderer {
         self.texture_cache.clear();
         self.texture_resolution_cache.clear();
         self.text_texture_cache.clear();
-        self.phase10_output_textures.clear();
-        self.phase10_scratch_textures.clear();
+        self.phase10_targets.clear();
         self.clear_video_sources();
         self.mdl_cache.clear();
         self.compiled_shader_variants.clear();
@@ -817,14 +814,12 @@ impl NativeSceneMetalRenderer {
             }
         }
 
-        self.phase10_output_textures
-            .retain(|key, _| required_output_keys.contains(key));
-        self.phase10_scratch_textures
-            .retain(|key, _| required_scratch_keys.contains(key));
-        self.phase10_named_target_textures
-            .retain(|key, _| required_named_target_keys.contains(key));
-        self.phase10_background_textures
-            .retain(|key, _| required_background_keys.contains(key));
+        self.phase10_targets.retain_required(
+            &required_output_keys,
+            &required_scratch_keys,
+            &required_named_target_keys,
+            &required_background_keys,
+        );
         outputs
     }
 
@@ -1417,14 +1412,12 @@ impl NativeSceneMetalRenderer {
 
         self.compiled_shader_variants
             .retain(|key, _| required_shader_variants.contains(key));
-        self.phase10_output_textures
-            .retain(|key, _| required_output_keys.contains(key));
-        self.phase10_scratch_textures
-            .retain(|key, _| required_scratch_keys.contains(key));
-        self.phase10_named_target_textures
-            .retain(|key, _| required_named_target_keys.contains(key));
-        self.phase10_background_textures
-            .retain(|key, _| required_background_keys.contains(key));
+        self.phase10_targets.retain_required(
+            &required_output_keys,
+            &required_scratch_keys,
+            &required_named_target_keys,
+            &required_background_keys,
+        );
 
         Ok((
             ScenePhase10GraphPlan {
@@ -2660,13 +2653,8 @@ impl NativeSceneMetalRenderer {
         width: usize,
         height: usize,
     ) -> Option<Phase10TextureHandle> {
-        ensure_phase10_render_target_in_store(
-            self.device.as_ref(),
-            &mut self.phase10_output_textures,
-            key,
-            width,
-            height,
-        )
+        self.phase10_targets
+            .ensure_output_target(self.device.as_ref(), key, width, height)
     }
 
     fn ensure_phase10_scratch_target(
@@ -2675,13 +2663,8 @@ impl NativeSceneMetalRenderer {
         width: usize,
         height: usize,
     ) -> Option<Phase10TextureHandle> {
-        ensure_phase10_render_target_in_store(
-            self.device.as_ref(),
-            &mut self.phase10_scratch_textures,
-            key,
-            width,
-            height,
-        )
+        self.phase10_targets
+            .ensure_scratch_target(self.device.as_ref(), key, width, height)
     }
 
     fn ensure_phase10_named_target(
@@ -2690,13 +2673,8 @@ impl NativeSceneMetalRenderer {
         width: usize,
         height: usize,
     ) -> Option<Phase10TextureHandle> {
-        ensure_phase10_render_target_in_store(
-            self.device.as_ref(),
-            &mut self.phase10_named_target_textures,
-            key,
-            width,
-            height,
-        )
+        self.phase10_targets
+            .ensure_named_target(self.device.as_ref(), key, width, height)
     }
 
     fn ensure_phase10_background_target(
@@ -2705,13 +2683,8 @@ impl NativeSceneMetalRenderer {
         width: usize,
         height: usize,
     ) -> Option<Phase10TextureHandle> {
-        ensure_phase10_render_target_in_store(
-            self.device.as_ref(),
-            &mut self.phase10_background_textures,
-            key,
-            width,
-            height,
-        )
+        self.phase10_targets
+            .ensure_background_target(self.device.as_ref(), key, width, height)
     }
 
     fn draw_phase10_fullscreen_texture(

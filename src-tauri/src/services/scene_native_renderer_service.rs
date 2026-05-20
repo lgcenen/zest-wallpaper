@@ -12,10 +12,16 @@ mod scene_native_view_host;
 mod scene_metal_renderer;
 #[path = "scene_effect_runtime_service.rs"]
 mod scene_effect_runtime_service;
+#[path = "scene_effect_target_runtime_service.rs"]
+mod scene_effect_target_runtime_service;
 
 use scene_metal_renderer::{
     NativeSceneMetalRenderer, NativeScenePipelineStates, SceneProjection, SceneQuadPrimitive,
     SceneVertex,
+};
+#[cfg(target_os = "macos")]
+use scene_effect_target_runtime_service::{
+    phase10_texture_metrics_from_size, Phase10TextureHandle, Phase10TextureMetrics,
 };
 #[cfg(all(target_os = "macos", test))]
 use scene_effect_runtime_service::{
@@ -1005,49 +1011,6 @@ struct Phase10EffectUniforms {
 
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
-struct Phase10TextureHandle {
-    texture: Retained<ProtocolObject<dyn MTLTexture>>,
-    metrics: Phase10TextureMetrics,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Phase10TextureMetrics {
-    texture_size: [f32; 2],
-    content_size: [f32; 2],
-}
-
-#[cfg(target_os = "macos")]
-impl Default for Phase10TextureMetrics {
-    fn default() -> Self {
-        Self {
-            texture_size: [1.0, 1.0],
-            content_size: [1.0, 1.0],
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Phase10TextureMetrics {
-    fn resolution(self) -> [f32; 4] {
-        [
-            self.texture_size[0].max(1.0),
-            self.texture_size[1].max(1.0),
-            self.content_size[0].max(1.0),
-            self.content_size[1].max(1.0),
-        ]
-    }
-
-    fn texel_size(self) -> [f32; 2] {
-        [
-            1.0 / self.texture_size[0].max(1.0),
-            1.0 / self.texture_size[1].max(1.0),
-        ]
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone)]
 struct Phase10PassTextures {
     slots: Vec<Option<Phase10TextureHandle>>,
 }
@@ -1207,54 +1170,6 @@ fn phase10_optional_texture_resolution(texture: Option<&Phase10TextureHandle>) -
         return [1.0, 1.0, 0.0, 0.0];
     };
     texture.metrics.resolution()
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_texture_metrics_from_size(width: usize, height: usize) -> Phase10TextureMetrics {
-    Phase10TextureMetrics {
-        texture_size: [width.max(1) as f32, height.max(1) as f32],
-        content_size: [width.max(1) as f32, height.max(1) as f32],
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_texture_metrics_from_texture(
-    texture: &ProtocolObject<dyn MTLTexture>,
-) -> Phase10TextureMetrics {
-    phase10_texture_metrics_from_size(texture.width(), texture.height())
-}
-
-#[cfg(target_os = "macos")]
-fn ensure_phase10_render_target_in_store(
-    device: &ProtocolObject<dyn MTLDevice>,
-    store: &mut BTreeMap<String, Retained<ProtocolObject<dyn MTLTexture>>>,
-    key: &str,
-    width: usize,
-    height: usize,
-) -> Option<Phase10TextureHandle> {
-    if let Some(texture) = store.get(key) {
-        return Some(Phase10TextureHandle {
-            texture: texture.clone(),
-            metrics: phase10_texture_metrics_from_size(width, height),
-        });
-    }
-    let descriptor = unsafe {
-        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            MTLPixelFormat::BGRA8Unorm,
-            width.max(1),
-            height.max(1),
-            false,
-        )
-    };
-    descriptor.setTextureType(MTLTextureType::Type2D);
-    descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
-    descriptor.setStorageMode(MTLStorageMode::Private);
-    let texture = device.newTextureWithDescriptor(&descriptor)?;
-    store.insert(key.to_string(), texture.clone());
-    Some(Phase10TextureHandle {
-        texture,
-        metrics: phase10_texture_metrics_from_size(width, height),
-    })
 }
 
 #[cfg(target_os = "macos")]
