@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(target_os = "macos")]
+use std::cell::RefCell;
+
+#[cfg(target_os = "macos")]
 use objc2::{define_class, msg_send, runtime::NSObject, DefinedClass, MainThreadOnly};
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};

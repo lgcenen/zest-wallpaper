@@ -64,7 +64,7 @@ use crate::{
             SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem,
             SceneRenderPlan, SceneRenderQuad, SceneRenderRopeParticleItem, SceneRenderSoundItem,
             SceneRenderSourceKind, SceneRenderSpriteParticleItem, SceneRenderTextItem,
-            SceneRenderVisualItem, SceneTextHorizontalAlign,
+            SceneRenderVisualItem,
         },
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
         scene_runtime_settings_service,
@@ -81,6 +81,9 @@ use crate::{
         },
         scene_sprite_particle_scheduler_service::{
             SceneSpriteParticlePrimitive, SceneSpriteParticleScheduler,
+        },
+        scene_text_raster_service::{
+            scene_text_font_with_point_size, text_texture_cache_key, SceneTextFontFallbackDetail,
         },
         scene_text_script_runtime_service,
         scene_video_texture_service::{
@@ -104,28 +107,15 @@ use objc2::{
     AnyThread, MainThreadMarker,
 };
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{
-    NSColor, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSGraphicsContext, NSImageInterpolation, NSLineBreakMode,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawingContext,
-    NSStringDrawingOptions, NSStringNSExtendedStringDrawing, NSTextAlignment,
-};
-#[cfg(target_os = "macos")]
 use objc2_av_foundation::{
     AVPlayer, AVPlayerActionAtItemEnd, AVPlayerItem, AVPlayerItemStatus, AVPlayerItemVideoOutput,
 };
 #[cfg(target_os = "macos")]
 use objc2_avf_audio::AVAudioPlayer;
 #[cfg(target_os = "macos")]
-use objc2_core_foundation::{CFArray, CFRetained, CFString, CGPoint, CGRect, CGSize};
-#[cfg(target_os = "macos")]
-use objc2_core_graphics::{
-    CGBitmapContextCreate, CGColorSpace, CGImageAlphaInfo, CGImageByteOrderInfo,
-};
+use objc2_core_foundation::{CFRetained, CFString};
 #[cfg(target_os = "macos")]
 use objc2_core_media::CMTime;
-#[cfg(target_os = "macos")]
-use objc2_core_text::{CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromURL};
 #[cfg(target_os = "macos")]
 use objc2_core_video::{
     kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey,
@@ -133,9 +123,7 @@ use objc2_core_video::{
     CVMetalTextureGetTexture, CVPixelBuffer, CVPixelBufferGetHeight, CVPixelBufferGetWidth,
 };
 #[cfg(target_os = "macos")]
-use objc2_foundation::{
-    ns_string, NSAttributedStringKey, NSDictionary, NSNumber, NSObjectProtocol, NSString, NSURL,
-};
+use objc2_foundation::{ns_string, NSDictionary, NSNumber, NSObjectProtocol, NSString, NSURL};
 #[cfg(target_os = "macos")]
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
@@ -159,20 +147,6 @@ const WHITE_TEXTURE_KEY: &str = "procedural:white";
 const PETAL_TEXTURE_KEY: &str = "procedural:petal";
 #[cfg(target_os = "macos")]
 const INLINE_VERTEX_BYTES_LIMIT: usize = 4096;
-
-#[cfg(target_os = "macos")]
-#[derive(Clone)]
-struct SceneCachedTextFont {
-    font: Retained<NSFont>,
-    fallback_detail: Option<SceneTextFontFallbackDetail>,
-}
-
-#[cfg(target_os = "macos")]
-thread_local! {
-    static SCENE_TEXT_FONT_CACHE: RefCell<BTreeMap<String, SceneCachedTextFont>> = const {
-        RefCell::new(BTreeMap::new())
-    };
-}
 
 #[cfg(target_os = "macos")]
 const SCENE_SHADER_SOURCE: &str = r#"
@@ -1081,7 +1055,7 @@ fn text_font_runtime_warnings_for_texts(texts: &[SceneRenderTextItem]) -> Vec<Na
     texts
         .iter()
         .filter_map(|item| {
-            scene_text_font_uncached(item, item.point_size.max(1.0))
+            scene_text_font_with_point_size(item, item.point_size.max(1.0))
                 .ok()
                 .and_then(|font| font.fallback_detail)
                 .map(|detail| NativeSceneWarning::text_font_fallback(item, detail))
@@ -1718,38 +1692,6 @@ fn scene_vertex_upload_strategy(byte_len: usize) -> SceneVertexUploadStrategy {
 }
 
 #[cfg(target_os = "macos")]
-fn text_texture_cache_key(item: &SceneRenderTextItem) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    item.object_id.hash(&mut hasher);
-    item.behavior.hash(&mut hasher);
-    item.text.hash(&mut hasher);
-    item.font.cache_key.hash(&mut hasher);
-    item.font.file_candidates.hash(&mut hasher);
-    item.font.family_candidates.hash(&mut hasher);
-    item.point_size.to_bits().hash(&mut hasher);
-    item.color.red.hash(&mut hasher);
-    item.color.green.hash(&mut hasher);
-    item.color.blue.hash(&mut hasher);
-    item.color.alpha.hash(&mut hasher);
-    item.horizontal_align.hash(&mut hasher);
-    item.vertical_align.hash(&mut hasher);
-    item.blur_enabled.hash(&mut hasher);
-    item.blur_radius.to_bits().hash(&mut hasher);
-    item.max_rows.hash(&mut hasher);
-    item.limit_width.hash(&mut hasher);
-    item.limit_use_ellipsis.hash(&mut hasher);
-    item.dynamic_input_generation.hash(&mut hasher);
-    item.quad.width.to_bits().hash(&mut hasher);
-    item.quad.height.to_bits().hash(&mut hasher);
-    item.content_left.to_bits().hash(&mut hasher);
-    item.content_top.to_bits().hash(&mut hasher);
-    item.content_width.to_bits().hash(&mut hasher);
-    item.content_height.to_bits().hash(&mut hasher);
-    item.effect_paths.hash(&mut hasher);
-    format!("text:{}:{:x}", item.object_id, hasher.finish())
-}
-
-#[cfg(target_os = "macos")]
 fn sprite_particle_texture_paths(item: &SceneRenderSpriteParticleItem) -> Vec<PathBuf> {
     let mut paths = vec![item.config.texture_path.clone()];
     for child in &item.children {
@@ -2357,385 +2299,6 @@ fn build_petal_texture_image() -> DynamicImage {
 }
 
 #[cfg(target_os = "macos")]
-struct SceneTextRasterizedTexture {
-    image: DynamicImage,
-    warnings: Vec<NativeSceneWarning>,
-}
-
-#[cfg(target_os = "macos")]
-struct SceneResolvedTextFont {
-    font: Retained<NSFont>,
-    fallback_detail: Option<SceneTextFontFallbackDetail>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SceneTextFontFallbackDetail {
-    reason: String,
-    attempted_files: Vec<String>,
-    family_candidates: Vec<String>,
-}
-
-#[cfg(target_os = "macos")]
-fn rasterize_text_texture(
-    item: &SceneRenderTextItem,
-) -> Result<SceneTextRasterizedTexture, String> {
-    let width = item.quad.width.max(1.0).ceil() as usize;
-    let height = item.quad.height.max(1.0).ceil() as usize;
-    let bytes_per_row = width
-        .checked_mul(4)
-        .ok_or_else(|| "text texture row size overflowed".to_string())?;
-    let total_bytes = bytes_per_row
-        .checked_mul(height)
-        .ok_or_else(|| "text texture buffer size overflowed".to_string())?;
-    let mut pixels = vec![0_u8; total_bytes];
-    let color_space = CGColorSpace::new_device_rgb()
-        .ok_or_else(|| "Core Graphics RGB color space is unavailable".to_string())?;
-    let bitmap_info = CGImageByteOrderInfo::Order32Big.0 | CGImageAlphaInfo::PremultipliedLast.0;
-    let context = unsafe {
-        CGBitmapContextCreate(
-            pixels.as_mut_ptr().cast::<c_void>(),
-            width,
-            height,
-            8,
-            bytes_per_row,
-            Some(&color_space),
-            bitmap_info,
-        )
-    }
-    .ok_or_else(|| "unable to create Core Graphics bitmap context for text".to_string())?;
-
-    let graphics_context = NSGraphicsContext::graphicsContextWithCGContext_flipped(&context, true);
-    NSGraphicsContext::saveGraphicsState_class();
-    NSGraphicsContext::setCurrentContext(Some(&graphics_context));
-    graphics_context.setImageInterpolation(NSImageInterpolation::High);
-
-    let color = nscolor_from_scene_color(item.color);
-    let paragraph_style = paragraph_style_for_text(item);
-    let string = NSString::from_str(item.text.as_str());
-    let options = text_drawing_options(item);
-    let mut warnings = item
-        .effect_paths
-        .iter()
-        .filter(|path| !path.to_ascii_lowercase().contains("blur"))
-        .map(|path| NativeSceneWarning::unsupported_text_effect(&item.object_name, path))
-        .collect::<Vec<_>>();
-    let resolved_point_size =
-        resolve_scene_text_point_size(item, &string, &color, &paragraph_style, options)?;
-    let resolved_font = scene_text_font_with_point_size(item, resolved_point_size)?;
-    if let Some(detail) = resolved_font.fallback_detail.clone() {
-        warnings.push(NativeSceneWarning::text_font_fallback(item, detail));
-    }
-    let attributes = build_text_attributes(&resolved_font.font, &color, &paragraph_style);
-    let rect = CGRect::new(
-        CGPoint::new(item.content_left, item.content_top),
-        CGSize::new(item.content_width.max(1.0), item.content_height.max(1.0)),
-    );
-    unsafe {
-        string.drawWithRect_options_attributes_context(
-            rect,
-            options,
-            Some(&attributes),
-            Some(&NSStringDrawingContext::new()),
-        );
-    }
-    graphics_context.flushGraphics();
-    NSGraphicsContext::restoreGraphicsState_class();
-
-    let mut image = image::RgbaImage::from_raw(width as u32, height as u32, pixels)
-        .ok_or_else(|| "text pixels could not be rewrapped as RGBA".to_string())?;
-    image::imageops::flip_vertical_in_place(&mut image);
-    unpremultiply_rgba_pixels(&mut image);
-    if item.blur_enabled {
-        let blur_source = image.clone();
-        let mut blurred = image::imageops::blur(
-            &DynamicImage::ImageRgba8(blur_source),
-            item.blur_radius as f32,
-        );
-        for pixel in blurred.pixels_mut() {
-            pixel.0[3] = ((pixel.0[3] as f32) * 0.34) as u8;
-        }
-        image::imageops::overlay(&mut blurred, &image, 0, 0);
-        image = blurred;
-    }
-    Ok(SceneTextRasterizedTexture {
-        image: DynamicImage::ImageRgba8(image),
-        warnings,
-    })
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn rasterize_scene_text_item_snapshot(
-    item: &SceneRenderTextItem,
-) -> Result<DynamicImage, String> {
-    rasterize_text_texture(item).map(|rasterized| rasterized.image)
-}
-
-#[cfg(target_os = "macos")]
-fn unpremultiply_rgba_pixels(image: &mut image::RgbaImage) {
-    for pixel in image.pixels_mut() {
-        let alpha = pixel.0[3];
-        if alpha == 0 || alpha == 255 {
-            continue;
-        }
-        let alpha_scale = 255.0 / alpha as f32;
-        pixel.0[0] = ((pixel.0[0] as f32 * alpha_scale).round()).clamp(0.0, 255.0) as u8;
-        pixel.0[1] = ((pixel.0[1] as f32 * alpha_scale).round()).clamp(0.0, 255.0) as u8;
-        pixel.0[2] = ((pixel.0[2] as f32 * alpha_scale).round()).clamp(0.0, 255.0) as u8;
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn resolve_scene_text_point_size(
-    item: &SceneRenderTextItem,
-    text: &NSString,
-    color: &NSColor,
-    paragraph_style: &NSMutableParagraphStyle,
-    options: NSStringDrawingOptions,
-) -> Result<f64, String> {
-    let authored_fit_behavior = matches!(
-        item.behavior,
-        crate::models::SceneTextBehavior::Static | crate::models::SceneTextBehavior::Clock
-    );
-    let needs_native_metric_fit = authored_fit_behavior
-        || item.text.contains('\n')
-        || item.limit_width
-        || item.limit_use_ellipsis
-        || item.max_rows.unwrap_or_default() > 1;
-    if !needs_native_metric_fit {
-        return Ok(item.point_size.max(1.0));
-    }
-
-    let mut point_size = item.point_size.max(1.0);
-    for _ in 0..3 {
-        let font = scene_text_font_with_point_size(item, point_size)?.font;
-        let attributes = build_text_attributes(&font, color, paragraph_style);
-        let measured = measure_scene_text_bounds(text, &attributes, item, options);
-        let scale = if authored_fit_behavior {
-            scene_text_fit_scale(item, measured.size.width, measured.size.height)
-        } else {
-            scene_text_height_fit_scale(item, measured.size.height).min(1.0)
-        };
-        let next_point_size = (point_size * scale).clamp(1.0, 2048.0);
-        if (next_point_size - point_size).abs() < 0.5 {
-            point_size = next_point_size;
-            break;
-        }
-        point_size = next_point_size;
-    }
-    Ok(point_size)
-}
-
-#[cfg(target_os = "macos")]
-fn measure_scene_text_bounds(
-    text: &NSString,
-    attributes: &NSDictionary<NSAttributedStringKey, objc2::runtime::AnyObject>,
-    item: &SceneRenderTextItem,
-    options: NSStringDrawingOptions,
-) -> CGRect {
-    let constrain_width =
-        item.limit_width || item.max_rows.unwrap_or_default() > 1 || item.text.contains('\n');
-    let measure_width = if constrain_width {
-        item.content_width.max(1.0)
-    } else {
-        100_000.0
-    };
-    let measure_height = 100_000.0;
-    unsafe {
-        text.boundingRectWithSize_options_attributes_context(
-            CGSize::new(measure_width, measure_height),
-            options,
-            Some(attributes),
-            Some(&NSStringDrawingContext::new()),
-        )
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn scene_text_height_fit_scale(item: &SceneRenderTextItem, measured_height: f64) -> f64 {
-    let container_height = item.content_height.max(1.0);
-    (container_height / measured_height.max(1.0)).clamp(0.05, 16.0)
-}
-
-#[cfg(target_os = "macos")]
-fn scene_text_fit_scale(
-    item: &SceneRenderTextItem,
-    measured_width: f64,
-    measured_height: f64,
-) -> f64 {
-    let container_width = item.content_width.max(1.0);
-    let container_height = item.content_height.max(1.0);
-    let width_scale = container_width / measured_width.max(1.0);
-    let height_scale = container_height / measured_height.max(1.0);
-    let prefers_width = item.behavior == crate::models::SceneTextBehavior::Static;
-    let mut scale = if prefers_width {
-        width_scale
-    } else {
-        height_scale
-    };
-    if measured_width * scale > container_width || item.limit_width || item.limit_use_ellipsis {
-        scale = scale.min(width_scale);
-    }
-    if measured_height * scale > container_height {
-        scale = scale.min(height_scale);
-    }
-    scale.clamp(0.05, 16.0)
-}
-
-#[cfg(target_os = "macos")]
-fn scene_text_font_with_point_size(
-    item: &SceneRenderTextItem,
-    point_size: f64,
-) -> Result<SceneResolvedTextFont, String> {
-    let cache_key = scene_text_font_cache_key(item, point_size);
-    if let Some(cached_font) =
-        SCENE_TEXT_FONT_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned())
-    {
-        return Ok(SceneResolvedTextFont {
-            font: cached_font.font,
-            fallback_detail: cached_font.fallback_detail,
-        });
-    }
-
-    let font = scene_text_font_uncached(item, point_size)?;
-    SCENE_TEXT_FONT_CACHE.with(|cache| {
-        cache.borrow_mut().insert(
-            cache_key,
-            SceneCachedTextFont {
-                font: font.font.clone(),
-                fallback_detail: font.fallback_detail.clone(),
-            },
-        );
-    });
-    Ok(font)
-}
-
-#[cfg(target_os = "macos")]
-fn scene_text_font_uncached(
-    item: &SceneRenderTextItem,
-    point_size: f64,
-) -> Result<SceneResolvedTextFont, String> {
-    for font_path in &item.font.file_candidates {
-        let Some(path_string) = font_path.to_str() else {
-            return Err(format!(
-                "font path {} is not valid UTF-8",
-                font_path.display()
-            ));
-        };
-        let path_string = NSString::from_str(path_string);
-        let url = NSURL::fileURLWithPath(&path_string);
-        if let Some(descriptors) =
-            unsafe { CTFontManagerCreateFontDescriptorsFromURL(url.as_ref()) }
-        {
-            let typed_descriptors: &CFArray<CTFontDescriptor> =
-                unsafe { &*((&*descriptors) as *const _ as *const CFArray<CTFontDescriptor>) };
-            if let Some(descriptor) = typed_descriptors.get(0) {
-                if let Some(font) = NSFont::fontWithDescriptor_size(descriptor.as_ref(), point_size)
-                {
-                    return Ok(SceneResolvedTextFont {
-                        font,
-                        fallback_detail: None,
-                    });
-                }
-            }
-        }
-    }
-
-    for family_name in &item.font.family_candidates {
-        let family_name = NSString::from_str(family_name);
-        if let Some(font) = NSFont::fontWithName_size(&family_name, point_size) {
-            return Ok(SceneResolvedTextFont {
-                font,
-                fallback_detail: None,
-            });
-        }
-    }
-
-    let fallback_detail = item
-        .font
-        .authored_reference
-        .as_ref()
-        .map(|authored_reference| SceneTextFontFallbackDetail {
-            reason: format!(
-                "Font reference {authored_reference:?} did not resolve through Scene content, external assets, builtin assets, or authored family candidates; the renderer used the system font as the final fallback."
-            ),
-            attempted_files: item
-                .font
-                .file_candidates
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            family_candidates: item.font.family_candidates.clone(),
-        });
-
-    Ok(SceneResolvedTextFont {
-        font: NSFont::systemFontOfSize(point_size),
-        fallback_detail,
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn scene_text_font_cache_key(item: &SceneRenderTextItem, point_size: f64) -> String {
-    format!("{}:{}", item.font.cache_key, point_size.to_bits())
-}
-
-#[cfg(target_os = "macos")]
-fn build_text_attributes(
-    font: &NSFont,
-    color: &NSColor,
-    paragraph_style: &NSMutableParagraphStyle,
-) -> Retained<NSDictionary<NSAttributedStringKey, objc2::runtime::AnyObject>> {
-    unsafe {
-        NSDictionary::from_slices(
-            &[
-                NSFontAttributeName,
-                NSForegroundColorAttributeName,
-                NSParagraphStyleAttributeName,
-            ],
-            &[font, color, paragraph_style],
-        )
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn nscolor_from_scene_color(color: SceneRenderColor) -> Retained<NSColor> {
-    NSColor::colorWithSRGBRed_green_blue_alpha(
-        color.red as f64 / 255.0,
-        color.green as f64 / 255.0,
-        color.blue as f64 / 255.0,
-        color.alpha as f64 / 255.0,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn paragraph_style_for_text(item: &SceneRenderTextItem) -> Retained<NSMutableParagraphStyle> {
-    let style = NSMutableParagraphStyle::new();
-    style.setAlignment(match item.horizontal_align {
-        SceneTextHorizontalAlign::Left => NSTextAlignment::Left,
-        SceneTextHorizontalAlign::Right => NSTextAlignment::Right,
-        SceneTextHorizontalAlign::Center => NSTextAlignment::Center,
-    });
-    style.setLineBreakMode(if item.limit_use_ellipsis {
-        NSLineBreakMode::ByTruncatingTail
-    } else if item.limit_width {
-        NSLineBreakMode::ByWordWrapping
-    } else {
-        NSLineBreakMode::ByClipping
-    });
-    style
-}
-
-#[cfg(target_os = "macos")]
-fn text_drawing_options(item: &SceneRenderTextItem) -> NSStringDrawingOptions {
-    let mut options =
-        NSStringDrawingOptions::UsesLineFragmentOrigin | NSStringDrawingOptions::UsesFontLeading;
-    if item.limit_use_ellipsis || item.max_rows.unwrap_or_default() > 1 {
-        options |= NSStringDrawingOptions::TruncatesLastVisibleLine;
-    }
-    options
-}
-
-#[cfg(target_os = "macos")]
 fn scene_projection(
     view: &MTKView,
     plan: &SceneRenderPlan,
@@ -3138,9 +2701,7 @@ mod tests {
     use super::{
         build_scene_pipeline_states, build_scene_vertices, load_phase10_texture_image,
         load_phase10_texture_source, particle_plan_signature, phase10_texture_path_candidates,
-        quad_primitive_from_rope_particle, scene_text_font_cache_key,
-        should_retain_visual_in_draw_plan, text_texture_cache_key, unpremultiply_rgba_pixels,
-        SceneTextHorizontalAlign,
+        quad_primitive_from_rope_particle, should_retain_visual_in_draw_plan,
     };
     use super::{
         now_playing_runtime_warnings_for_scene, phase10_background_source_order,
@@ -3157,7 +2718,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use crate::services::scene_render_graph_service::ScenePhase10InputBinding;
     #[cfg(target_os = "macos")]
-    use crate::services::scene_render_planner_service::SceneTextVerticalAlign;
+    use crate::services::scene_render_planner_service::{
+        SceneTextHorizontalAlign, SceneTextVerticalAlign,
+    };
     use crate::services::scene_shader_material_service::{
         SceneCompatEffectKind, SceneMaterialPassPlan, SceneMaterialTextureBinding,
         SceneMaterialUniformValue, SceneResolvedMaterialPlan, SceneShaderProgram,
@@ -4221,213 +3784,6 @@ mod tests {
     fn scene_vertex_layout_matches_metal_constant_buffer_stride() {
         assert_eq!(size_of::<super::SceneVertex>(), 36);
         assert_eq!(align_of::<super::SceneVertex>(), 4);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn unpremultiply_rgba_restores_straight_alpha_channels() {
-        let mut image =
-            RgbaImage::from_raw(1, 1, vec![90, 40, 20, 128]).expect("premultiplied RGBA pixel");
-
-        unpremultiply_rgba_pixels(&mut image);
-
-        assert_eq!(image.into_raw(), vec![179, 80, 40, 128]);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn text_texture_cache_key_ignores_quad_position_only_changes() {
-        let mut item = sample_text_item();
-        let key = text_texture_cache_key(&item);
-
-        item.quad.left += 240.0;
-        item.quad.top += 80.0;
-
-        assert_eq!(key, text_texture_cache_key(&item));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn text_texture_cache_key_tracks_style_and_effect_path_changes() {
-        let mut item = sample_text_item();
-        let key = text_texture_cache_key(&item);
-
-        item.color.alpha = 255;
-        assert_ne!(key, text_texture_cache_key(&item));
-
-        let mut item = sample_text_item();
-        item.effect_paths.push("effects/glow.json".to_string());
-        assert_ne!(key, text_texture_cache_key(&item));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn text_texture_cache_key_tracks_dynamic_input_generation() {
-        let mut item = sample_text_item();
-        item.behavior = crate::models::SceneTextBehavior::MediaTitle;
-        item.dynamic_input_generation = Some(1);
-        let key = text_texture_cache_key(&item);
-
-        item.dynamic_input_generation = Some(2);
-
-        assert_ne!(key, text_texture_cache_key(&item));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn text_font_cache_key_tracks_font_binding_changes() {
-        let mut item = sample_text_item();
-        let key = scene_text_font_cache_key(&item, item.point_size);
-
-        item.font.cache_key = "font:updated".to_string();
-        assert_ne!(key, scene_text_font_cache_key(&item, item.point_size));
-
-        let mut item = sample_text_item();
-        item.font
-            .family_candidates
-            .push("DIN Alternate".to_string());
-        assert_ne!(
-            text_texture_cache_key(&sample_text_item()),
-            text_texture_cache_key(&item)
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn text_font_cache_preserves_fallback_diagnostics_for_family_only_fonts() {
-        let mut item = sample_text_item();
-        item.font.authored_reference = Some("__WallpaperPhase09A_MissingFamily__".to_string());
-        item.font.reference_kind =
-            Some(crate::services::scene_resource_service::SceneTextFontReferenceKind::FamilyLike);
-        item.font.file_candidates.clear();
-        item.font.family_candidates = vec!["__WallpaperPhase09A_MissingFamily__".to_string()];
-        item.font.cache_key = "font:phase-09a-missing-family".to_string();
-
-        let first =
-            super::scene_text_font_with_point_size(&item, 17.0).expect("first font resolution");
-        let second =
-            super::scene_text_font_with_point_size(&item, 17.0).expect("cached font resolution");
-
-        assert!(first.fallback_detail.is_some());
-        assert_eq!(first.fallback_detail, second.fallback_detail);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn plain_text_rasterization_does_not_add_unauthored_shadow_pixels() {
-        let mut item = sample_text_item();
-        item.behavior = SceneTextBehavior::Static;
-        item.object_name = "Plain Caption".to_string();
-        item.text = "SHADOW".to_string();
-        item.point_size = 72.0;
-        item.content_width = 420.0;
-        item.content_height = 180.0;
-        item.quad.width = 420.0;
-        item.quad.height = 180.0;
-        item.color.alpha = 255;
-        item.font.authored_reference = Some("Helvetica".to_string());
-        item.font.reference_kind =
-            Some(crate::services::scene_resource_service::SceneTextFontReferenceKind::FamilyLike);
-        item.font.file_candidates.clear();
-        item.font.family_candidates = vec!["Helvetica".to_string()];
-        item.font.cache_key = "font:phase-09a-plain-shadow-regression".to_string();
-
-        let rasterized = super::rasterize_text_texture(&item).expect("plain text raster");
-        let dark_shadow_pixels = rasterized
-            .image
-            .to_rgba8()
-            .pixels()
-            .filter(|pixel| pixel.0[3] > 8 && pixel.0[0] < 80 && pixel.0[1] < 80 && pixel.0[2] < 80)
-            .count();
-
-        assert_eq!(dark_shadow_pixels, 0);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn vertical_calendar_text_uses_native_font_metrics_before_rasterizing() {
-        let mut item = sample_text_item();
-        item.behavior = SceneTextBehavior::Date;
-        item.text = "2\n9\n\nA\nP\nR\n\n2\n0\n2\n6".to_string();
-        item.point_size = 140.0;
-        item.content_width = 120.0;
-        item.content_height = 120.0;
-        item.quad.width = 140.0;
-        item.quad.height = 140.0;
-        item.font.authored_reference = Some("Helvetica".to_string());
-        item.font.reference_kind =
-            Some(crate::services::scene_resource_service::SceneTextFontReferenceKind::FamilyLike);
-        item.font.file_candidates.clear();
-        item.font.family_candidates = vec!["Helvetica".to_string()];
-        item.font.cache_key = "font:phase-09a-vertical-calendar".to_string();
-
-        let string = super::NSString::from_str(item.text.as_str());
-        let color = super::nscolor_from_scene_color(item.color);
-        let paragraph_style = super::paragraph_style_for_text(&item);
-        let options = super::text_drawing_options(&item);
-        let resolved_point_size =
-            super::resolve_scene_text_point_size(&item, &string, &color, &paragraph_style, options)
-                .expect("resolved point size");
-        let resolved_font = super::scene_text_font_with_point_size(&item, resolved_point_size)
-            .expect("resolved font")
-            .font;
-        let attributes = super::build_text_attributes(&resolved_font, &color, &paragraph_style);
-        let measured = super::measure_scene_text_bounds(&string, &attributes, &item, options);
-
-        assert!(resolved_point_size < item.point_size);
-        assert!(measured.size.height <= item.content_height + 1.0);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn vertical_calendar_text_does_not_shrink_against_single_line_width() {
-        let mut item = sample_text_item();
-        item.behavior = SceneTextBehavior::Date;
-        item.text = "2\n9\n\nA\nP\nR\n\n2\n0\n2\n6".to_string();
-        item.point_size = 140.0;
-        item.content_width = 72.0;
-        item.content_height = 3000.0;
-        item.quad.width = 48.0;
-        item.quad.height = 3020.0;
-        item.font.authored_reference = Some("Helvetica".to_string());
-        item.font.reference_kind =
-            Some(crate::services::scene_resource_service::SceneTextFontReferenceKind::FamilyLike);
-        item.font.file_candidates.clear();
-        item.font.family_candidates = vec!["Helvetica".to_string()];
-        item.font.cache_key = "font:phase-09a-vertical-calendar-narrow".to_string();
-
-        let string = super::NSString::from_str(item.text.as_str());
-        let color = super::nscolor_from_scene_color(item.color);
-        let paragraph_style = super::paragraph_style_for_text(&item);
-        let options = super::text_drawing_options(&item);
-        let resolved_point_size =
-            super::resolve_scene_text_point_size(&item, &string, &color, &paragraph_style, options)
-                .expect("resolved point size");
-
-        assert!(resolved_point_size > item.point_size * 0.5);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn dynamic_text_fit_scale_clamps_to_width_when_real_glyph_bounds_overflow() {
-        let item = sample_text_item();
-        let scale = super::scene_text_fit_scale(&item, 620.0, 180.0);
-
-        assert!(scale < 1.0);
-        assert!((scale - (item.content_width / 620.0)).abs() < 0.0001);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn static_text_fit_scale_tracks_box_width() {
-        let mut item = sample_text_item();
-        item.behavior = crate::models::SceneTextBehavior::Static;
-        item.content_width = 300.0;
-        item.content_height = 120.0;
-
-        let scale = super::scene_text_fit_scale(&item, 600.0, 80.0);
-
-        assert!((scale - 0.5).abs() < 0.0001);
     }
 
     #[cfg(target_os = "macos")]

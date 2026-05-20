@@ -32,6 +32,7 @@ pub mod scene_sound_lifecycle_service;
 pub mod scene_sprite_particle_scheduler_service;
 pub mod scene_support_service;
 pub mod scene_text_behavior_service;
+pub mod scene_text_raster_service;
 pub mod scene_text_script_runtime_service;
 pub mod scene_video_texture_service;
 pub mod static_snapshot_generation_service;

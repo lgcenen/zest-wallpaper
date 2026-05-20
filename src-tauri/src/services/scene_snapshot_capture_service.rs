@@ -15,11 +15,11 @@ use crate::{
     models::{SceneRuntimeDocument, WallpaperRuntime, WallpaperType},
     services::{
         runtime_document_service,
-        scene_native_renderer_service::rasterize_scene_text_item_snapshot,
         scene_render_planner_service::{
             build_scene_render_plan_with_resolver, SceneRenderBlendMode, SceneRenderDrawKind,
             SceneRenderIssue, SceneRenderPlan, SceneRenderQuad, SceneRenderSourceKind,
         },
+        scene_text_raster_service::rasterize_scene_text_item_snapshot,
         scene_resource_service::{default_builtin_scene_assets_root, SceneResourceResolver},
         scene_runtime_settings_service,
     },

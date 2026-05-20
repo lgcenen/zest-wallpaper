@@ -1,6 +1,8 @@
 use super::*;
 
 use crate::services::scene_resource_service;
+#[cfg(target_os = "macos")]
+use crate::services::scene_text_raster_service::rasterize_text_texture;
 
 #[cfg(target_os = "macos")]
 pub(super) struct NativeSceneMetalRenderer {
@@ -2910,7 +2912,11 @@ impl NativeSceneMetalRenderer {
             return Ok(Vec::new());
         }
 
-        let rasterized = rasterize_text_texture(item)?;
+        let rasterized = rasterize_text_texture(
+            item,
+            |item, path| NativeSceneWarning::unsupported_text_effect(&item.object_name, path),
+            NativeSceneWarning::text_font_fallback,
+        )?;
         let texture = load_texture(&self.device, rasterized.image).map_err(|error| {
             format!(
                 "unable to upload text texture {}: {error}",
