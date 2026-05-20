@@ -16,6 +16,8 @@ mod scene_effect_runtime_service;
 mod scene_effect_target_runtime_service;
 #[path = "scene_effect_input_runtime_service.rs"]
 mod scene_effect_input_runtime_service;
+#[path = "scene_effect_uniform_runtime_service.rs"]
+mod scene_effect_uniform_runtime_service;
 
 use scene_metal_renderer::{
     NativeSceneMetalRenderer, NativeScenePipelineStates, SceneProjection, SceneQuadPrimitive,
