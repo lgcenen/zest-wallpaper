@@ -14,6 +14,8 @@ mod scene_metal_renderer;
 mod scene_effect_runtime_service;
 #[path = "scene_effect_target_runtime_service.rs"]
 mod scene_effect_target_runtime_service;
+#[path = "scene_effect_input_runtime_service.rs"]
+mod scene_effect_input_runtime_service;
 
 use scene_metal_renderer::{
     NativeSceneMetalRenderer, NativeScenePipelineStates, SceneProjection, SceneQuadPrimitive,
@@ -21,7 +23,12 @@ use scene_metal_renderer::{
 };
 #[cfg(target_os = "macos")]
 use scene_effect_target_runtime_service::{
-    phase10_texture_metrics_from_size, Phase10TextureHandle, Phase10TextureMetrics,
+    phase10_texture_metrics_from_size, Phase10TextureMetrics,
+};
+#[cfg(all(target_os = "macos", test))]
+use scene_effect_input_runtime_service::{
+    phase10_optional_texel_size, phase10_optional_texture_resolution, phase10_texel_size,
+    phase10_texture_resolution,
 };
 #[cfg(all(target_os = "macos", test))]
 use scene_effect_runtime_service::{
@@ -1009,36 +1016,6 @@ struct Phase10EffectUniforms {
     angle: f32,
 }
 
-#[cfg(target_os = "macos")]
-#[derive(Clone)]
-struct Phase10PassTextures {
-    slots: Vec<Option<Phase10TextureHandle>>,
-}
-
-#[cfg(target_os = "macos")]
-struct Phase10PassInputScope<'a> {
-    local_current: Option<&'a Phase10TextureHandle>,
-    previous_pass: Option<&'a Phase10TextureHandle>,
-    background: Option<&'a Phase10TextureHandle>,
-    copied_background: Option<&'a Phase10TextureHandle>,
-    named_targets: &'a BTreeMap<String, Phase10TextureHandle>,
-}
-
-#[cfg(target_os = "macos")]
-impl Phase10PassInputScope<'_> {
-    fn texture_for(&self, source: &ScenePhase10InputSource) -> Option<Phase10TextureHandle> {
-        match source {
-            ScenePhase10InputSource::LocalCurrentVisual => self.local_current.cloned(),
-            ScenePhase10InputSource::PreviousPass => self.previous_pass.cloned(),
-            ScenePhase10InputSource::Background => self.background.cloned(),
-            ScenePhase10InputSource::CopiedBackground => self.copied_background.cloned(),
-            ScenePhase10InputSource::NamedTarget(target_name) => {
-                self.named_targets.get(target_name).cloned()
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase10BackgroundSourceKind {
     Phase10Visual,
@@ -1138,38 +1115,6 @@ fn phase10_visual_pass_chain<'a>(
         }
     }
     chain
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_texel_size(texture: Option<&Phase10TextureHandle>) -> [f32; 2] {
-    let Some(texture) = texture else {
-        return [1.0, 1.0];
-    };
-    texture.metrics.texel_size()
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_optional_texel_size(texture: Option<&Phase10TextureHandle>) -> [f32; 2] {
-    let Some(texture) = texture else {
-        return [0.0, 0.0];
-    };
-    texture.metrics.texel_size()
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_texture_resolution(texture: Option<&Phase10TextureHandle>) -> [f32; 4] {
-    let Some(texture) = texture else {
-        return [1.0, 1.0, 1.0, 1.0];
-    };
-    texture.metrics.resolution()
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_optional_texture_resolution(texture: Option<&Phase10TextureHandle>) -> [f32; 4] {
-    let Some(texture) = texture else {
-        return [1.0, 1.0, 0.0, 0.0];
-    };
-    texture.metrics.resolution()
 }
 
 #[cfg(target_os = "macos")]

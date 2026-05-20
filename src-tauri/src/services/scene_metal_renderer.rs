@@ -1,7 +1,7 @@
 use super::*;
 use super::scene_effect_runtime_service::{
     phase10_alpha_prefill_required, phase10_background_texture_key,
-    phase10_effect_family_from_program, phase10_effect_texture_slot_plan,
+    phase10_effect_family_from_program,
     phase10_effect_uniform_values, phase10_fullscreen_vertices,
     phase10_local_background_projection, phase10_mask_apply_shader_program,
     phase10_named_target_texture_key, phase10_output_texture_key,
@@ -12,12 +12,17 @@ use super::scene_effect_runtime_service::{
     phase10_spin_controls, phase10_texture_cache_key, phase10_transform_controls,
     phase10_uniform_color, phase10_uniform_float, phase10_uniform_vec2,
     phase10_uniform_vec4, phase10_visual_first_pass_is_mask_alpha,
-    phase10_visual_needs_background_snapshot, phase10_visual_requires_offscreen_chain,
-    rotate2d, Phase10EffectTextureSource,
+    phase10_visual_needs_background_snapshot, phase10_visual_requires_offscreen_chain, rotate2d,
 };
 use super::scene_effect_target_runtime_service::{
     phase10_texture_metrics_from_size, phase10_texture_metrics_from_texture,
     Phase10RenderTargetStores, Phase10TextureHandle, Phase10TextureMetrics,
+};
+use super::scene_effect_input_runtime_service::{
+    phase10_base_texture_for_visual as resolve_phase10_base_texture_for_visual,
+    phase10_pass_textures_for as resolve_phase10_pass_textures_for,
+    phase10_optional_texel_size, phase10_optional_texture_resolution, phase10_texel_size,
+    phase10_texture_resolution, Phase10PassInputScope, Phase10PassTextures,
 };
 
 use crate::services::scene_resource_service;
@@ -1713,56 +1718,27 @@ impl NativeSceneMetalRenderer {
         &mut self,
         visual: &ScenePhase10VisualPlan,
     ) -> Option<Phase10TextureHandle> {
-        match visual.base_source_kind {
-            Some(SceneRenderSourceKind::Image) => visual
-                .base_texture_path
-                .as_deref()
-                .and_then(|path| self.phase10_texture_for_path(path)),
-            Some(SceneRenderSourceKind::Video) => {
-                let source = self.video_sources.get_mut(&visual.object_id)?;
-                match source.current_texture(&self.video_texture_cache, self.paused) {
-                    Ok(texture) => texture.map(|texture| Phase10TextureHandle {
-                        metrics: phase10_texture_metrics_from_texture(texture.as_ref()),
-                        texture,
-                    }),
-                    Err(error) => {
-                        let detail = video_texture_frame_warning(&visual.object_name, error);
-                        let _ = diagnostic_service::record_warning(
-                            &self.app,
-                            DIAGNOSTIC_SUBSYSTEM,
-                            &detail.code,
-                            detail.message.clone(),
-                            detail.detail_json(),
-                        );
-                        None
-                    }
-                }
-            }
-            None => {
-                let (width, height) = phase10_render_target_size(visual);
-                self.texture_cache
-                    .get(&phase10_solid_texture_key(visual.base_color, width, height))
-                    .cloned()
-                    .map(|texture| Phase10TextureHandle {
-                        texture,
-                        metrics: *self
-                            .texture_resolution_cache
-                            .get(&phase10_solid_texture_key(visual.base_color, width, height))
-                            .unwrap_or(&phase10_texture_metrics_from_size(width, height)),
-                    })
+        match resolve_phase10_base_texture_for_visual(
+            visual,
+            &self.texture_cache,
+            &self.texture_resolution_cache,
+            &mut self.video_sources,
+            &self.video_texture_cache,
+            self.paused,
+        ) {
+            Ok(texture) => texture,
+            Err(error) => {
+                let detail = video_texture_frame_warning(&visual.object_name, error);
+                let _ = diagnostic_service::record_warning(
+                    &self.app,
+                    DIAGNOSTIC_SUBSYSTEM,
+                    &detail.code,
+                    detail.message.clone(),
+                    detail.detail_json(),
+                );
+                None
             }
         }
-    }
-
-    fn phase10_texture_for_path(&self, path: &Path) -> Option<Phase10TextureHandle> {
-        let key = phase10_texture_cache_key(path);
-        let texture = self.texture_cache.get(&key)?.clone();
-        let metrics = self
-            .texture_resolution_cache
-            .get(&key)
-            .copied()
-            .unwrap_or_else(|| phase10_texture_metrics_from_texture(texture.as_ref()));
-        Some(Phase10TextureHandle { texture, metrics })
     }
 
     fn phase10_pass_textures_for(
@@ -1771,79 +1747,13 @@ impl NativeSceneMetalRenderer {
         resolved_pass: &Phase10ResolvedPass<'_>,
         input_scope: &Phase10PassInputScope<'_>,
     ) -> Phase10PassTextures {
-        let mut slots = BTreeMap::<usize, Phase10TextureHandle>::new();
-
-        match resolved_pass.context {
-            Phase10PassContext::Base => {
-                for binding in &resolved_pass.pass.textures {
-                    let Some(texture) = binding
-                        .resolved_path
-                        .as_deref()
-                        .and_then(|path| self.phase10_texture_for_path(path))
-                    else {
-                        continue;
-                    };
-                    slots.insert(binding.slot_index, texture);
-                }
-                if let Some(texture) = input_scope.local_current {
-                    slots.entry(0).or_insert(texture.clone());
-                }
-            }
-            Phase10PassContext::Effect(effect_pass) => {
-                for (slot, source) in
-                    phase10_effect_texture_slot_plan(&resolved_pass.pass.textures, effect_pass)
-                {
-                    let texture = match source {
-                        Phase10EffectTextureSource::GraphInput(input_source) => {
-                            input_scope.texture_for(&input_source)
-                        }
-                        Phase10EffectTextureSource::MaterialSlot(binding_slot) => resolved_pass
-                            .pass
-                            .textures
-                            .iter()
-                            .find(|binding| binding.slot_index == binding_slot)
-                            .and_then(|binding| binding.resolved_path.as_deref())
-                            .and_then(|path| self.phase10_texture_for_path(path)),
-                        Phase10EffectTextureSource::OverrideSlot(override_slot) => effect_pass
-                            .texture_overrides
-                            .get(override_slot)
-                            .and_then(|path| path.as_deref())
-                            .and_then(|path| self.phase10_texture_for_path(path)),
-                    };
-                    if let Some(texture) = texture {
-                        slots.insert(slot, texture);
-                    }
-                }
-            }
-        }
-
-        if slots.is_empty() && visual.base_source_kind.is_none() && visual.base_color.alpha > 0 {
-            let (width, height) = phase10_render_target_size(visual);
-            if let Some(texture) = self
-                .texture_cache
-                .get(&phase10_solid_texture_key(visual.base_color, width, height))
-                .cloned()
-            {
-                slots.insert(
-                    0,
-                    Phase10TextureHandle {
-                        metrics: *self
-                            .texture_resolution_cache
-                            .get(&phase10_solid_texture_key(visual.base_color, width, height))
-                            .unwrap_or(&phase10_texture_metrics_from_size(width, height)),
-                        texture,
-                    },
-                );
-            }
-        }
-
-        let max_slot = slots.keys().next_back().copied().unwrap_or(0);
-        let mut ordered = vec![None; max_slot + 1];
-        for (slot, texture) in slots {
-            ordered[slot] = Some(texture);
-        }
-
-        Phase10PassTextures { slots: ordered }
+        resolve_phase10_pass_textures_for(
+            visual,
+            resolved_pass,
+            input_scope,
+            &self.texture_cache,
+            &self.texture_resolution_cache,
+        )
     }
 
     fn phase10_effect_uniforms_for_pass(
@@ -3419,7 +3329,7 @@ impl NativeSceneVideoSource {
         }
     }
 
-    fn current_texture(
+    pub(super) fn current_texture(
         &mut self,
         texture_cache: &CVMetalTextureCache,
         paused: bool,
