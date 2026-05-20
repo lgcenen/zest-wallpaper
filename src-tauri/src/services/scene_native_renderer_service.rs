@@ -10,19 +10,22 @@ use std::{
 mod scene_native_view_host;
 #[path = "scene_metal_renderer.rs"]
 mod scene_metal_renderer;
+#[path = "scene_effect_runtime_service.rs"]
+mod scene_effect_runtime_service;
 
 use scene_metal_renderer::{
     NativeSceneMetalRenderer, NativeScenePipelineStates, SceneProjection, SceneQuadPrimitive,
     SceneVertex,
 };
 #[cfg(all(target_os = "macos", test))]
-use scene_metal_renderer::{
+use scene_effect_runtime_service::{
     Phase10EffectTextureSource, phase10_effect_texture_slot_plan, phase10_pass_shader_defines,
     phase10_perspective_corner_uniforms, phase10_puppet_offscreen_projection,
     phase10_shader_variant_key, phase10_skew_controls, phase10_spin_controls,
     phase10_transform_controls, phase10_visual_requires_offscreen_chain,
-    scene_audio_bar_rotation, should_retain_visual_in_draw_plan,
 };
+#[cfg(all(target_os = "macos", test))]
+use scene_metal_renderer::{scene_audio_bar_rotation, should_retain_visual_in_draw_plan};
 #[cfg(all(target_os = "macos", test))]
 use scene_metal_renderer::compile_scene_shader_program_pipeline;
 pub(crate) use scene_native_view_host::NativeSceneViewHandle;
