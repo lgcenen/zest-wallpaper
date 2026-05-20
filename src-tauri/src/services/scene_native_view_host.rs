@@ -1,4 +1,5 @@
 use super::*;
+use crate::services::player_host_service;
 
 #[cfg(target_os = "macos")]
 use std::cell::RefCell;
@@ -14,13 +15,13 @@ use objc2_metal::MTLCreateSystemDefaultDevice;
 #[cfg(target_os = "macos")]
 use objc2_metal_kit::MTKViewDelegate;
 
-pub(super) struct NativeSceneViewHandle {
+pub(crate) struct NativeSceneViewHandle {
     #[cfg(target_os = "macos")]
     host: MainThreadBound<NativeSceneViewHost>,
 }
 
 impl NativeSceneViewHandle {
-    pub(super) fn create(app: &AppHandle, clear_color: SceneClearColor) -> Result<Self, String> {
+    pub(crate) fn create(app: &AppHandle, clear_color: SceneClearColor) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
         {
             let app = app.clone();
@@ -38,7 +39,7 @@ impl NativeSceneViewHandle {
         }
     }
 
-    pub(super) fn sync(
+    pub(crate) fn sync(
         &self,
         app: &AppHandle,
         label: &str,
@@ -67,7 +68,7 @@ impl NativeSceneViewHandle {
         }
     }
 
-    pub(super) fn update_dynamic_text(
+    pub(crate) fn update_dynamic_text(
         &self,
         app: &AppHandle,
         label: &str,
@@ -97,7 +98,7 @@ impl NativeSceneViewHandle {
         }
     }
 
-    pub(super) fn teardown(&self) {
+    pub(crate) fn teardown(&self) {
         #[cfg(target_os = "macos")]
         run_on_main(|mtm| {
             let host = self.host.get(mtm);

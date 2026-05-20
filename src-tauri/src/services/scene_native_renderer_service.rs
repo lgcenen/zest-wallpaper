@@ -1,5 +1,5 @@
 use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet},
     ffi::c_void,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -25,7 +25,7 @@ use scene_metal_renderer::{
 };
 #[cfg(all(target_os = "macos", test))]
 use scene_metal_renderer::compile_scene_shader_program_pipeline;
-use scene_native_view_host::NativeSceneViewHandle;
+pub(crate) use scene_native_view_host::NativeSceneViewHandle;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -55,17 +55,18 @@ use crate::{
             SceneRopeParticlePrimitive, SceneRopeParticleScheduler,
         },
         scene_render_graph_service::{
-            build_scene_phase10_graph, ScenePhase10EffectPassNode, ScenePhase10GraphPlan,
-            ScenePhase10InputSource, ScenePhase10VisualPlan,
+            ScenePhase10EffectPassNode, ScenePhase10GraphPlan, ScenePhase10InputSource,
+            ScenePhase10VisualPlan,
         },
         scene_render_planner_service::{
-            build_scene_render_plan_with_resolver, build_scene_render_text_update_with_resolver,
+            build_scene_render_text_update_with_resolver,
             SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderColor,
             SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem,
             SceneRenderPlan, SceneRenderQuad, SceneRenderRopeParticleItem, SceneRenderSourceKind,
             SceneRenderSpriteParticleItem, SceneRenderTextItem, SceneRenderVisualItem,
         },
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
+        scene_runtime_host_service,
         scene_runtime_settings_service,
         scene_shader_material_service::{
             load_shader_program_source, merged_shader_defines, phase10b_effect_contract_for_kind,
@@ -209,35 +210,28 @@ impl Default for NativeSceneRendererServiceState {
 }
 
 #[derive(Default)]
-struct NativeSceneRendererRuntime {
-    spec: Option<SceneRendererSpec>,
-    views: BTreeMap<String, Arc<NativeSceneViewHandle>>,
+pub(crate) struct NativeSceneRendererRuntime {
+    pub(crate) spec: Option<SceneRendererSpec>,
+    pub(crate) views: BTreeMap<String, Arc<NativeSceneViewHandle>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct SceneRendererSpec {
-    wallpaper_id: String,
-    render_plan: SceneRenderPlan,
-    phase10_graph: ScenePhase10GraphPlan,
-    window_labels: Vec<String>,
-    paused: bool,
+pub(crate) struct SceneRendererSpec {
+    pub(crate) wallpaper_id: String,
+    pub(crate) render_plan: SceneRenderPlan,
+    pub(crate) phase10_graph: ScenePhase10GraphPlan,
+    pub(crate) window_labels: Vec<String>,
+    pub(crate) paused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct NativeSceneRendererSnapshot {
-    spec: Option<SceneRendererSpec>,
-    labels: Vec<String>,
+pub(crate) struct NativeSceneRendererSnapshot {
+    pub(crate) spec: Option<SceneRendererSpec>,
+    pub(crate) labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct NativeSceneRendererPlan {
-    session: SceneSessionPlan,
-    ensure_labels: Vec<String>,
-    remove_labels: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum SceneSessionPlan {
+pub(crate) enum SceneSessionPlan {
     Keep,
     Stop,
     Start { spec: SceneRendererSpec },
@@ -245,25 +239,20 @@ enum SceneSessionPlan {
     UpdateScene { spec: SceneRendererSpec },
 }
 
-struct NativeSceneRuntimeActions {
-    spec: Option<SceneRendererSpec>,
-    teardown_views: Vec<Arc<NativeSceneViewHandle>>,
-    sync_views: Vec<(String, Arc<NativeSceneViewHandle>)>,
-    create_labels: Vec<String>,
+pub(crate) struct NativeSceneRuntimeActions {
+    pub(crate) spec: Option<SceneRendererSpec>,
+    pub(crate) teardown_views: Vec<Arc<NativeSceneViewHandle>>,
+    pub(crate) sync_views: Vec<(String, Arc<NativeSceneViewHandle>)>,
+    pub(crate) create_labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct NativeSceneWarning {
-    code: String,
-    message: String,
+pub(crate) struct NativeSceneWarning {
+    pub(crate) code: String,
+    pub(crate) message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    detail: Option<SceneDiagnosticDetail>,
-}
-
-struct DesiredSceneRendererSpec {
-    spec: Option<SceneRendererSpec>,
-    warnings: Vec<NativeSceneWarning>,
+    pub(crate) detail: Option<SceneDiagnosticDetail>,
 }
 
 pub fn sync_native_scene_runtime(
@@ -276,15 +265,25 @@ pub fn sync_native_scene_runtime(
             return Ok(Vec::new());
         };
 
-        let desired = desired_scene_renderer_spec(app, runtime_record, paused)?;
+        let desired = scene_runtime_host_service::desired_scene_renderer_spec(
+            app,
+            runtime_record,
+            paused,
+            now_playing_runtime_warnings_for_scene,
+            text_font_runtime_warnings_for_plan,
+        )?;
         let mut warnings = desired.warnings;
         let actions = {
             let mut runtime = state.runtime.lock().map_err(|error| error.to_string())?;
-            let plan =
-                plan_native_scene_renderer_runtime(&runtime.snapshot(), desired.spec.as_ref());
-            prepare_runtime_actions(&mut runtime, plan)
+            let plan = scene_runtime_host_service::plan_native_scene_renderer_runtime(
+                &runtime.snapshot(),
+                desired.spec.as_ref(),
+            );
+            scene_runtime_host_service::prepare_runtime_actions(&mut runtime, plan)
         };
-        warnings.extend(execute_runtime_actions(app, &state, actions)?);
+        warnings.extend(scene_runtime_host_service::execute_runtime_actions(
+            app, &state, actions,
+        )?);
         warnings.extend(sync_scene_soundscape(app, &state, desired.spec.as_ref())?);
         sync_scene_audio_interest(app, desired.spec.as_ref())?;
         dedup_native_warnings(&mut warnings);
@@ -422,247 +421,8 @@ pub fn update_native_scene_dynamic_text(
     result.map(|_| ())
 }
 
-fn desired_scene_renderer_spec(
-    app: &AppHandle,
-    runtime_record: Option<&WallpaperRuntimeRecord>,
-    paused: bool,
-) -> Result<DesiredSceneRendererSpec, String> {
-    let Some(record) = runtime_record else {
-        return Ok(DesiredSceneRendererSpec {
-            spec: None,
-            warnings: Vec::new(),
-        });
-    };
-    let scene = match &record.runtime {
-        crate::models::WallpaperRuntime::Scene { scene } => scene,
-        _ => {
-            return Ok(DesiredSceneRendererSpec {
-                spec: None,
-                warnings: Vec::new(),
-            })
-        }
-    };
-
-    let labels = player_host_service::live_player_host_label_set(app)
-        .into_iter()
-        .collect::<Vec<_>>();
-    if labels.is_empty() {
-        return Ok(DesiredSceneRendererSpec {
-            spec: None,
-            warnings: Vec::new(),
-        });
-    }
-
-    let resolver = SceneResourceResolver::for_managed_root_with_asset_roots(
-        &record.managed_path,
-        builtin_scene_assets_root_for_app(app),
-        scene_runtime_settings_service::external_assets_root_for_app(app),
-    );
-    let plan_report = build_scene_render_plan_with_resolver(scene, Some(&resolver));
-    if plan_report.is_blocked() {
-        let preview = plan_report
-            .fatal_errors()
-            .into_iter()
-            .take(4)
-            .map(|issue| issue.message)
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(format!(
-            "Scene native renderer could not build a phase-10 native scene plan: {preview}"
-        ));
-    }
-
-    let graph_report = build_scene_phase10_graph(scene, &resolver);
-    if graph_report.is_blocked() {
-        let preview = graph_report
-            .fatal_errors()
-            .into_iter()
-            .take(4)
-            .map(|issue| issue.message)
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(format!(
-            "Scene native renderer could not build a phase-10 model/material graph: {preview}"
-        ));
-    }
-
-    let mut warnings = plan_report
-        .warnings()
-        .into_iter()
-        .map(NativeSceneWarning::from_render_issue)
-        .collect::<Vec<_>>();
-    warnings.extend(text_script_runtime_warnings_for_scene(scene));
-    warnings.extend(now_playing_runtime_warnings_for_scene(scene));
-    warnings.extend(text_font_runtime_warnings_for_plan(&plan_report.plan));
-    warnings.extend(
-        graph_report
-            .warnings()
-            .into_iter()
-            .map(NativeSceneWarning::from_graph_issue),
-    );
-
-    Ok(DesiredSceneRendererSpec {
-        spec: Some(SceneRendererSpec {
-            wallpaper_id: record.id.clone(),
-            render_plan: plan_report.plan,
-            phase10_graph: graph_report.graph,
-            window_labels: labels,
-            paused,
-        }),
-        warnings,
-    })
-}
-
-fn plan_native_scene_renderer_runtime(
-    current: &NativeSceneRendererSnapshot,
-    desired: Option<&SceneRendererSpec>,
-) -> NativeSceneRendererPlan {
-    let current_labels = current.labels.iter().cloned().collect::<BTreeSet<_>>();
-    let desired_labels = desired
-        .map(|spec| spec.window_labels.iter().cloned().collect::<BTreeSet<_>>())
-        .unwrap_or_default();
-
-    let ensure_labels = desired_labels.iter().cloned().collect::<Vec<_>>();
-
-    let session = match (current.spec.as_ref(), desired) {
-        (None, None) => SceneSessionPlan::Keep,
-        (Some(_), None) => SceneSessionPlan::Stop,
-        (None, Some(spec)) => SceneSessionPlan::Start { spec: spec.clone() },
-        (Some(current_spec), Some(spec)) if current_spec.wallpaper_id != spec.wallpaper_id => {
-            SceneSessionPlan::Replace { spec: spec.clone() }
-        }
-        (Some(current_spec), Some(spec)) if current_spec != spec => {
-            SceneSessionPlan::UpdateScene { spec: spec.clone() }
-        }
-        (Some(_), Some(_)) => SceneSessionPlan::Keep,
-    };
-    let remove_labels = match session {
-        SceneSessionPlan::Replace { .. } => current_labels.iter().cloned().collect::<Vec<_>>(),
-        _ => current_labels
-            .difference(&desired_labels)
-            .cloned()
-            .collect::<Vec<_>>(),
-    };
-
-    NativeSceneRendererPlan {
-        session,
-        ensure_labels,
-        remove_labels,
-    }
-}
-
-fn prepare_runtime_actions(
-    runtime: &mut NativeSceneRendererRuntime,
-    plan: NativeSceneRendererPlan,
-) -> NativeSceneRuntimeActions {
-    let mut teardown_views = Vec::new();
-    for label in &plan.remove_labels {
-        if let Some(view) = runtime.views.remove(label) {
-            teardown_views.push(view);
-        }
-    }
-
-    match plan.session {
-        SceneSessionPlan::Keep => {}
-        SceneSessionPlan::Stop => {
-            for label in runtime.views.keys().cloned().collect::<Vec<_>>() {
-                if let Some(view) = runtime.views.remove(&label) {
-                    teardown_views.push(view);
-                }
-            }
-            runtime.spec = None;
-            return NativeSceneRuntimeActions {
-                spec: None,
-                teardown_views,
-                sync_views: vec![],
-                create_labels: vec![],
-            };
-        }
-        SceneSessionPlan::Start { spec }
-        | SceneSessionPlan::Replace { spec }
-        | SceneSessionPlan::UpdateScene { spec } => {
-            runtime.spec = Some(spec);
-        }
-    }
-
-    let spec = runtime.spec.clone();
-    let mut sync_views = Vec::new();
-    let mut create_labels = Vec::new();
-
-    if spec.is_some() {
-        for label in &plan.ensure_labels {
-            if let Some(view) = runtime.views.get(label).cloned() {
-                sync_views.push((label.clone(), view));
-            } else {
-                create_labels.push(label.clone());
-            }
-        }
-    }
-
-    NativeSceneRuntimeActions {
-        spec,
-        teardown_views,
-        sync_views,
-        create_labels,
-    }
-}
-
-fn execute_runtime_actions(
-    app: &AppHandle,
-    state: &NativeSceneRendererServiceState,
-    actions: NativeSceneRuntimeActions,
-) -> Result<Vec<NativeSceneWarning>, String> {
-    for view in &actions.teardown_views {
-        view.teardown();
-    }
-
-    let Some(spec) = actions.spec else {
-        return Ok(Vec::new());
-    };
-
-    let mut warnings = Vec::new();
-    for (label, view) in &actions.sync_views {
-        warnings.extend(view.sync(app, label, &spec)?);
-    }
-
-    for label in &actions.create_labels {
-        let view = Arc::new(NativeSceneViewHandle::create(
-            app,
-            spec.render_plan.clear_color,
-        )?);
-        warnings.extend(view.sync(app, label, &spec)?);
-
-        let inserted = {
-            let mut runtime = state.runtime.lock().map_err(|error| error.to_string())?;
-            if runtime.spec.as_ref() != Some(&spec) {
-                false
-            } else {
-                match runtime.views.entry(label.clone()) {
-                    Entry::Occupied(_) => false,
-                    Entry::Vacant(entry) => {
-                        entry.insert(Arc::clone(&view));
-                        true
-                    }
-                }
-            }
-        };
-
-        if !inserted {
-            view.teardown();
-        }
-    }
-
-    warnings.sort_by(|left: &NativeSceneWarning, right: &NativeSceneWarning| {
-        left.code
-            .cmp(&right.code)
-            .then(left.message.cmp(&right.message))
-    });
-    warnings.dedup();
-    Ok(warnings)
-}
-
 impl NativeSceneRendererRuntime {
-    fn snapshot(&self) -> NativeSceneRendererSnapshot {
+    pub(crate) fn snapshot(&self) -> NativeSceneRendererSnapshot {
         NativeSceneRendererSnapshot {
             spec: self.spec.clone(),
             labels: self.views.keys().cloned().collect(),
@@ -670,8 +430,24 @@ impl NativeSceneRendererRuntime {
     }
 }
 
+pub(crate) trait NativeSceneRendererStateAccess {
+    fn runtime_lock(&self) -> Result<std::sync::MutexGuard<'_, NativeSceneRendererRuntime>, String>;
+}
+
+impl NativeSceneRendererStateAccess for NativeSceneRendererServiceState {
+    fn runtime_lock(&self) -> Result<std::sync::MutexGuard<'_, NativeSceneRendererRuntime>, String> {
+        self.runtime.lock().map_err(|error| error.to_string())
+    }
+}
+
+impl NativeSceneRendererStateAccess for tauri::State<'_, NativeSceneRendererServiceState> {
+    fn runtime_lock(&self) -> Result<std::sync::MutexGuard<'_, NativeSceneRendererRuntime>, String> {
+        self.runtime.lock().map_err(|error| error.to_string())
+    }
+}
+
 impl NativeSceneWarning {
-    fn from_render_issue(issue: SceneRenderIssue) -> Self {
+    pub(crate) fn from_render_issue(issue: SceneRenderIssue) -> Self {
         let code = format!("{:?}", issue.code);
         let code = kebab_case_diagnostic_code(&code);
         let domain = match issue.object_kind.as_deref() {
@@ -691,7 +467,7 @@ impl NativeSceneWarning {
         }
     }
 
-    fn from_graph_issue(
+    pub(crate) fn from_graph_issue(
         issue: crate::services::scene_render_graph_service::SceneGraphIssue,
     ) -> Self {
         Self {
@@ -2441,10 +2217,10 @@ mod tests {
     };
     use super::{
         now_playing_runtime_warnings_for_scene, phase10_background_source_order,
-        plan_native_scene_renderer_runtime, runtime_dependency_warnings_for_plan,
-        video_texture_frame_warning, video_texture_source_warning, NativeSceneRendererSnapshot,
-        Phase10BackgroundSourceKind, SceneDiagnosticDomain, SceneRenderColor, SceneRendererSpec,
-        SceneSessionPlan, AUDIO_INPUT_UNAVAILABLE_CODE, INPUT_SNAPSHOT_UNAVAILABLE_CODE,
+        runtime_dependency_warnings_for_plan, video_texture_frame_warning,
+        video_texture_source_warning, NativeSceneRendererSnapshot, Phase10BackgroundSourceKind,
+        SceneDiagnosticDomain, SceneRenderColor, SceneRendererSpec, SceneSessionPlan,
+        AUDIO_INPUT_UNAVAILABLE_CODE, INPUT_SNAPSHOT_UNAVAILABLE_CODE,
     };
     use crate::models::{
         SceneEvaluatedDocument, SceneManifest, SceneNowPlayingAvailability,
@@ -2462,6 +2238,7 @@ mod tests {
         SceneMaterialUniformValue, SceneResolvedMaterialPlan, SceneShaderProgram,
         SceneShaderProgramKind,
     };
+    use crate::services::scene_runtime_host_service::plan_native_scene_renderer_runtime;
     use crate::services::scene_video_texture_service::{
         self, SceneVideoTextureLifecycleAction, SceneVideoTextureSourceSpec,
         SceneVideoTextureSourceState, VIDEO_TEXTURE_FRAME_FAILED_CODE,

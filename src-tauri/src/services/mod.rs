@@ -25,6 +25,7 @@ pub mod scene_particle_scheduler_service;
 pub mod scene_render_graph_service;
 pub mod scene_render_planner_service;
 pub mod scene_resource_service;
+pub mod scene_runtime_host_service;
 pub mod scene_runtime_settings_service;
 pub mod scene_shader_material_service;
 pub mod scene_snapshot_capture_service;
