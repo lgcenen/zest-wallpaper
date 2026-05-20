@@ -3103,7 +3103,12 @@ impl NativeSceneMetalRenderer {
         shared_audio_snapshot: Option<&audio_input_service::AudioSnapshot>,
         now_ms: u64,
     ) {
-        let sound_levels = scene_soundscape_audio_levels(&self.app, item.bar_count);
+        let state = self
+            .app
+            .try_state::<NativeSceneRendererServiceState>();
+        let sound_levels = state.and_then(|state| {
+            scene_soundscape_audio_levels(&self.app, &state.soundscape, item.bar_count)
+        });
         let levels = self.audio_coordinator.levels_for_count(
             shared_audio_snapshot,
             sound_levels.as_deref(),

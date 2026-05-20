@@ -39,7 +39,7 @@ use crate::{
         audio_input_service, diagnostic_service, input_service,
         player_host_service,
         runtime_audio_settings_service::{
-            effective_output_volume, normalize_output_volume_percent,
+            normalize_output_volume_percent,
         },
         scene_audio_coordinator_service::SceneAudioCoordinator,
         scene_diagnostics::{SceneDiagnosticDetail, SceneDiagnosticDomain},
@@ -62,9 +62,8 @@ use crate::{
             build_scene_render_plan_with_resolver, build_scene_render_text_update_with_resolver,
             SceneClearColor, SceneRenderAudioItem, SceneRenderBlendMode, SceneRenderColor,
             SceneRenderDrawItem, SceneRenderDrawKind, SceneRenderIssue, SceneRenderParticleItem,
-            SceneRenderPlan, SceneRenderQuad, SceneRenderRopeParticleItem, SceneRenderSoundItem,
-            SceneRenderSourceKind, SceneRenderSpriteParticleItem, SceneRenderTextItem,
-            SceneRenderVisualItem,
+            SceneRenderPlan, SceneRenderQuad, SceneRenderRopeParticleItem, SceneRenderSourceKind,
+            SceneRenderSpriteParticleItem, SceneRenderTextItem, SceneRenderVisualItem,
         },
         scene_resource_service::{builtin_scene_assets_root_for_app, SceneResourceResolver},
         scene_runtime_settings_service,
@@ -74,10 +73,11 @@ use crate::{
             SceneMaterialUniformValue, SceneShaderProgram, SceneShaderProgramKind,
         },
         scene_sound_lifecycle_service::{
-            plan_scene_sound_clear, plan_scene_sound_lifecycle, scene_sound_meter_level,
-            scene_sound_playback_load_warning, scene_sound_reactive_levels,
-            SceneSoundLifecycleAction, SceneSoundMeterReading, SceneSoundPlaybackWarning,
-            SceneSoundRuntimeState,
+            SceneSoundPlaybackWarning,
+        },
+        scene_soundscape_service::{
+            scene_soundscape_audio_levels, set_scene_soundscape_output_volume,
+            sync_scene_soundscape as sync_native_scene_soundscape, NativeSceneSoundscape,
         },
         scene_sprite_particle_scheduler_service::{
             SceneSpriteParticlePrimitive, SceneSpriteParticleScheduler,
@@ -94,7 +94,7 @@ use crate::{
 };
 
 #[cfg(target_os = "macos")]
-use std::{cell::RefCell, ptr::NonNull, time::Instant};
+use std::{ptr::NonNull, time::Instant};
 
 #[cfg(target_os = "macos")]
 use dispatch2::{run_on_main, MainThreadBound};
@@ -110,8 +110,6 @@ use objc2::{
 use objc2_av_foundation::{
     AVPlayer, AVPlayerActionAtItemEnd, AVPlayerItem, AVPlayerItemStatus, AVPlayerItemVideoOutput,
 };
-#[cfg(target_os = "macos")]
-use objc2_avf_audio::AVAudioPlayer;
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::{CFRetained, CFString};
 #[cfg(target_os = "macos")]
@@ -330,13 +328,7 @@ pub fn set_scene_audio_output_volume(app: &AppHandle, volume: f64) -> Result<(),
 
     #[cfg(target_os = "macos")]
     {
-        run_on_main(|mtm| {
-            let slot = state.soundscape.lock().map_err(|error| error.to_string())?;
-            if let Some(soundscape) = slot.as_ref() {
-                soundscape.get(mtm).set_output_volume(normalized);
-            }
-            Ok::<(), String>(())
-        })?;
+        set_scene_soundscape_output_volume(&state.soundscape, normalized)?;
     }
 
     Ok(())
@@ -1180,28 +1172,16 @@ fn sync_scene_soundscape(
     state: &NativeSceneRendererServiceState,
     spec: Option<&SceneRendererSpec>,
 ) -> Result<Vec<NativeSceneWarning>, String> {
-    let spec = spec.cloned();
     let output_volume = *state
         .audio_output_volume
         .lock()
         .map_err(|error| error.to_string())?;
-    run_on_main(|mtm| {
-        let mut slot = state.soundscape.lock().map_err(|error| error.to_string())?;
-        if slot.is_none() {
-            slot.replace(MainThreadBound::new(NativeSceneSoundscape::default(), mtm));
-        }
-        let soundscape = slot
-            .as_ref()
-            .expect("soundscape should exist after initialization");
-        let soundscape = soundscape.get(mtm);
-        match spec {
-            Some(spec) => soundscape.sync(&spec.render_plan.sounds, spec.paused, output_volume),
-            None => {
-                soundscape.clear();
-                Ok(Vec::new())
-            }
-        }
-    })
+    sync_native_scene_soundscape(
+        &state.soundscape,
+        output_volume,
+        spec.map(|spec| (spec.render_plan.sounds.as_slice(), spec.paused)),
+        NativeSceneWarning::from_sound_playback_warning,
+    )
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1211,173 +1191,6 @@ fn sync_scene_soundscape(
     _spec: Option<&SceneRendererSpec>,
 ) -> Result<Vec<NativeSceneWarning>, String> {
     Ok(Vec::new())
-}
-
-#[cfg(target_os = "macos")]
-struct NativeSceneSoundscape {
-    players: RefCell<BTreeMap<u32, NativeSceneSoundPlayer>>,
-    output_volume: RefCell<f64>,
-}
-
-#[cfg(target_os = "macos")]
-impl Default for NativeSceneSoundscape {
-    fn default() -> Self {
-        Self {
-            players: RefCell::new(BTreeMap::new()),
-            output_volume: RefCell::new(1.0),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct NativeSceneSoundPlayer {
-    state: SceneSoundRuntimeState,
-    player: Retained<AVAudioPlayer>,
-}
-
-#[cfg(target_os = "macos")]
-impl NativeSceneSoundscape {
-    fn sync(
-        &self,
-        sounds: &[SceneRenderSoundItem],
-        paused: bool,
-        output_volume: f64,
-    ) -> Result<Vec<NativeSceneWarning>, String> {
-        self.set_output_volume(output_volume);
-        let current_states = self.playback_states();
-        let actions = plan_scene_sound_lifecycle(&current_states, sounds, paused);
-        let sounds_by_id = sounds
-            .iter()
-            .map(|sound| (sound.object_id, sound))
-            .collect::<BTreeMap<_, _>>();
-        let mut players = self.players.borrow_mut();
-        let mut warnings = Vec::new();
-
-        for action in actions {
-            match action {
-                SceneSoundLifecycleAction::Start { state } => {
-                    if let Some(sound) = sounds_by_id.get(&state.object_id) {
-                        match create_sound_player(sound, state.paused, self.current_output_volume())
-                        {
-                            Ok(player) => {
-                                players.insert(state.object_id, player);
-                            }
-                            Err(error) => {
-                                warnings.push(NativeSceneWarning::from_sound_playback_warning(
-                                    scene_sound_playback_load_warning(sound, error),
-                                ))
-                            }
-                        }
-                    }
-                }
-                SceneSoundLifecycleAction::Replace { previous: _, state } => {
-                    if let Some(existing) = players.remove(&state.object_id) {
-                        stop_sound_player(&existing);
-                    }
-                    if let Some(sound) = sounds_by_id.get(&state.object_id) {
-                        match create_sound_player(sound, state.paused, self.current_output_volume())
-                        {
-                            Ok(player) => {
-                                players.insert(state.object_id, player);
-                            }
-                            Err(error) => {
-                                warnings.push(NativeSceneWarning::from_sound_playback_warning(
-                                    scene_sound_playback_load_warning(sound, error),
-                                ))
-                            }
-                        }
-                    }
-                }
-                SceneSoundLifecycleAction::Update { state } => {
-                    if let Some(player) = players.get_mut(&state.object_id) {
-                        configure_sound_player(player, &state, self.current_output_volume());
-                    }
-                }
-                SceneSoundLifecycleAction::SetPaused { object_id, paused } => {
-                    if let Some(player) = players.get_mut(&object_id) {
-                        player.state.paused = paused;
-                        set_sound_player_paused(player, paused);
-                    }
-                }
-                SceneSoundLifecycleAction::Stop { state } => {
-                    if let Some(player) = players.remove(&state.object_id) {
-                        stop_sound_player(&player);
-                    }
-                }
-            }
-        }
-
-        Ok(warnings)
-    }
-
-    fn clear(&self) {
-        let actions = plan_scene_sound_clear(&self.playback_states());
-        let mut players = self.players.borrow_mut();
-        for action in actions {
-            if let SceneSoundLifecycleAction::Stop { state } = action {
-                if let Some(player) = players.remove(&state.object_id) {
-                    stop_sound_player(&player);
-                }
-            }
-        }
-    }
-
-    fn reactive_levels(&self, count: usize) -> Option<Vec<f64>> {
-        if count == 0 {
-            return None;
-        }
-
-        let current = self.players.borrow();
-        let mut meters = Vec::new();
-        for player in current.values() {
-            if !unsafe { player.player.isPlaying() } {
-                continue;
-            }
-
-            unsafe {
-                player.player.updateMeters();
-            }
-            let channel_count = unsafe { player.player.numberOfChannels() }.max(1) as usize;
-            let mut level = 0.0_f64;
-            for channel in 0..channel_count {
-                let average = unsafe { player.player.averagePowerForChannel(channel) } as f64;
-                let peak = unsafe { player.player.peakPowerForChannel(channel) } as f64;
-                level = level.max(scene_sound_meter_level(average, peak));
-            }
-            if level <= 0.001 {
-                continue;
-            }
-
-            let phase = unsafe { player.player.currentTime() } as f64;
-            meters.push(SceneSoundMeterReading { level, phase });
-        }
-
-        scene_sound_reactive_levels(&meters, count)
-    }
-
-    fn set_output_volume(&self, output_volume: f64) {
-        let normalized = output_volume.clamp(0.0, 1.0);
-        *self.output_volume.borrow_mut() = normalized;
-        for player in self.players.borrow_mut().values_mut() {
-            unsafe {
-                player
-                    .player
-                    .setVolume(effective_output_volume(player.state.volume, normalized) as f32);
-            }
-        }
-    }
-
-    fn current_output_volume(&self) -> f64 {
-        *self.output_volume.borrow()
-    }
-
-    fn playback_states(&self) -> BTreeMap<u32, SceneSoundRuntimeState> {
-        self.players
-            .borrow()
-            .iter()
-            .map(|(object_id, player)| (*object_id, player.state.clone()))
-            .collect()
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2183,74 +1996,6 @@ fn load_texture(
 }
 
 #[cfg(target_os = "macos")]
-fn create_sound_player(
-    sound: &SceneRenderSoundItem,
-    paused: bool,
-    output_volume: f64,
-) -> Result<NativeSceneSoundPlayer, String> {
-    let Some(path_string) = sound.asset_path.to_str() else {
-        return Err(format!(
-            "sound path {} is not valid UTF-8 for AVFoundation",
-            sound.asset_path.display()
-        ));
-    };
-    let path_string = NSString::from_str(path_string);
-    let url = NSURL::fileURLWithPath(&path_string);
-    let player =
-        unsafe { AVAudioPlayer::initWithContentsOfURL_error(AVAudioPlayer::alloc(), &url) }
-            .map_err(|error| format!("{error:?}"))?;
-    unsafe {
-        player.setVolume(effective_output_volume(sound.volume, output_volume) as f32);
-        player.setNumberOfLoops(if sound.looped { -1 } else { 0 });
-        player.setMeteringEnabled(true);
-        let _ = player.prepareToPlay();
-    }
-    let mut sound_player = NativeSceneSoundPlayer {
-        state: SceneSoundRuntimeState::from_sound_item(sound, paused),
-        player,
-    };
-    set_sound_player_paused(&mut sound_player, paused);
-    Ok(sound_player)
-}
-
-#[cfg(target_os = "macos")]
-fn configure_sound_player(
-    player: &mut NativeSceneSoundPlayer,
-    state: &SceneSoundRuntimeState,
-    output_volume: f64,
-) {
-    unsafe {
-        player
-            .player
-            .setVolume(effective_output_volume(state.volume, output_volume) as f32);
-        player
-            .player
-            .setNumberOfLoops(if state.looped { -1 } else { 0 });
-    }
-    player.state.looped = state.looped;
-    player.state.volume = state.volume;
-}
-
-#[cfg(target_os = "macos")]
-fn set_sound_player_paused(player: &mut NativeSceneSoundPlayer, paused: bool) {
-    unsafe {
-        if paused {
-            player.player.pause();
-        } else if !player.player.isPlaying() {
-            let _ = player.player.play();
-        }
-    }
-    player.state.paused = paused;
-}
-
-#[cfg(target_os = "macos")]
-fn stop_sound_player(player: &NativeSceneSoundPlayer) {
-    unsafe {
-        player.player.stop();
-    }
-}
-
-#[cfg(target_os = "macos")]
 fn build_white_texture_image() -> DynamicImage {
     DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
         1,
@@ -2632,15 +2377,6 @@ fn color_to_shader(color: SceneRenderColor) -> [f32; 4] {
         color.blue as f32 / 255.0,
         color.alpha as f32 / 255.0,
     ]
-}
-
-#[cfg(target_os = "macos")]
-fn scene_soundscape_audio_levels(app: &AppHandle, count: usize) -> Option<Vec<f64>> {
-    let state = app.try_state::<NativeSceneRendererServiceState>()?;
-    let mtm = MainThreadMarker::new()?;
-    let soundscape = state.soundscape.lock().ok()?;
-    let soundscape = soundscape.as_ref()?;
-    soundscape.get(mtm).reactive_levels(count)
 }
 
 #[cfg(target_os = "macos")]

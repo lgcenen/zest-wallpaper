@@ -29,6 +29,7 @@ pub mod scene_runtime_settings_service;
 pub mod scene_shader_material_service;
 pub mod scene_snapshot_capture_service;
 pub mod scene_sound_lifecycle_service;
+pub mod scene_soundscape_service;
 pub mod scene_sprite_particle_scheduler_service;
 pub mod scene_support_service;
 pub mod scene_text_behavior_service;
