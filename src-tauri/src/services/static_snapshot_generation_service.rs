@@ -491,7 +491,8 @@ fn render_web_snapshot_file(entry_path: &Path, output_path: &Path) -> Result<(),
             output_path.display()
         )
     })?;
-    let runtime_url = web_runtime_service::get_web_runtime_url(entry)?;
+    let runtime_session = web_runtime_service::prepare_web_runtime_session(entry)?;
+    let runtime_url = runtime_session.runtime_url().to_string();
     let (load_sender, load_receiver) = mpsc::channel();
     let host = create_web_snapshot_capture_host(runtime_url.clone(), load_sender)?;
 

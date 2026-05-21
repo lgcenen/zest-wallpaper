@@ -5,12 +5,25 @@ mod response_builder;
 mod root_registry;
 mod server;
 
-pub fn get_web_runtime_url(path: &str) -> Result<String, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebRuntimeSession {
+    runtime_url: String,
+}
+
+impl WebRuntimeSession {
+    pub fn runtime_url(&self) -> &str {
+        &self.runtime_url
+    }
+}
+
+pub fn prepare_web_runtime_session(path: &str) -> Result<WebRuntimeSession, String> {
     let entry = path_resolution::resolve_runtime_entry(path)?;
     let server = server::ensure_web_runtime_server()?;
     server::register_runtime_root(server, entry.token.clone(), entry.root.clone())?;
 
-    Ok(path_resolution::build_runtime_url(server.port, &entry))
+    Ok(WebRuntimeSession {
+        runtime_url: path_resolution::build_runtime_url(server.port, &entry),
+    })
 }
 
 #[cfg(test)]
@@ -27,7 +40,7 @@ mod tests {
         bridge_injection::{
             inject_html_wallpaper_bridge, prepare_web_runtime_body, HTML_WALLPAPER_BRIDGE,
         },
-        get_web_runtime_url,
+        prepare_web_runtime_session,
         server::ensure_web_runtime_server,
     };
 
@@ -61,9 +74,12 @@ mod tests {
         .expect("index");
         fs::write(root.join("test.splat"), b"splat-payload").expect("splat");
 
-        let runtime_url =
-            get_web_runtime_url(root.join("index.html").to_str().expect("entry path"))
-                .expect("runtime url");
+        let runtime_url = prepare_web_runtime_session(
+            root.join("index.html").to_str().expect("entry path"),
+        )
+        .expect("runtime session")
+        .runtime_url()
+        .to_string();
         let server = ensure_web_runtime_server().expect("runtime server");
 
         let index_path = runtime_url
@@ -88,14 +104,38 @@ mod tests {
     }
 
     #[test]
+    fn runtime_session_registers_root_and_exposes_runtime_url() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        fs::write(root.join("index.html"), "<html><body>ok</body></html>").expect("index");
+
+        let session =
+            prepare_web_runtime_session(root.join("index.html").to_str().expect("entry path"))
+                .expect("runtime session");
+        let server = ensure_web_runtime_server().expect("runtime server");
+
+        assert_eq!(
+            session.runtime_url(),
+            format!(
+                "http://127.0.0.1:{}/web-runtime/{}/index.html",
+                server.port,
+                runtime_token(root)
+            )
+        );
+    }
+
+    #[test]
     fn runtime_server_blocks_path_traversal() {
         let temp = tempdir().expect("tempdir");
         let root = temp.path();
         fs::write(root.join("index.html"), "<html><body>ok</body></html>").expect("index");
 
-        let runtime_url =
-            get_web_runtime_url(root.join("index.html").to_str().expect("entry path"))
-                .expect("runtime url");
+        let runtime_url = prepare_web_runtime_session(
+            root.join("index.html").to_str().expect("entry path"),
+        )
+        .expect("runtime session")
+        .runtime_url()
+        .to_string();
         let server = ensure_web_runtime_server().expect("runtime server");
         let index_path = runtime_url
             .strip_prefix(&format!("http://127.0.0.1:{}", server.port))
@@ -122,9 +162,12 @@ mod tests {
         )
         .expect("index");
 
-        let runtime_url =
-            get_web_runtime_url(root.join("index.html").to_str().expect("entry path"))
-                .expect("runtime url");
+        let runtime_url = prepare_web_runtime_session(
+            root.join("index.html").to_str().expect("entry path"),
+        )
+        .expect("runtime session")
+        .runtime_url()
+        .to_string();
         let server = ensure_web_runtime_server().expect("runtime server");
         let index_path = runtime_url
             .strip_prefix(&format!("http://127.0.0.1:{}", server.port))
@@ -143,9 +186,12 @@ mod tests {
         let root = temp.path();
         fs::write(root.join("index.html"), "<html><body>ok</body></html>").expect("index");
 
-        let runtime_url =
-            get_web_runtime_url(root.join("index.html").to_str().expect("entry path"))
-                .expect("runtime url");
+        let runtime_url = prepare_web_runtime_session(
+            root.join("index.html").to_str().expect("entry path"),
+        )
+        .expect("runtime session")
+        .runtime_url()
+        .to_string();
         let server = ensure_web_runtime_server().expect("runtime server");
         let index_path = runtime_url
             .strip_prefix(&format!("http://127.0.0.1:{}", server.port))
@@ -169,5 +215,15 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("response");
         response
+    }
+
+    fn runtime_token(root: &std::path::Path) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let canonical = root.canonicalize().expect("canonical root");
+        let mut hasher = DefaultHasher::new();
+        canonical.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
     }
 }

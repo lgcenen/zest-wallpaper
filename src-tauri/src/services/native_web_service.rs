@@ -378,7 +378,7 @@ fn desired_web_runtime_spec(
     };
     let _ = diagnostic_service::clear_diagnostic(app, DIAGNOSTIC_SUBSYSTEM, MISSING_ENTRY_CODE);
 
-    let runtime_url = web_runtime_service::get_web_runtime_url(&entry_path)?;
+    let runtime_session = web_runtime_service::prepare_web_runtime_session(&entry_path)?;
     let labels = player_host_service::live_player_host_label_set(app)
         .into_iter()
         .collect::<Vec<_>>();
@@ -387,7 +387,7 @@ fn desired_web_runtime_spec(
     }
 
     Ok(Some(WebRuntimeSpec {
-        runtime_url,
+        runtime_url: runtime_session.runtime_url().to_string(),
         paused,
         property_payload_json: serialize_property_payload(record)?,
         window_labels: labels,
@@ -1670,6 +1670,26 @@ mod tests {
         assert!(state
             .mark_bridge_ready(Some("http://127.0.0.1:9000/web-runtime/demo/index.html"))
             .is_none());
+    }
+
+    #[test]
+    fn bridge_ready_accepts_runtime_href_with_hash_fragment() {
+        let mut state = NativeWebBridgeState::default();
+        let now = Instant::now();
+        let payload = bootstrap_payload(r#"{"speed":{"value":1}}"#, false);
+        state.reset_for_navigation(
+            "http://127.0.0.1:9000/web-runtime/demo/index.html",
+            payload.clone(),
+            now,
+        );
+
+        let batch = state
+            .mark_bridge_ready(Some(
+                "http://127.0.0.1:9000/web-runtime/demo/index.html#%5B0,1,2%5D",
+            ))
+            .expect("bootstrap batch after hash-bearing href");
+        assert_eq!(batch, WebBridgeDispatchBatch::bootstrap(&payload));
+        assert!(state.bridge_ready);
     }
 
     #[test]
