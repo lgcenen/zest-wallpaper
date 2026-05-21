@@ -517,7 +517,8 @@ impl NativeSceneMetalRenderer {
         let shared_audio_snapshot = audio_input_service::current_audio_snapshot(&self.app).ok();
         let now_ms = self.started_at.elapsed().as_millis() as u64;
         let phase10_graph = self.phase10_graph.clone();
-        let phase10_outputs = self.render_phase10_outputs(
+        let phase10_outputs = scene_effect_output_runtime_service::render_phase10_outputs(
+            self,
             command_buffer,
             plan,
             &phase10_graph,
@@ -728,128 +729,6 @@ impl NativeSceneMetalRenderer {
         }
 
         encoder.endEncoding();
-    }
-
-    pub(super) fn render_phase10_outputs(
-        &mut self,
-        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-        plan: &SceneRenderPlan,
-        graph: &ScenePhase10GraphPlan,
-        elapsed_seconds: f64,
-    ) -> BTreeMap<u32, Retained<ProtocolObject<dyn MTLTexture>>> {
-        scene_effect_output_runtime_service::render_phase10_outputs(
-            self,
-            command_buffer,
-            plan,
-            graph,
-            elapsed_seconds,
-        )
-    }
-
-    pub(super) fn render_phase10_output_for_visual(
-        &mut self,
-        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-        canvas_height: f64,
-        visual: &ScenePhase10VisualPlan,
-        background_snapshot: Option<&Phase10TextureHandle>,
-        elapsed_seconds: f64,
-        required_output_keys: &mut BTreeSet<String>,
-        required_scratch_keys: &mut BTreeSet<String>,
-        required_named_target_keys: &mut BTreeSet<String>,
-    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
-        scene_effect_output_runtime_service::render_phase10_output_for_visual(
-            self,
-            command_buffer,
-            canvas_height,
-            visual,
-            background_snapshot,
-            elapsed_seconds,
-            required_output_keys,
-            required_scratch_keys,
-            required_named_target_keys,
-        )
-    }
-
-    pub(super) fn render_phase10_puppet_output_for_visual(
-        &mut self,
-        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-        canvas_height: f64,
-        visual: &ScenePhase10VisualPlan,
-        base_texture: &Phase10TextureHandle,
-        passes: &[Phase10ResolvedPass<'_>],
-        width: usize,
-        height: usize,
-        output_texture: Phase10TextureHandle,
-        elapsed_seconds: f64,
-        required_scratch_keys: &mut BTreeSet<String>,
-        required_named_target_keys: &mut BTreeSet<String>,
-    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
-        scene_effect_output_runtime_service::render_phase10_puppet_output_for_visual(
-            self,
-            command_buffer,
-            canvas_height,
-            visual,
-            base_texture,
-            passes,
-            width,
-            height,
-            output_texture,
-            elapsed_seconds,
-            required_scratch_keys,
-            required_named_target_keys,
-        )
-    }
-
-    pub(super) fn render_phase10_mask_chain(
-        &mut self,
-        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-        visual: &ScenePhase10VisualPlan,
-        base_texture: &Phase10TextureHandle,
-        resolved_pass: &Phase10ResolvedPass<'_>,
-        width: usize,
-        height: usize,
-        required_scratch_keys: &mut BTreeSet<String>,
-    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
-        scene_effect_output_runtime_service::render_phase10_mask_chain(
-            self,
-            command_buffer,
-            visual,
-            base_texture,
-            resolved_pass,
-            width,
-            height,
-            required_scratch_keys,
-        )
-    }
-
-    pub(super) fn phase10_background_layer_for_draw_item(
-        &mut self,
-        draw_item: &SceneRenderDrawItem,
-        visual_items: &BTreeMap<u32, &SceneRenderVisualItem>,
-        text_items: &BTreeMap<u32, &SceneRenderTextItem>,
-    ) -> Option<Phase10BackgroundLayer> {
-        scene_effect_output_runtime_service::phase10_background_layer_for_draw_item(
-            self,
-            draw_item,
-            visual_items,
-            text_items,
-        )
-    }
-
-    pub(super) fn render_phase10_background_snapshot(
-        &mut self,
-        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-        visual: &ScenePhase10VisualPlan,
-        layers: &[Phase10BackgroundLayer],
-        required_background_keys: &mut BTreeSet<String>,
-    ) -> Option<Phase10TextureHandle> {
-        scene_effect_output_runtime_service::render_phase10_background_snapshot(
-            self,
-            command_buffer,
-            visual,
-            layers,
-            required_background_keys,
-        )
     }
 
     fn prepare_phase10_graph(
