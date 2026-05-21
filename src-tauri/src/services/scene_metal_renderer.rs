@@ -1298,46 +1298,6 @@ impl NativeSceneMetalRenderer {
         true
     }
 
-    fn ensure_phase10_output_target(
-        &mut self,
-        key: &str,
-        width: usize,
-        height: usize,
-    ) -> Option<Phase10TextureHandle> {
-        self.phase10_targets
-            .ensure_output_target(self.device.as_ref(), key, width, height)
-    }
-
-    fn ensure_phase10_scratch_target(
-        &mut self,
-        key: &str,
-        width: usize,
-        height: usize,
-    ) -> Option<Phase10TextureHandle> {
-        self.phase10_targets
-            .ensure_scratch_target(self.device.as_ref(), key, width, height)
-    }
-
-    fn ensure_phase10_named_target(
-        &mut self,
-        key: &str,
-        width: usize,
-        height: usize,
-    ) -> Option<Phase10TextureHandle> {
-        self.phase10_targets
-            .ensure_named_target(self.device.as_ref(), key, width, height)
-    }
-
-    fn ensure_phase10_background_target(
-        &mut self,
-        key: &str,
-        width: usize,
-        height: usize,
-    ) -> Option<Phase10TextureHandle> {
-        self.phase10_targets
-            .ensure_background_target(self.device.as_ref(), key, width, height)
-    }
-
     fn draw_phase10_fullscreen_texture(
         &self,
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,

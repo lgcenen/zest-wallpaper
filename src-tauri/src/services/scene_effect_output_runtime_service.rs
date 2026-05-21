@@ -197,7 +197,9 @@ pub(super) fn render_phase10_output_for_visual(
     let (width, height) = phase10_render_target_size(visual);
     let output_key = phase10_output_texture_key(visual.object_id, width, height);
     required_output_keys.insert(output_key.clone());
-    let output_texture = renderer.ensure_phase10_output_target(&output_key, width, height)?;
+    let output_texture = renderer
+        .phase10_targets
+        .ensure_output_target(renderer.device.as_ref(), &output_key, width, height)?;
 
     if visual.puppet_path.is_some() {
         return render_phase10_puppet_output_for_visual(
@@ -235,13 +237,17 @@ pub(super) fn render_phase10_output_for_visual(
         let target = if let Some(target_name) = target_name {
             let key = phase10_named_target_texture_key(visual.object_id, target_name, width, height);
             required_named_target_keys.insert(key.clone());
-            renderer.ensure_phase10_named_target(&key, width, height)?
+            renderer
+                .phase10_targets
+                .ensure_named_target(renderer.device.as_ref(), &key, width, height)?
         } else if is_last {
             output_texture.clone()
         } else {
             let scratch_key = phase10_scratch_texture_key(width, height, index % 2);
             required_scratch_keys.insert(scratch_key.clone());
-            renderer.ensure_phase10_scratch_target(&scratch_key, width, height)?
+            renderer
+                .phase10_targets
+                .ensure_scratch_target(renderer.device.as_ref(), &scratch_key, width, height)?
         };
 
         let input_scope = Phase10PassInputScope {
@@ -326,13 +332,17 @@ pub(super) fn render_phase10_puppet_output_for_visual(
         let target = if let Some(target_name) = target_name {
             let key = phase10_named_target_texture_key(visual.object_id, target_name, width, height);
             required_named_target_keys.insert(key.clone());
-            renderer.ensure_phase10_named_target(&key, width, height)?
+            renderer
+                .phase10_targets
+                .ensure_named_target(renderer.device.as_ref(), &key, width, height)?
         } else if is_last {
             output_texture.clone()
         } else {
             let scratch_key = phase10_scratch_texture_key(width, height, index % 2);
             required_scratch_keys.insert(scratch_key.clone());
-            renderer.ensure_phase10_scratch_target(&scratch_key, width, height)?
+            renderer
+                .phase10_targets
+                .ensure_scratch_target(renderer.device.as_ref(), &scratch_key, width, height)?
         };
 
         let input_scope = Phase10PassInputScope {
@@ -423,11 +433,15 @@ pub(super) fn render_phase10_mask_chain(
     required_scratch_keys: &mut BTreeSet<String>,
 ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
     let output_key = phase10_output_texture_key(visual.object_id, width, height);
-    let output_texture = renderer.ensure_phase10_output_target(&output_key, width, height)?;
+    let output_texture = renderer
+        .phase10_targets
+        .ensure_output_target(renderer.device.as_ref(), &output_key, width, height)?;
 
     let scratch_key = phase10_scratch_texture_key(width, height, 0);
     required_scratch_keys.insert(scratch_key.clone());
-    let scratch_texture = renderer.ensure_phase10_scratch_target(&scratch_key, width, height)?;
+    let scratch_texture = renderer
+        .phase10_targets
+        .ensure_scratch_target(renderer.device.as_ref(), &scratch_key, width, height)?;
 
     let input_scope = Phase10PassInputScope {
         local_current: Some(base_texture),
@@ -560,7 +574,9 @@ pub(super) fn render_phase10_background_snapshot(
     let (width, height) = phase10_render_target_size(visual);
     let key = phase10_background_texture_key(visual.object_id, width, height);
     required_background_keys.insert(key.clone());
-    let target = renderer.ensure_phase10_background_target(&key, width, height)?;
+    let target = renderer
+        .phase10_targets
+        .ensure_background_target(renderer.device.as_ref(), &key, width, height)?;
 
     let descriptor = MTLRenderPassDescriptor::new();
     unsafe {
