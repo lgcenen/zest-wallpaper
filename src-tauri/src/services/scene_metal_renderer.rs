@@ -1,21 +1,23 @@
 use super::*;
 use super::scene_effect_runtime_service::{
     phase10_alpha_prefill_required, phase10_background_texture_key,
-    phase10_fullscreen_vertices, phase10_visual_pass_chain, Phase10PassContext,
-    Phase10ResolvedPass,
+    phase10_fullscreen_vertices, phase10_visual_pass_chain, Phase10ResolvedPass,
     phase10_local_background_projection, phase10_mask_apply_shader_program,
     phase10_named_target_texture_key, phase10_output_texture_key,
     phase10_pass_shader_defines, phase10_puppet_offscreen_projection,
     phase10_render_target_size, phase10_resolved_pass_target_name,
-    phase10_scratch_texture_key, phase10_shader_variant_key, phase10_solid_texture_key,
-    phase10_texture_cache_key, phase10_visual_first_pass_is_mask_alpha,
-    phase10_visual_needs_background_snapshot, phase10_visual_requires_offscreen_chain,
+    phase10_scratch_texture_key, phase10_shader_variant_key, phase10_texture_cache_key,
+    phase10_visual_first_pass_is_mask_alpha, phase10_visual_needs_background_snapshot,
+    phase10_visual_requires_offscreen_chain,
 };
 use super::scene_effect_target_runtime_service::{
-    phase10_texture_metrics_from_size, phase10_texture_metrics_from_texture,
-    Phase10RenderTargetStores, Phase10TextureHandle, Phase10TextureMetrics,
+    phase10_texture_metrics_from_texture, Phase10RenderTargetStores, Phase10TextureHandle,
+    Phase10TextureMetrics,
 };
 use super::scene_effect_input_runtime_service::{
+    ensure_phase10_base_texture_loaded, ensure_phase10_pass_textures_loaded,
+    ensure_procedural_texture, ensure_text_texture_loaded, ensure_visual_texture_loaded,
+    phase10_ensure_texture_loaded,
     phase10_base_texture_for_visual as resolve_phase10_base_texture_for_visual,
     phase10_pass_textures_for as resolve_phase10_pass_textures_for,
     Phase10PassInputScope, Phase10PassTextures,
@@ -25,11 +27,6 @@ use super::scene_effect_uniform_runtime_service::build_phase10_effect_uniforms_f
 mod scene_effect_draw_runtime_service;
 #[path = "scene_effect_output_runtime_service.rs"]
 mod scene_effect_output_runtime_service;
-
-use crate::services::scene_resource_service;
-#[cfg(target_os = "macos")]
-use crate::services::scene_text_raster_service::rasterize_text_texture;
-
 #[cfg(target_os = "macos")]
 pub(super) struct NativeSceneMetalRenderer {
     app: AppHandle,
@@ -211,7 +208,13 @@ impl NativeSceneMetalRenderer {
             match item.source_kind {
                 SceneRenderSourceKind::Image => {
                     let key = visual_texture_cache_key(item);
-                    match self.ensure_visual_texture_loaded(item, &key) {
+                    match ensure_visual_texture_loaded(
+                        self.device.as_ref(),
+                        item,
+                        &key,
+                        &mut self.texture_cache,
+                        &mut self.texture_resolution_cache,
+                    ) {
                         Ok(()) => {
                             required_keys.insert(key);
                             if should_retain_visual_in_draw_plan(item, &phase10_consumed_ids, true)
@@ -233,7 +236,12 @@ impl NativeSceneMetalRenderer {
 
         for item in &plan.texts {
             let key = text_texture_cache_key(item);
-            match self.ensure_text_texture_loaded(item, &key) {
+            match ensure_text_texture_loaded(
+                self.device.as_ref(),
+                item,
+                &key,
+                &mut self.text_texture_cache,
+            ) {
                 Ok(text_warnings) => {
                     required_text_keys.insert(key);
                     retained_texts.push(item.clone());
@@ -256,7 +264,13 @@ impl NativeSceneMetalRenderer {
 
         for item in &plan.sprite_particles {
             for texture_path in sprite_particle_texture_paths(item) {
-                match self.ensure_phase10_texture_loaded(&texture_path, &mut required_keys) {
+                match phase10_ensure_texture_loaded(
+                    self.device.as_ref(),
+                    &texture_path,
+                    &mut required_keys,
+                    &mut self.texture_cache,
+                    &mut self.texture_resolution_cache,
+                ) {
                     Ok(()) => {}
                     Err(error) => warnings.push(NativeSceneWarning::texture_load(
                         &texture_path,
@@ -272,7 +286,13 @@ impl NativeSceneMetalRenderer {
             if texture_path == Path::new("__rope-white__") {
                 continue;
             }
-            match self.ensure_phase10_texture_loaded(texture_path, &mut required_keys) {
+            match phase10_ensure_texture_loaded(
+                self.device.as_ref(),
+                texture_path,
+                &mut required_keys,
+                &mut self.texture_cache,
+                &mut self.texture_resolution_cache,
+            ) {
                 Ok(()) => {}
                 Err(error) => warnings.push(NativeSceneWarning::texture_load(
                     texture_path,
@@ -287,10 +307,13 @@ impl NativeSceneMetalRenderer {
 
         if !plan.audios.is_empty() || !plan.particles.is_empty() || !plan.rope_particles.is_empty()
         {
-            self.ensure_procedural_texture(
+            ensure_procedural_texture(
+                self.device.as_ref(),
                 WHITE_TEXTURE_KEY,
                 build_white_texture_image(),
                 &mut required_keys,
+                &mut self.texture_cache,
+                &mut self.texture_resolution_cache,
             )?;
         }
         if plan.particles.iter().any(|item| {
@@ -299,10 +322,13 @@ impl NativeSceneMetalRenderer {
                 crate::models::SceneParticleKind::PetalTrail
             )
         }) {
-            self.ensure_procedural_texture(
+            ensure_procedural_texture(
+                self.device.as_ref(),
                 PETAL_TEXTURE_KEY,
                 build_petal_texture_image(),
                 &mut required_keys,
+                &mut self.texture_cache,
+                &mut self.texture_resolution_cache,
             )?;
         }
 
@@ -419,7 +445,12 @@ impl NativeSceneMetalRenderer {
 
         for item in texts {
             let key = text_texture_cache_key(&item);
-            match self.ensure_text_texture_loaded(&item, &key) {
+            match ensure_text_texture_loaded(
+                self.device.as_ref(),
+                &item,
+                &key,
+                &mut self.text_texture_cache,
+            ) {
                 Ok(text_warnings) => {
                     required_text_keys.insert(key);
                     retained_texts.push(item);
@@ -910,26 +941,14 @@ impl NativeSceneMetalRenderer {
         visual: &ScenePhase10VisualPlan,
         required_keys: &mut BTreeSet<String>,
     ) -> Result<bool, String> {
-        match visual.base_source_kind {
-            Some(SceneRenderSourceKind::Image) => {
-                let Some(base_texture_path) = visual.base_texture_path.as_ref() else {
-                    return Ok(false);
-                };
-                self.ensure_phase10_texture_loaded(base_texture_path, required_keys)?;
-                Ok(true)
-            }
-            Some(SceneRenderSourceKind::Video) => {
-                Ok(self.video_sources.contains_key(&visual.object_id))
-            }
-            None => {
-                if visual.base_color.alpha == 0 {
-                    return Ok(false);
-                }
-                let (width, height) = phase10_render_target_size(visual);
-                self.ensure_phase10_solid_texture(visual.base_color, width, height, required_keys)?;
-                Ok(true)
-            }
-        }
+        ensure_phase10_base_texture_loaded(
+            self.device.as_ref(),
+            visual,
+            required_keys,
+            &mut self.texture_cache,
+            &mut self.texture_resolution_cache,
+            &self.video_sources,
+        )
     }
 
     fn ensure_phase10_pass_textures_loaded(
@@ -937,72 +956,13 @@ impl NativeSceneMetalRenderer {
         resolved_pass: &Phase10ResolvedPass<'_>,
         required_keys: &mut BTreeSet<String>,
     ) -> Result<bool, String> {
-        let mut pass_ready = false;
-        for texture_path in resolved_pass
-            .pass
-            .textures
-            .iter()
-            .filter_map(|binding| binding.resolved_path.as_ref())
-        {
-            self.ensure_phase10_texture_loaded(texture_path, required_keys)?;
-            pass_ready = true;
-        }
-        if let Phase10PassContext::Effect(effect_pass) = resolved_pass.context {
-            for texture_path in effect_pass.texture_overrides.iter().flatten() {
-                self.ensure_phase10_texture_loaded(texture_path, required_keys)?;
-                pass_ready = true;
-            }
-        }
-        Ok(pass_ready)
-    }
-
-    fn ensure_phase10_solid_texture(
-        &mut self,
-        color: SceneRenderColor,
-        width: usize,
-        height: usize,
-        required_keys: &mut BTreeSet<String>,
-    ) -> Result<(), String> {
-        let key = phase10_solid_texture_key(color, width, height);
-        required_keys.insert(key.clone());
-        if self.texture_cache.contains_key(&key) {
-            return Ok(());
-        }
-        let texture = load_texture(
-            &self.device,
-            build_solid_texture_image(color, width, height),
+        ensure_phase10_pass_textures_loaded(
+            self.device.as_ref(),
+            resolved_pass,
+            required_keys,
+            &mut self.texture_cache,
+            &mut self.texture_resolution_cache,
         )
-        .map_err(|error| format!("unable to upload phase-10 solid texture {key}: {error}"))?;
-        self.texture_resolution_cache.insert(
-            key.clone(),
-            phase10_texture_metrics_from_size(width, height),
-        );
-        self.texture_cache.insert(key, texture);
-        Ok(())
-    }
-
-    fn ensure_phase10_texture_loaded(
-        &mut self,
-        path: &Path,
-        required_keys: &mut BTreeSet<String>,
-    ) -> Result<(), String> {
-        let key = phase10_texture_cache_key(path);
-        required_keys.insert(key.clone());
-        if self.texture_cache.contains_key(&key) {
-            return Ok(());
-        }
-
-        let decoded = load_phase10_texture_source(path)?;
-        let texture = load_texture(&self.device, decoded.image).map_err(|error| {
-            format!(
-                "unable to upload phase-10 texture {}: {error}",
-                path.display()
-            )
-        })?;
-        self.texture_resolution_cache
-            .insert(key.clone(), decoded.metrics);
-        self.texture_cache.insert(key, texture);
-        Ok(())
     }
     fn compile_phase10_shader_variant(
         &self,
@@ -1360,81 +1320,6 @@ impl NativeSceneMetalRenderer {
             SceneRenderBlendMode::Additive => self.pipelines.additive.as_ref(),
             SceneRenderBlendMode::Multiply => self.pipelines.multiply.as_ref(),
         }
-    }
-
-    fn ensure_visual_texture_loaded(
-        &mut self,
-        item: &SceneRenderVisualItem,
-        key: &str,
-    ) -> Result<(), String> {
-        if self.texture_cache.contains_key(key) {
-            return Ok(());
-        }
-
-        let image = scene_resource_service::load_scene_texture_image(&item.texture_path)
-            .map_err(|error| {
-                format!(
-                    "unable to decode texture {}: {error}",
-                    item.texture_path.display()
-                )
-            })?;
-        let metrics =
-            phase10_texture_metrics_from_size(image.width() as usize, image.height() as usize);
-        let texture = load_texture(&self.device, image).map_err(|error| {
-            format!(
-                "unable to upload texture {}: {error}",
-                item.texture_path.display()
-            )
-        })?;
-        self.texture_resolution_cache
-            .insert(key.to_string(), metrics);
-        self.texture_cache.insert(key.to_string(), texture);
-        Ok(())
-    }
-
-    fn ensure_text_texture_loaded(
-        &mut self,
-        item: &SceneRenderTextItem,
-        key: &str,
-    ) -> Result<Vec<NativeSceneWarning>, String> {
-        if self.text_texture_cache.contains_key(key) {
-            return Ok(Vec::new());
-        }
-
-        let rasterized = rasterize_text_texture(
-            item,
-            |item, path| NativeSceneWarning::unsupported_text_effect(&item.object_name, path),
-            NativeSceneWarning::text_font_fallback,
-        )?;
-        let texture = load_texture(&self.device, rasterized.image).map_err(|error| {
-            format!(
-                "unable to upload text texture {}: {error}",
-                item.object_name
-            )
-        })?;
-        self.text_texture_cache.insert(key.to_string(), texture);
-        Ok(rasterized.warnings)
-    }
-
-    fn ensure_procedural_texture(
-        &mut self,
-        key: &str,
-        image: DynamicImage,
-        required_keys: &mut BTreeSet<String>,
-    ) -> Result<(), String> {
-        required_keys.insert(key.to_string());
-        if self.texture_cache.contains_key(key) {
-            return Ok(());
-        }
-
-        let texture = load_texture(&self.device, image)
-            .map_err(|error| format!("unable to upload procedural texture {key}: {error}"))?;
-        self.texture_resolution_cache.insert(
-            key.to_string(),
-            phase10_texture_metrics_from_texture(texture.as_ref()),
-        );
-        self.texture_cache.insert(key.to_string(), texture);
-        Ok(())
     }
 
     fn sync_video_sources(
