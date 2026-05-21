@@ -1,7 +1,8 @@
 use super::*;
 use super::scene_effect_runtime_service::{
     phase10_alpha_prefill_required, phase10_background_texture_key,
-    phase10_fullscreen_vertices,
+    phase10_fullscreen_vertices, phase10_visual_pass_chain, Phase10PassContext,
+    Phase10ResolvedPass,
     phase10_local_background_projection, phase10_mask_apply_shader_program,
     phase10_named_target_texture_key, phase10_output_texture_key,
     phase10_pass_shader_defines, phase10_puppet_offscreen_projection,

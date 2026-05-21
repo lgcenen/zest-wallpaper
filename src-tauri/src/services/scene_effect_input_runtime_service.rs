@@ -1,7 +1,8 @@
 use super::*;
 use super::scene_effect_runtime_service::{
     phase10_effect_texture_slot_plan, phase10_render_target_size, phase10_solid_texture_key,
-    phase10_texture_cache_key, Phase10EffectTextureSource,
+    phase10_texture_cache_key, Phase10EffectTextureSource, Phase10PassContext,
+    Phase10ResolvedPass,
 };
 use super::scene_effect_target_runtime_service::{
     phase10_texture_metrics_from_size, phase10_texture_metrics_from_texture, Phase10TextureHandle,

@@ -8,6 +8,7 @@ use super::scene_effect_runtime_service::{
     phase10_perspective_corner_uniforms, phase10_skew_controls, phase10_spin_controls,
     phase10_transform_controls, phase10_uniform_color, phase10_uniform_float,
     phase10_uniform_vec2, phase10_uniform_vec4, rotate2d,
+    Phase10ResolvedPass,
 };
 
 #[cfg(target_os = "macos")]

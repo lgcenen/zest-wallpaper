@@ -37,7 +37,8 @@ use scene_effect_runtime_service::{
     Phase10EffectTextureSource, phase10_effect_texture_slot_plan, phase10_pass_shader_defines,
     phase10_perspective_corner_uniforms, phase10_puppet_offscreen_projection,
     phase10_shader_variant_key, phase10_skew_controls, phase10_spin_controls,
-    phase10_transform_controls, phase10_visual_requires_offscreen_chain,
+    phase10_transform_controls,
+    phase10_visual_requires_offscreen_chain,
 };
 #[cfg(all(target_os = "macos", test))]
 use scene_metal_renderer::{scene_audio_bar_rotation, should_retain_visual_in_draw_plan};
@@ -1019,49 +1020,6 @@ struct Phase10EffectUniforms {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy)]
-enum Phase10PassContext<'a> {
-    Base,
-    Effect(&'a ScenePhase10EffectPassNode),
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy)]
-struct Phase10ResolvedPass<'a> {
-    pass: &'a SceneMaterialPassPlan,
-    context: Phase10PassContext<'a>,
-}
-
-#[cfg(target_os = "macos")]
-fn phase10_visual_pass_chain<'a>(
-    visual: &'a ScenePhase10VisualPlan,
-) -> Vec<Phase10ResolvedPass<'a>> {
-    let mut chain = visual
-        .material
-        .passes
-        .iter()
-        .map(|pass| Phase10ResolvedPass {
-            pass,
-            context: Phase10PassContext::Base,
-        })
-        .collect::<Vec<_>>();
-    for effect in &visual.effect_chain {
-        for effect_pass in &effect.passes {
-            chain.extend(
-                effect_pass
-                    .material_passes
-                    .iter()
-                    .map(|pass| Phase10ResolvedPass {
-                        pass,
-                        context: Phase10PassContext::Effect(effect_pass),
-                    }),
-            );
-        }
-    }
-    chain
-}
-
-#[cfg(target_os = "macos")]
 fn build_solid_texture_image(color: SceneRenderColor, width: usize, height: usize) -> DynamicImage {
     let pixel = image::Rgba([color.red, color.green, color.blue, color.alpha]);
     DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
@@ -2029,6 +1987,8 @@ mod tests {
         SceneRenderColor, SceneRendererSpec, SceneSessionPlan,
         AUDIO_INPUT_UNAVAILABLE_CODE, INPUT_SNAPSHOT_UNAVAILABLE_CODE,
     };
+    #[cfg(target_os = "macos")]
+    use super::scene_effect_runtime_service::{Phase10PassContext, Phase10ResolvedPass};
     use super::scene_metal_renderer::{
         phase10_background_source_order, Phase10BackgroundSourceKind,
     };
@@ -3898,9 +3858,9 @@ mod tests {
             texture_overrides: vec![],
             material_passes: vec![],
         };
-        let pulse_resolved = super::Phase10ResolvedPass {
+        let pulse_resolved = Phase10ResolvedPass {
             pass: &pulse_pass,
-            context: super::Phase10PassContext::Effect(&pulse_runtime),
+            context: Phase10PassContext::Effect(&pulse_runtime),
         };
         let pulse_defines = super::phase10_pass_shader_defines(&pulse_resolved);
         assert_eq!(pulse_defines.get("MASK"), Some(&1));
@@ -3924,9 +3884,9 @@ mod tests {
             texture_overrides: vec![None, None, Some(PathBuf::from("/tmp/timeoffset.png"))],
             material_passes: vec![],
         };
-        let shake_resolved = super::Phase10ResolvedPass {
+        let shake_resolved = Phase10ResolvedPass {
             pass: &shake_pass,
-            context: super::Phase10PassContext::Effect(&shake_runtime),
+            context: Phase10PassContext::Effect(&shake_runtime),
         };
         let shake_defines = super::phase10_pass_shader_defines(&shake_resolved);
         assert_eq!(shake_defines.get("TIMEOFFSET"), Some(&1));
@@ -3947,9 +3907,9 @@ mod tests {
             texture_overrides: vec![None, Some(PathBuf::from("/tmp/waterwaves-mask.png"))],
             material_passes: vec![],
         };
-        let waterwaves_resolved = super::Phase10ResolvedPass {
+        let waterwaves_resolved = Phase10ResolvedPass {
             pass: &waterwaves_pass,
-            context: super::Phase10PassContext::Effect(&waterwaves_runtime),
+            context: Phase10PassContext::Effect(&waterwaves_runtime),
         };
         let waterwaves_defines = super::phase10_pass_shader_defines(&waterwaves_resolved);
         assert_eq!(waterwaves_defines.get("MASK"), Some(&1));
@@ -3973,9 +3933,9 @@ mod tests {
             texture_overrides: vec![],
             material_passes: vec![],
         };
-        let default_resolved = super::Phase10ResolvedPass {
+        let default_resolved = Phase10ResolvedPass {
             pass: &default_pass,
-            context: super::Phase10PassContext::Effect(&runtime),
+            context: Phase10PassContext::Effect(&runtime),
         };
 
         assert_eq!(
@@ -3988,9 +3948,9 @@ mod tests {
             vec![],
             BTreeMap::from([("REPEAT".to_string(), 1)]),
         );
-        let repeat_resolved = super::Phase10ResolvedPass {
+        let repeat_resolved = Phase10ResolvedPass {
             pass: &repeat_pass,
-            context: super::Phase10PassContext::Effect(&runtime),
+            context: Phase10PassContext::Effect(&runtime),
         };
 
         assert_eq!(

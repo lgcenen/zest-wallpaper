@@ -1,6 +1,49 @@
 use super::*;
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+pub(crate) enum Phase10PassContext<'a> {
+    Base,
+    Effect(&'a ScenePhase10EffectPassNode),
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+pub(crate) struct Phase10ResolvedPass<'a> {
+    pub(crate) pass: &'a SceneMaterialPassPlan,
+    pub(crate) context: Phase10PassContext<'a>,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn phase10_visual_pass_chain<'a>(
+    visual: &'a ScenePhase10VisualPlan,
+) -> Vec<Phase10ResolvedPass<'a>> {
+    let mut chain = visual
+        .material
+        .passes
+        .iter()
+        .map(|pass| Phase10ResolvedPass {
+            pass,
+            context: Phase10PassContext::Base,
+        })
+        .collect::<Vec<_>>();
+    for effect in &visual.effect_chain {
+        for effect_pass in &effect.passes {
+            chain.extend(
+                effect_pass
+                    .material_passes
+                    .iter()
+                    .map(|pass| Phase10ResolvedPass {
+                        pass,
+                        context: Phase10PassContext::Effect(effect_pass),
+                    }),
+            );
+        }
+    }
+    chain
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn phase10_texture_cache_key(path: &Path) -> String {
     format!("phase10:texture:{}", path.display())
 }
