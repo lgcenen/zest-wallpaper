@@ -1989,6 +1989,7 @@ mod tests {
     };
     #[cfg(target_os = "macos")]
     use super::scene_effect_runtime_service::{Phase10PassContext, Phase10ResolvedPass};
+    #[cfg(all(target_os = "macos", test))]
     use super::scene_metal_renderer::{
         phase10_background_source_order, Phase10BackgroundSourceKind,
     };

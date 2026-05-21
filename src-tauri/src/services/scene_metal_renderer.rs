@@ -133,12 +133,12 @@ pub(super) struct Phase10BackgroundLayer {
     pub(super) uv_rect: [f32; 4],
 }
 
-#[cfg(target_os = "macos")]
-    pub(super) fn phase10_background_source_order(
-        plan: &SceneRenderPlan,
-        graph: &ScenePhase10GraphPlan,
-    ) -> Vec<(SceneRenderDrawItem, Phase10BackgroundSourceKind)> {
-        scene_effect_output_runtime_service::phase10_background_source_order(plan, graph)
+#[cfg(all(target_os = "macos", test))]
+pub(super) fn phase10_background_source_order(
+    plan: &SceneRenderPlan,
+    graph: &ScenePhase10GraphPlan,
+) -> Vec<(SceneRenderDrawItem, Phase10BackgroundSourceKind)> {
+    scene_effect_output_runtime_service::phase10_background_source_order(plan, graph)
 }
 
 #[cfg(target_os = "macos")]
