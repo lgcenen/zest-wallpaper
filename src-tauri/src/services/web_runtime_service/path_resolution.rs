@@ -49,6 +49,10 @@ pub(super) fn build_runtime_url(port: u16, entry: &RuntimeEntry) -> String {
     )
 }
 
+pub(super) fn build_runtime_id(entry: &RuntimeEntry) -> String {
+    format!("{}/{}", entry.token, url_encode_component(&entry.entry_name))
+}
+
 pub(super) fn guess_content_type(path: &Path) -> &'static str {
     match path
         .extension()

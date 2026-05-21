@@ -71,6 +71,7 @@ struct NativeWebRuntime {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WebRuntimeSpec {
+    runtime_id: String,
     runtime_url: String,
     paused: bool,
     property_payload_json: String,
@@ -95,7 +96,7 @@ enum WebSessionPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeWebRuntimeSnapshot {
-    runtime_url: Option<String>,
+    runtime_id: Option<String>,
     paused: bool,
     property_payload_json: String,
     labels: Vec<String>,
@@ -104,7 +105,7 @@ struct NativeWebRuntimeSnapshot {
 impl Default for NativeWebRuntimeSnapshot {
     fn default() -> Self {
         Self {
-            runtime_url: None,
+            runtime_id: None,
             paused: false,
             property_payload_json: "{}".to_string(),
             labels: vec![],
@@ -174,7 +175,7 @@ impl WebBridgeDispatchBatch {
 
 #[derive(Debug, Default)]
 struct NativeWebBridgeState {
-    current_runtime_url: Option<String>,
+    current_runtime_id: Option<String>,
     bridge_ready: bool,
     audio_listener_active: bool,
     bootstrap_pending: bool,
@@ -387,6 +388,7 @@ fn desired_web_runtime_spec(
     }
 
     Ok(Some(WebRuntimeSpec {
+        runtime_id: runtime_session.runtime_id().to_string(),
         runtime_url: runtime_session.runtime_url().to_string(),
         paused,
         property_payload_json: serialize_property_payload(record)?,
@@ -479,15 +481,15 @@ fn plan_native_web_runtime(
 
     let session = match desired {
         None => {
-            if current.runtime_url.is_some() || !current.labels.is_empty() {
+            if current.runtime_id.is_some() || !current.labels.is_empty() {
                 WebSessionPlan::Stop
             } else {
                 WebSessionPlan::Keep
             }
         }
-        Some(spec) => match current.runtime_url.as_deref() {
+        Some(spec) => match current.runtime_id.as_deref() {
             None => WebSessionPlan::Start { spec: spec.clone() },
-            Some(current_url) if current_url != spec.runtime_url => {
+            Some(current_id) if current_id != spec.runtime_id => {
                 WebSessionPlan::Replace { spec: spec.clone() }
             }
             Some(_)
@@ -681,7 +683,7 @@ fn snapshot_bootstrap_retry_state(
 impl NativeWebRuntime {
     fn snapshot(&self) -> NativeWebRuntimeSnapshot {
         NativeWebRuntimeSnapshot {
-            runtime_url: self.spec.as_ref().map(|spec| spec.runtime_url.clone()),
+            runtime_id: self.spec.as_ref().map(|spec| spec.runtime_id.clone()),
             paused: self.spec.as_ref().map(|spec| spec.paused).unwrap_or(false),
             property_payload_json: self
                 .spec
@@ -700,11 +702,11 @@ impl NativeWebRuntime {
 impl NativeWebBridgeState {
     fn reset_for_navigation(
         &mut self,
-        runtime_url: &str,
+        runtime_id: &str,
         payload: WebBridgeBootstrapPayload,
         now: Instant,
     ) {
-        self.current_runtime_url = Some(runtime_url.to_string());
+        self.current_runtime_id = Some(runtime_id.to_string());
         self.bridge_ready = false;
         self.bootstrap_pending = true;
         self.last_bootstrap_hash = None;
@@ -755,7 +757,7 @@ impl NativeWebBridgeState {
     }
 
     fn mark_bridge_ready(&mut self, href: Option<&str>) -> Option<WebBridgeDispatchBatch> {
-        if let (Some(expected), Some(actual)) = (self.current_runtime_url.as_deref(), href) {
+        if let (Some(expected), Some(actual)) = (self.current_runtime_id.as_deref(), href) {
             if !runtime_urls_match(expected, actual) {
                 return None;
             }
@@ -778,10 +780,10 @@ impl NativeWebBridgeState {
 
     fn retry_batch_if_due(
         &mut self,
-        runtime_url: &str,
+        runtime_id: &str,
         now: Instant,
     ) -> Option<WebBridgeDispatchBatch> {
-        if self.current_runtime_url.as_deref() != Some(runtime_url) || !self.bootstrap_pending {
+        if self.current_runtime_id.as_deref() != Some(runtime_id) || !self.bootstrap_pending {
             return None;
         }
 
@@ -807,12 +809,12 @@ impl NativeWebBridgeState {
         self.bridge_ready && self.audio_listener_active && !paused
     }
 
-    fn current_runtime_url_matches(&self, runtime_url: &str) -> bool {
-        self.current_runtime_url.as_deref() == Some(runtime_url)
+    fn current_runtime_id_matches(&self, runtime_id: &str) -> bool {
+        self.current_runtime_id.as_deref() == Some(runtime_id)
     }
 
     fn mark_audio_listener(&mut self, active: bool, href: Option<&str>) -> bool {
-        if let (Some(expected), Some(actual)) = (self.current_runtime_url.as_deref(), href) {
+        if let (Some(expected), Some(actual)) = (self.current_runtime_id.as_deref(), href) {
             if !runtime_urls_match(expected, actual) {
                 return false;
             }
@@ -833,8 +835,25 @@ fn runtime_urls_match(expected: &str, actual: &str) -> bool {
         return true;
     }
 
+    fn strip_query_and_fragment(value: &str) -> &str {
+        value.split(['?', '#']).next().unwrap_or(value)
+    }
+
+    fn extract_runtime_id_from_url(value: &str) -> Option<&str> {
+        let normalized = strip_query_and_fragment(value);
+        normalized
+            .split("/web-runtime/")
+            .nth(1)
+            .map(|path| path.trim_start_matches('/'))
+            .filter(|path| !path.is_empty())
+    }
+
     fn strip_fragment(value: &str) -> &str {
         value.split('#').next().unwrap_or(value)
+    }
+
+    if let Some(actual_runtime_id) = extract_runtime_id_from_url(actual) {
+        return expected == actual_runtime_id;
     }
 
     strip_fragment(expected) == strip_fragment(actual)
@@ -1164,7 +1183,7 @@ impl NativeWebViewHost {
                 .bridge_state
                 .lock()
                 .map_err(|error| error.to_string())?;
-            !state.current_runtime_url_matches(&spec.runtime_url)
+            !state.current_runtime_id_matches(&spec.runtime_id)
         };
 
         if url_changed {
@@ -1173,7 +1192,7 @@ impl NativeWebViewHost {
                 .bridge_state
                 .lock()
                 .map_err(|error| error.to_string())?;
-            state.reset_for_navigation(&spec.runtime_url, payload, Instant::now());
+            state.reset_for_navigation(&spec.runtime_id, payload, Instant::now());
             return Ok(());
         }
 
@@ -1224,7 +1243,7 @@ impl NativeWebViewHost {
                 .bridge_state
                 .lock()
                 .map_err(|error| error.to_string())?;
-            state.current_runtime_url_matches(&spec.runtime_url)
+            state.current_runtime_id_matches(&spec.runtime_id)
                 && state.audio_dispatch_allowed(spec.paused)
         };
         if !should_dispatch {
@@ -1239,7 +1258,7 @@ impl NativeWebViewHost {
             .bridge_state
             .lock()
             .map_err(|error| error.to_string())?;
-        Ok(state.current_runtime_url_matches(&spec.runtime_url)
+        Ok(state.current_runtime_id_matches(&spec.runtime_id)
             && state.audio_dispatch_allowed(spec.paused))
     }
 
@@ -1259,7 +1278,7 @@ impl NativeWebViewHost {
                 .bridge_state
                 .lock()
                 .map_err(|error| error.to_string())?;
-            state.retry_batch_if_due(&spec.runtime_url, now)
+            state.retry_batch_if_due(&spec.runtime_id, now)
         };
         if let Some(batch) = batch {
             self.evaluate_dispatch(&batch)?;
@@ -1486,12 +1505,14 @@ mod tests {
     }
 
     fn runtime_spec(
+        runtime_id: &str,
         runtime_url: &str,
         paused: bool,
         property_payload_json: &str,
         labels: &[&str],
     ) -> WebRuntimeSpec {
         WebRuntimeSpec {
+            runtime_id: runtime_id.to_string(),
             runtime_url: runtime_url.to_string(),
             paused,
             property_payload_json: property_payload_json.to_string(),
@@ -1553,6 +1574,7 @@ mod tests {
         let start = plan_native_web_runtime(
             &NativeWebRuntimeSnapshot::default(),
             Some(&runtime_spec(
+                "demo/index.html",
                 "http://127.0.0.1:9000/web-runtime/demo/index.html",
                 false,
                 r#"{"speed":{"value":1}}"#,
@@ -1571,7 +1593,7 @@ mod tests {
 
         let stop = plan_native_web_runtime(
             &NativeWebRuntimeSnapshot {
-                runtime_url: Some("http://127.0.0.1:9000/web-runtime/demo/index.html".to_string()),
+                runtime_id: Some("demo/index.html".to_string()),
                 paused: false,
                 property_payload_json: r#"{"speed":{"value":1}}"#.to_string(),
                 labels: vec!["player".to_string(), "player-screen-1".to_string()],
@@ -1587,12 +1609,13 @@ mod tests {
     fn pause_and_property_changes_only_refresh_bridge_state() {
         let plan = plan_native_web_runtime(
             &NativeWebRuntimeSnapshot {
-                runtime_url: Some("http://127.0.0.1:9000/web-runtime/demo/index.html".to_string()),
+                runtime_id: Some("demo/index.html".to_string()),
                 paused: false,
                 property_payload_json: r#"{"speed":{"value":1}}"#.to_string(),
                 labels: vec!["player".to_string()],
             },
             Some(&runtime_spec(
+                "demo/index.html",
                 "http://127.0.0.1:9000/web-runtime/demo/index.html",
                 true,
                 r#"{"speed":{"value":2}}"#,
@@ -1614,14 +1637,13 @@ mod tests {
     fn switching_web_wallpaper_reloads_the_runtime_url() {
         let plan = plan_native_web_runtime(
             &NativeWebRuntimeSnapshot {
-                runtime_url: Some(
-                    "http://127.0.0.1:9000/web-runtime/demo-a/index.html".to_string(),
-                ),
+                runtime_id: Some("demo-a/index.html".to_string()),
                 paused: false,
                 property_payload_json: "{}".to_string(),
                 labels: vec!["player".to_string()],
             },
             Some(&runtime_spec(
+                "demo-b/index.html",
                 "http://127.0.0.1:9000/web-runtime/demo-b/index.html",
                 false,
                 "{}",
@@ -1639,12 +1661,41 @@ mod tests {
     }
 
     #[test]
+    fn same_runtime_id_only_updates_bridge_even_if_runtime_url_string_changes() {
+        let plan = plan_native_web_runtime(
+            &NativeWebRuntimeSnapshot {
+                runtime_id: Some("demo/index.html".to_string()),
+                paused: false,
+                property_payload_json: r#"{"speed":{"value":1}}"#.to_string(),
+                labels: vec!["player".to_string()],
+            },
+            Some(&runtime_spec(
+                "demo/index.html",
+                "http://127.0.0.1:9000/web-runtime/demo/index.html?cache-bust=1",
+                true,
+                r#"{"speed":{"value":2}}"#,
+                &["player"],
+            )),
+        );
+
+        assert!(matches!(
+            plan.session,
+            WebSessionPlan::UpdateBridge { ref spec }
+                if spec.runtime_id == "demo/index.html"
+                    && spec.runtime_url
+                        == "http://127.0.0.1:9000/web-runtime/demo/index.html?cache-bust=1"
+                    && spec.paused
+                    && spec.property_payload_json == r#"{"speed":{"value":2}}"#
+        ));
+    }
+
+    #[test]
     fn bridge_ready_flushes_first_bootstrap_once() {
         let mut state = NativeWebBridgeState::default();
         let now = Instant::now();
         let payload = bootstrap_payload(r#"{"speed":{"value":1}}"#, true);
         state.reset_for_navigation(
-            "http://127.0.0.1:9000/web-runtime/demo/index.html",
+            "demo/index.html",
             payload.clone(),
             now,
         );
@@ -1678,7 +1729,7 @@ mod tests {
         let now = Instant::now();
         let payload = bootstrap_payload(r#"{"speed":{"value":1}}"#, false);
         state.reset_for_navigation(
-            "http://127.0.0.1:9000/web-runtime/demo/index.html",
+            "demo/index.html",
             payload.clone(),
             now,
         );
@@ -1697,23 +1748,17 @@ mod tests {
         let mut state = NativeWebBridgeState::default();
         let now = Instant::now();
         state.reset_for_navigation(
-            "http://127.0.0.1:9000/web-runtime/demo/index.html",
+            "demo/index.html",
             bootstrap_payload(r#"{"speed":{"value":1}}"#, false),
             now,
         );
 
         assert!(state
-            .retry_batch_if_due(
-                "http://127.0.0.1:9000/web-runtime/demo/index.html",
-                now + Duration::from_millis(100),
-            )
+            .retry_batch_if_due("demo/index.html", now + Duration::from_millis(100))
             .is_none());
 
         let batch = state
-            .retry_batch_if_due(
-                "http://127.0.0.1:9000/web-runtime/demo/index.html",
-                now + BOOTSTRAP_RETRY_INTERVAL,
-            )
+            .retry_batch_if_due("demo/index.html", now + BOOTSTRAP_RETRY_INTERVAL)
             .expect("retry batch");
         assert!(batch.properties_json.is_some());
         assert_eq!(batch.paused, Some(false));
@@ -1721,7 +1766,7 @@ mod tests {
 
         assert!(state
             .retry_batch_if_due(
-                "http://127.0.0.1:9000/web-runtime/demo/index.html",
+                "demo/index.html",
                 now + BOOTSTRAP_RETRY_INTERVAL + Duration::from_millis(100),
             )
             .is_none());
@@ -1731,11 +1776,7 @@ mod tests {
     fn cursor_dispatch_waits_for_bridge_ready() {
         let mut state = NativeWebBridgeState::default();
         let now = Instant::now();
-        state.reset_for_navigation(
-            "http://127.0.0.1:9000/web-runtime/demo/index.html",
-            bootstrap_payload("{}", false),
-            now,
-        );
+        state.reset_for_navigation("demo/index.html", bootstrap_payload("{}", false), now);
 
         assert!(!state.cursor_dispatch_allowed(false));
         let _ = state.mark_bridge_ready(Some("http://127.0.0.1:9000/web-runtime/demo/index.html"));
@@ -1748,7 +1789,7 @@ mod tests {
         let mut state = NativeWebBridgeState::default();
         let now = Instant::now();
         state.reset_for_navigation(
-            "http://127.0.0.1:9000/web-runtime/demo/index.html",
+            "demo/index.html",
             bootstrap_payload(r#"{"speed":{"value":1}}"#, false),
             now,
         );
@@ -1774,7 +1815,7 @@ mod tests {
         let mut state = NativeWebBridgeState::default();
         let now = Instant::now();
         state.reset_for_navigation(
-            "http://127.0.0.1:9000/web-runtime/demo/index.html",
+            "demo/index.html",
             bootstrap_payload(r#"{"speed":{"value":1}}"#, false),
             now,
         );
@@ -1795,8 +1836,9 @@ mod tests {
     #[test]
     fn audio_listener_state_tracks_runtime_url_and_bridge_readiness() {
         let mut state = NativeWebBridgeState::default();
+        let runtime_id = "demo/index.html";
         let runtime_url = "http://127.0.0.1:9000/web-runtime/demo/index.html";
-        state.reset_for_navigation(runtime_url, bootstrap_payload("{}", false), Instant::now());
+        state.reset_for_navigation(runtime_id, bootstrap_payload("{}", false), Instant::now());
 
         assert!(!state.audio_dispatch_allowed(false));
         state.mark_audio_listener(true, Some(runtime_url));
@@ -1815,7 +1857,7 @@ mod tests {
         let mut state = NativeWebBridgeState::default();
         let now = Instant::now();
         state.reset_for_navigation(
-            "http://127.0.0.1:9000/web-runtime/demo-a/index.html",
+            "demo-a/index.html",
             bootstrap_payload("{}", false),
             now,
         );
@@ -1823,14 +1865,14 @@ mod tests {
             state.mark_bridge_ready(Some("http://127.0.0.1:9000/web-runtime/demo-a/index.html"));
 
         state.reset_for_navigation(
-            "http://127.0.0.1:9000/web-runtime/demo-b/index.html",
+            "demo-b/index.html",
             bootstrap_payload(r#"{"theme":{"value":"b"}}"#, true),
             now + Duration::from_secs(1),
         );
 
         assert_eq!(
-            state.current_runtime_url.as_deref(),
-            Some("http://127.0.0.1:9000/web-runtime/demo-b/index.html")
+            state.current_runtime_id.as_deref(),
+            Some("demo-b/index.html")
         );
         assert!(!state.bridge_ready);
         assert!(state.bootstrap_pending);

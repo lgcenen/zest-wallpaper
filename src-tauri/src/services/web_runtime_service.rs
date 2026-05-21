@@ -7,10 +7,15 @@ mod server;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebRuntimeSession {
+    runtime_id: String,
     runtime_url: String,
 }
 
 impl WebRuntimeSession {
+    pub fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+
     pub fn runtime_url(&self) -> &str {
         &self.runtime_url
     }
@@ -22,6 +27,7 @@ pub fn prepare_web_runtime_session(path: &str) -> Result<WebRuntimeSession, Stri
     server::register_runtime_root(server, entry.token.clone(), entry.root.clone())?;
 
     Ok(WebRuntimeSession {
+        runtime_id: path_resolution::build_runtime_id(&entry),
         runtime_url: path_resolution::build_runtime_url(server.port, &entry),
     })
 }
@@ -121,6 +127,10 @@ mod tests {
                 server.port,
                 runtime_token(root)
             )
+        );
+        assert_eq!(
+            session.runtime_id(),
+            format!("{}/index.html", runtime_token(root))
         );
     }
 
