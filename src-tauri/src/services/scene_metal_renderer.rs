@@ -27,6 +27,8 @@ use super::scene_effect_uniform_runtime_service::build_phase10_effect_uniforms_f
 mod scene_effect_draw_runtime_service;
 #[path = "scene_effect_output_runtime_service.rs"]
 mod scene_effect_output_runtime_service;
+#[path = "scene_video_source_runtime_service.rs"]
+mod scene_video_source_runtime_service;
 #[cfg(target_os = "macos")]
 pub(super) struct NativeSceneMetalRenderer {
     app: AppHandle,
@@ -132,11 +134,11 @@ pub(super) struct Phase10BackgroundLayer {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn phase10_background_source_order(
-    plan: &SceneRenderPlan,
-    graph: &ScenePhase10GraphPlan,
-) -> Vec<(SceneRenderDrawItem, Phase10BackgroundSourceKind)> {
-    scene_effect_output_runtime_service::phase10_background_source_order(plan, graph)
+    pub(super) fn phase10_background_source_order(
+        plan: &SceneRenderPlan,
+        graph: &ScenePhase10GraphPlan,
+    ) -> Vec<(SceneRenderDrawItem, Phase10BackgroundSourceKind)> {
+        scene_effect_output_runtime_service::phase10_background_source_order(plan, graph)
 }
 
 #[cfg(target_os = "macos")]
@@ -1327,93 +1329,18 @@ impl NativeSceneMetalRenderer {
         visuals: &[SceneRenderVisualItem],
         paused: bool,
     ) -> Vec<NativeSceneWarning> {
-        let current_paths = self
-            .video_sources
-            .iter()
-            .map(|(object_id, source)| (*object_id, source.state()))
-            .collect::<BTreeMap<_, _>>();
-        let desired = scene_video_texture_service::desired_video_texture_sources(visuals);
-        let plan = scene_video_texture_service::plan_video_texture_source_sync(
-            &current_paths,
-            &desired,
-            paused,
-        );
-        let mut warnings = Vec::new();
-
-        for action in plan.actions {
-            match action {
-                SceneVideoTextureLifecycleAction::Remove { object_id, .. } => {
-                    if let Some(mut source) = self.video_sources.remove(&object_id) {
-                        source.stop();
-                    }
-                }
-                SceneVideoTextureLifecycleAction::SetPaused { object_id, paused } => {
-                    if let Some(source) = self.video_sources.get_mut(&object_id) {
-                        source.set_paused(paused);
-                    }
-                }
-                SceneVideoTextureLifecycleAction::Replace { source, paused, .. } => {
-                    if let Some(existing) = self.video_sources.get_mut(&source.object_id) {
-                        existing.stop();
-                    }
-                    match NativeSceneVideoSource::new(
-                        source.object_id,
-                        source.asset_path.clone(),
-                        paused,
-                    ) {
-                        Ok(next_source) => {
-                            self.video_sources.insert(source.object_id, next_source);
-                        }
-                        Err(error) => {
-                            self.video_sources.remove(&source.object_id);
-                            warnings.push(video_texture_source_warning(&source, error));
-                        }
-                    }
-                }
-                SceneVideoTextureLifecycleAction::Create { source, paused } => {
-                    match NativeSceneVideoSource::new(
-                        source.object_id,
-                        source.asset_path.clone(),
-                        paused,
-                    ) {
-                        Ok(next_source) => {
-                            self.video_sources.insert(source.object_id, next_source);
-                        }
-                        Err(error) => warnings.push(video_texture_source_warning(&source, error)),
-                    }
-                }
-            }
-        }
-        warnings
+        scene_video_source_runtime_service::sync_video_sources(self, visuals, paused)
     }
 
     fn clear_video_sources(&mut self) {
-        for (_, source) in self.video_sources.iter_mut() {
-            source.stop();
-        }
-        self.video_sources.clear();
-        self.video_texture_cache.flush(0);
+        scene_video_source_runtime_service::clear_video_sources(self);
     }
 
     fn video_texture_for_item(
         &mut self,
         item: &SceneRenderVisualItem,
     ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
-        let source = self.video_sources.get_mut(&item.object_id)?;
-        match source.current_texture(&self.video_texture_cache, self.paused) {
-            Ok(texture) => texture,
-            Err(error) => {
-                let detail = video_texture_frame_warning(&item.object_name, error);
-                let _ = diagnostic_service::record_warning(
-                    &self.app,
-                    DIAGNOSTIC_SUBSYSTEM,
-                    &detail.code,
-                    detail.message.clone(),
-                    detail.detail_json(),
-                );
-                None
-            }
-        }
+        scene_video_source_runtime_service::video_texture_for_item(self, item)
     }
 
     fn draw_quad(
